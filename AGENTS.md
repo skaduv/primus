@@ -64,6 +64,8 @@ Tauri 只加载本地静态文件，没有 Node 服务器：
 - 流式渲染性能：每批事件一次 `setState`（`requestAnimationFrame` 内）；selector 订阅最小切片；已定稿消息不再更新；列表用虚拟滚动。
 - Markdown 用 markdown-it 且**禁用原始 HTML**。
 - 界面文案集中管理（首版中文），不要散落硬编码。
+- 组件放 `src/components/`，基础交互用 `radix-ui`（按需 `import { Toggle } from "radix-ui"`），图标用 `lucide-react`，配色只用 `globals.css` 中 `@theme` 定义的设计令牌。
+- 前端单测：`apps/desktop/vitest.config.mts`（jsdom + React Testing Library，`@/` 别名）；测试文件与源码同目录 `*.test.ts(x)`，优先按角色/可访问名称查询元素。
 
 ## 5. 薄壳规则（Rust）
 

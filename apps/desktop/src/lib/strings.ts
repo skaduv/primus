@@ -10,6 +10,15 @@ export const strings = {
     storage: "存储",
     usage: "用量统计",
   },
+  layout: {
+    sessions: "会话",
+    timeline: "时间线",
+    inspector: "变更 · 文件 · 计划",
+    toggleSessions: "显示/隐藏会话列表",
+    toggleInspector: "显示/隐藏右侧面板",
+    emptyTimeline: "还没有消息。从底部输入框开始一次对话。",
+    noSessions: "暂无会话",
+  },
   errors: {
     title: "出错了",
     retry: "重试",
