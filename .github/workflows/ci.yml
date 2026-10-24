@@ -66,6 +66,8 @@ jobs:
 
   windows:
     name: Windows 编译（MSVC · Rust · WiX）
+    # 先过 Linux 检查再占用 Windows runner（README「CI 与依赖升级」）
+    needs: checks
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v7.0.1
