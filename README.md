@@ -28,13 +28,6 @@ node.exe agent-core/rpc-entry.js + 第一方扩展 primus-bundle.js
 | Agent Core | `agent-core/` 源码构建的 JS 产物 + 内置 Node.js 24 LTS | Agent 循环、模型调用、工具、会话、压缩、技能、MCP |
 | 第一方扩展 | TypeScript，打包为 `primus-bundle.js` | 守卫、上下文、检查点、子 Agent、计划模式等 |
 
-## 硬约束
-
-| 编号 | 约束 |
-|---|---|
-| C1 | 外部模型只支持 **OpenAI Responses** 与 **Anthropic Messages** 两种协议 |
-| C2 | App 管理的数据默认放在 `<安装目录>/data` |
-| C3 | **Windows 11 x64 优先**，随后 macOS、Linux |
 
 ## 目录结构
 
@@ -104,4 +97,4 @@ MSI 打包流程见 `scripts/build-msi.ps1` 与技术方案第 3.3 节。
 
 ## 许可
 
-`agent-core/` 保留上游开源项目的 MIT 许可与版权声明；其余部分许可待定。
+作者保留所有权力。
