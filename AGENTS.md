@@ -87,6 +87,7 @@ pnpm install --frozen-lockfile
 pnpm dev:web            # 浏览器预览（mock 平台）
 pnpm dev                # Tauri 开发模式
 pnpm build:core         # 构建 Agent Core
+pnpm smoke:core         # Agent Core RPC 冒烟（get_state）
 pnpm build:extensions   # 构建 primus-bundle.js
 pnpm lint && pnpm test  # Biome + Vitest
 pnpm check:versions && pnpm check:tauri-imports && pnpm check:forbidden-sdk && pnpm check:naming

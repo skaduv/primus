@@ -118,13 +118,12 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo test --locked --all-targets
 
-      # Agent Core 以 git subtree 引入（第 6.1 节）；引入前跳过，引入后在 Windows 上实际构建
-      - name: 构建 Agent Core（npm ci · npm run build）
-        if: hashFiles('agent-core/package.json') != ''
-        working-directory: agent-core
-        run: |
-          npm ci
-          npm run build
+      # Agent Core 以 git subtree 引入（第 6.1 节）：用锁文件安装、锁定版本的模型目录，在 Windows 上实际构建
+      - name: 构建 Agent Core
+        run: pnpm build:core
+
+      - name: Agent Core RPC 冒烟（get_state）
+        run: pnpm smoke:core
 
       - name: Core 依赖检查（被禁 SDK，第 6.2 节）
         run: pnpm check:forbidden-sdk
