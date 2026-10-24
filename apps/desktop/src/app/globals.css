@@ -1,6 +1,28 @@
 /* Tailwind 4：CSS 优先配置，没有 tailwind.config.js */
 @import "tailwindcss";
 
+/* 设计令牌（低保真阶段的占位配色，跟随系统明暗；正式视觉在设计稿确认后替换） */
 @theme {
-  /* 设计令牌在此定义 */
+  --color-surface: #ffffff;
+  --color-fg: #1f2328;
+  --color-muted: #6e7781;
+  --color-border: #d0d7de;
+  --color-hover: #f3f4f6;
+  --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-surface: #1e1f22;
+    --color-fg: #e6e6e6;
+    --color-muted: #9aa0a6;
+    --color-border: #34363a;
+    --color-hover: #2b2d31;
+  }
+}
+
+html,
+body {
+  height: 100%;
+  font-family: var(--font-sans);
 }
