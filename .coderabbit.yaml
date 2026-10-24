@@ -1,0 +1,20 @@
+# CodeRabbit 配置：所有改动推到 dev，经 PR（dev → main）审查，低风险才合并
+language: zh-CN
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  auto_review:
+    enabled: true
+    base_branches:
+      - main
+  path_filters:
+    - "!**/pnpm-lock.yaml"
+    - "!**/Cargo.lock"
+    - "!apps/desktop/src-tauri/icons/**"
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        以仓库根目录的 AGENTS.md 与 docs/技术方案-V5.3.md 为准审查：两协议约束（C1）、数据目录约束（C2）、
+        命名规则（agent-core/ 之外不得出现上游名称）、依赖锁定精确稳定版、前端仅静态导出且只有
+        src/lib/platform/tauri/ 可以 import @tauri-apps/*。

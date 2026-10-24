@@ -2,5 +2,7 @@
   "name": "@primus/e2e",
   "private": true,
   "version": "0.0.0",
-  "scripts": { "test": "wdio run wdio.conf.ts" }
+  "scripts": {
+    "test": "wdio run wdio.conf.ts"
+  }
 }

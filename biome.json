@@ -1,7 +1,15 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
   "files": {
-    "includes": ["**", "!agent-core/**", "!**/dist/**", "!**/out/**", "!**/.next/**", "!**/target/**"]
+    "includes": [
+      "**/*.{ts,tsx,js,mjs,cjs,json,jsonc,css}",
+      "!agent-core",
+      "!**/dist",
+      "!**/out",
+      "!**/.next",
+      "!**/target",
+      "!**/src-tauri/gen"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -10,10 +18,12 @@
     "lineWidth": 100
   },
   "linter": {
-    "enabled": true,
-    "rules": { "recommended": true }
+    "enabled": true
   },
   "javascript": {
     "formatter": { "quoteStyle": "double", "semicolons": "always" }
+  },
+  "css": {
+    "parser": { "tailwindDirectives": true }
   }
 }
