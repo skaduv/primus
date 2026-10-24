@@ -47,6 +47,16 @@
       "datasourceTemplate": "github-releases"
     },
     {
+      "description": "Cargo.toml 的 Rust MSRV（rust-version 保持 major.minor 两段式，与基线同一 PR 升级）",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Cargo\\.toml$/"],
+      "matchStrings": ["rust-version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases",
+      "autoReplaceStringTemplate": "rust-version = \"{{{newMajor}}}.{{{newMinor}}}\""
+    },
+    {
       "description": "CI 中固定的 WiX 版本",
       "customType": "regex",
       "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
