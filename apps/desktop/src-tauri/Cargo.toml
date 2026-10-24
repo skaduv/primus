@@ -13,24 +13,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
-tauri = { version = "=2.12.5", features = ["tray-icon"] }
-tauri-plugin-updater = "=2.14.0"
+# P0 第 1 周只引入空壳所需依赖；其余依赖（tokio、rusqlite、notify、gix、windows 等）
+# 随对应模块落地时再加入，版本以技术方案第 2.4 节为准。
+tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-single-instance = "=2.5.4"
-tauri-plugin-notification = "=2.7.0"
-tauri-plugin-dialog = "=2.8.3"
-tauri-plugin-opener = "=2.7.2"
-tauri-plugin-log = "=2.10.1"
-tokio = { version = "=1.54.1", features = ["full"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
-tracing = "=0.1.44"
-rusqlite = { version = "=0.40.2", features = ["bundled"] }
-notify = "=8.2.0"
-gix = { version = "=0.90.0", default-features = false }
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "=0.62.2" }
-windows-sys = { version = "=0.61.2" }
 
 [profile.release]
 lto = true

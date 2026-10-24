@@ -3,3 +3,20 @@ packages:
   - apps/*
   - packages/*
   - e2e
+# pnpm 供应链策略默认拒绝刚发布的版本；以下为按第 2.4 节锁定的最新稳定版，显式放行
+minimumReleaseAgeExclude:
+  - '@next/env@16.4.3'
+  - '@next/swc-darwin-arm64@16.4.3'
+  - '@next/swc-darwin-x64@16.4.3'
+  - '@next/swc-linux-arm64-gnu@16.4.3'
+  - '@next/swc-linux-arm64-musl@16.4.3'
+  - '@next/swc-linux-x64-gnu@16.4.3'
+  - '@next/swc-linux-x64-musl@16.4.3'
+  - '@next/swc-win32-arm64-msvc@16.4.3'
+  - '@next/swc-win32-x64-msvc@16.4.3'
+  - next@16.4.3
+
+# 允许执行安装脚本的依赖（pnpm 默认禁止）
+allowBuilds:
+  esbuild: true
+  "@biomejs/biome": true

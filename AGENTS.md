@@ -100,6 +100,12 @@ pnpm check:tauri-imports && pnpm check:forbidden-sdk && pnpm check:naming
 
 ## 9. 提交与分支
 
+**合并流程（必须遵守）**：
+1. 所有改动只推到 `dev` 分支，**禁止直接推 `main`**。
+2. 推送后开（或更新）PR：`dev → main`，等 CodeRabbit 审查完成。
+3. CodeRabbit 结论为**低风险**（无未解决的实质性问题）才能合并到 `main`；否则按审查意见继续在 `dev` 上修改并推送，直至低风险。
+
+
 - 提交信息用 Conventional Commits：`feat(shell): ...`、`fix(frontend): ...`、`chore(core): ...`。scope 建议：`frontend`、`shell`（薄壳）、`core`、`ext`、`protocol`、`ui`、`installer`、`ci`、`docs`。
 - 一个 PR 只做一件事；不要顺手格式化无关文件。
 - 不要提交 `dist/`、`out/`、`target/`、`.dev-data/`、安装包与任何密钥。
