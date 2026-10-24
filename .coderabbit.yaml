@@ -17,6 +17,20 @@ reviews:
     - "!agent-core/package-lock.json"
     - "!agent-core/nix/**"
     - "!agent-core/scripts/**"
+    # 上游自带的开发工具、CI、文档与根配置同样不审查（仅 PATCHES.md 是本项目文件）
+    - "!agent-core/.*/**"
+    - "!agent-core/.*"
+    - "!agent-core/*.json"
+    - "!agent-core/*.ts"
+    - "!agent-core/*.sh"
+    - "!agent-core/*.bat"
+    - "!agent-core/*.ps1"
+    - "!agent-core/flake.*"
+    - "!agent-core/LICENSE"
+    - "!agent-core/AGENTS.md"
+    - "!agent-core/CONTRIBUTING.md"
+    - "!agent-core/README.md"
+    - "!agent-core/SECURITY.md"
   path_instructions:
     - path: "**/*"
       instructions: |

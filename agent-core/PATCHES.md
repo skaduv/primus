@@ -35,7 +35,7 @@ pnpm build:core && pnpm smoke:core   # 构建 + RPC 冒烟
 ### 计划中的改动（尚未实施）
 
 - **品牌**（第 6.3 节）：`packages/coding-agent/package.json` 配置名称 `primus`、配置目录 `.primus`；硬编码环境变量前缀改为 `PRIMUS_`；系统提示产品名改为“乾元（Primus）”；进程标题、`AI_AGENT` 改为 `primus`；关闭版本检查、分享、安装器等联网入口。
-- **两协议裁剪**（第 6.2 节）：`packages/ai` 只保留 OpenAI Responses 与 Anthropic Messages 适配器，删除其余供应商的导入与 SDK 依赖并更新锁文件。
+- **两协议裁剪**（第 6.2 节）：`packages/ai` 只保留 OpenAI Responses 与 Anthropic Messages 适配器，删除其余供应商的导入与 SDK 依赖并更新锁文件。同步处理上游开发工具目录中与两协议约束不符的指导（如“新增 LLM 供应商”技能说明），届时裁剪或改写并在上表登记。
 - **构建入口**：如需调整 `rpc-entry` 打包配置，在此登记。
 
 ## 本仓库侧的构建约定（不改动本目录源码）
