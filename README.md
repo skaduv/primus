@@ -52,7 +52,7 @@ primus/
 │  ├─ extensions/          第一方 Core 扩展 → primus-bundle.js
 │  ├─ protocol/            RPC 与 primus:* 数据的 TS 类型
 │  └─ ui/                  共享 UI 组件
-├─ agent-core/             Agent Core 完整源码（git subtree 引入，待第 1 周导入）
+├─ agent-core/             Agent Core 完整源码（git subtree 引入，当前 v1.4.0；改动见 agent-core/PATCHES.md）
 ├─ e2e/                    WebdriverIO + tauri-driver
 ├─ scripts/                build-core.mjs、检查脚本、MSI 构建脚本
 └─ docs/                   技术方案、ADR、用户手册
@@ -76,7 +76,8 @@ primus/
 pnpm install --frozen-lockfile   # 安装依赖
 pnpm dev:web                     # 浏览器预览前端（mock 平台 + 假 Core 事件流，无需 Rust/Windows）
 pnpm dev                         # Tauri 开发模式（数据目录为仓库下 .dev-data/）
-pnpm build:core                  # 构建 Agent Core → dist/agent-core、dist/runtime
+pnpm build:core                  # 构建 Agent Core（npm ci + 锁定模型目录 + 离线构建）
+pnpm smoke:core                  # Agent Core RPC 冒烟：发送 get_state 应收到 response
 pnpm build:extensions            # 构建第一方扩展 → dist/agent-core/extensions/primus-bundle.js
 pnpm build                       # 完整构建 Primus.exe（不打包）
 pnpm lint                        # Biome

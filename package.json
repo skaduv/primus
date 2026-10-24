@@ -10,6 +10,7 @@
     "dev": "pnpm --filter @primus/desktop tauri dev",
     "dev:web": "pnpm --filter @primus/desktop dev",
     "build:core": "node scripts/build-core.mjs",
+    "smoke:core": "node scripts/smoke-core-rpc.mjs",
     "build:extensions": "pnpm --filter @primus/extensions build",
     "build": "pnpm build:core && pnpm build:extensions && pnpm --filter @primus/desktop tauri build --no-bundle",
     "lint": "biome check .",
