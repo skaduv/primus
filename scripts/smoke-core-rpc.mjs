@@ -30,13 +30,37 @@ child.stderr.on("data", (d) => {
   stderr += d;
 });
 
+let finished = false;
+let childExited = false;
+
+// 清理临时目录：Windows 上进程退出前其工作目录被占用，删除会报 EPERM，
+// 所以先等 Core 进程退出再删，并带重试；清理失败只告警，不影响冒烟结论。
+function cleanup() {
+  try {
+    rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (err) {
+    console.warn(`⚠ 临时目录清理失败（不影响结果）：${sandbox}：${err.message}`);
+  }
+}
+
 function finish(code, message) {
+  if (finished) return;
+  finished = true;
   clearTimeout(timer);
-  child.kill();
-  rmSync(sandbox, { recursive: true, force: true });
   if (code === 0) console.log(message);
   else console.error(`${message}\n--- Core stderr ---\n${stderr}`);
-  process.exit(code);
+  const done = () => {
+    cleanup();
+    process.exit(code);
+  };
+  if (childExited) return done();
+  // 等进程退出（最多 5 秒）后再清理
+  const killTimer = setTimeout(done, 5_000);
+  child.once("exit", () => {
+    clearTimeout(killTimer);
+    done();
+  });
+  child.kill();
 }
 
 const timer = setTimeout(
@@ -61,5 +85,8 @@ createInterface({ input: child.stdout }).on("line", (line) => {
   else finish(1, `✗ get_state 响应异常：${line}`);
 });
 
-child.on("exit", (code) => finish(1, `✗ Core 进程提前退出（退出码 ${code}）`));
+child.on("exit", (code) => {
+  childExited = true;
+  finish(1, `✗ Core 进程提前退出（退出码 ${code}）`);
+});
 child.stdin.write(`${JSON.stringify({ id: "smoke-1", type: "get_state" })}\n`);
