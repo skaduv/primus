@@ -12,6 +12,8 @@ import {
 } from "./check-forbidden-sdk.mjs";
 
 const RULES = ["@google/*", "@aws-sdk/client-bedrock-runtime", "groq-sdk"];
+// 夹具里的被禁包名经变量拼进源码字符串，避免本测试文件自身被导入图扫描判定为违规
+const GENAI = "@google/genai";
 const dirs: string[] = [];
 
 function fixture(files: Record<string, string>, enforceCore = false): string {
@@ -69,7 +71,7 @@ describe("check-forbidden-sdk", () => {
   it("工作区依赖或导入中出现被禁 SDK 时失败", () => {
     const root = fixture({
       "apps/a/package.json": JSON.stringify({ dependencies: { "groq-sdk": "1.0.0" } }),
-      "packages/b/src/x.ts": 'const g = await import("@google/genai");',
+      "packages/b/src/x.ts": `const g = await import("${GENAI}");`,
     });
     expect(run(root).findings).toEqual([
       "apps/a/package.json（dependencies）: groq-sdk",
