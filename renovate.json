@@ -1,11 +1,100 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended"],
-  "schedule": ["before 6am on the first day of the month"],
+  "description": "每月一次依赖升级（技术方案第 2.4 节）：只用最新稳定版、锁定精确版本、一个 PR 提到 dev，经 CodeRabbit 审查后再随 dev → main 合并",
+  "extends": ["config:recommended", ":disableDependencyDashboard"],
+  "timezone": "Asia/Shanghai",
+  "schedule": ["* 0-6 1 * *"],
+  "baseBranchPatterns": ["dev"],
   "rangeStrategy": "pin",
-  "ignorePaths": ["agent-core/**"],
+  "ignoreUnstable": true,
+  "respectLatest": true,
+  "minimumReleaseAge": "3 days",
+  "prConcurrentLimit": 1,
+  "ignorePaths": ["agent-core/**", "**/node_modules/**"],
+  "labels": ["dependencies"],
+  "commitMessagePrefix": "chore(deps):",
+  "postUpdateOptions": ["pnpmDedupe"],
+  "lockFileMaintenance": {
+    "enabled": false
+  },
   "packageRules": [
-    { "matchUpdateTypes": ["major", "minor", "patch"], "groupName": "monthly upgrades" },
-    { "matchCurrentVersion": "/(alpha|beta|rc|canary|nightly|preview)/", "enabled": false }
+    {
+      "description": "全部升级合并成一个月度 PR",
+      "matchPackageNames": ["*"],
+      "groupName": "每月依赖升级",
+      "groupSlug": "monthly",
+      "separateMajorMinor": false
+    },
+    {
+      "description": "Node.js 只跟随 LTS：当前 24.x；Node 26 进入 LTS 后手动放开",
+      "matchDepNames": ["node"],
+      "allowedVersions": "<25"
+    },
+    {
+      "description": "Agent Core 升级另按第 6.1 节（git subtree）执行，不由 Renovate 处理",
+      "matchFileNames": ["agent-core/**"],
+      "enabled": false
+    }
+  ],
+  "customManagers": [
+    {
+      "description": "rust-toolchain.toml 的 Rust 版本",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)rust-toolchain\\.toml$/"],
+      "matchStrings": ["channel\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "description": "Cargo.toml 的 Rust MSRV（rust-version 保持 major.minor 两段式，与基线同一 PR 升级）",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Cargo\\.toml$/"],
+      "matchStrings": ["rust-version\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+)\""],
+      "depNameTemplate": "rust",
+      "packageNameTemplate": "rust-lang/rust",
+      "datasourceTemplate": "github-releases",
+      "autoReplaceStringTemplate": "rust-version = \"{{{newMajor}}}.{{{newMinor}}}\""
+    },
+    {
+      "description": "CI 中固定的 WiX 版本",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["WIX_VERSION:\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "wix",
+      "datasourceTemplate": "nuget"
+    },
+    {
+      "description": "版本基线：npm 依赖（与各 package.json 同一 PR 升级，保证 check-versions 通过）",
+      "customType": "jsonata",
+      "fileFormat": "json",
+      "managerFilePatterns": ["/^scripts/version-baseline\\.json$/"],
+      "matchStrings": [
+        "$each(npm, function($v, $k) { { \"depName\": $k, \"currentValue\": $v } })"
+      ],
+      "datasourceTemplate": "npm"
+    },
+    {
+      "description": "版本基线：Rust crate",
+      "customType": "jsonata",
+      "fileFormat": "json",
+      "managerFilePatterns": ["/^scripts/version-baseline\\.json$/"],
+      "matchStrings": [
+        "$each(cargo, function($v, $k) { { \"depName\": $k, \"currentValue\": $v } })"
+      ],
+      "datasourceTemplate": "crate"
+    },
+    {
+      "description": "版本基线：工具链",
+      "customType": "jsonata",
+      "fileFormat": "json",
+      "managerFilePatterns": ["/^scripts/version-baseline\\.json$/"],
+      "matchStrings": [
+        "{ \"depName\": \"node\", \"currentValue\": toolchain.node, \"datasource\": \"node-version\" }",
+        "{ \"depName\": \"pnpm\", \"currentValue\": toolchain.pnpm, \"datasource\": \"npm\" }",
+        "{ \"depName\": \"rust\", \"packageName\": \"rust-lang/rust\", \"currentValue\": toolchain.rust, \"datasource\": \"github-releases\" }",
+        "{ \"depName\": \"wix\", \"currentValue\": toolchain.wix, \"datasource\": \"nuget\" }"
+      ]
+    }
   ]
 }

@@ -1,0 +1,20 @@
+{
+  "$comment": "被禁 SDK 规则（技术方案第 6.2 节 C1）。外部模型只允许 OpenAI Responses 与 Anthropic Messages。enforceCore 在 Core 两协议裁剪（开发计划第 2 周）合入后改为 true；此前 agent-core/ 中的发现只告警，工作区中的发现始终判定失败。",
+  "forbidden": [
+    "@google/*",
+    "@google-cloud/*",
+    "google-auth-library",
+    "@aws-sdk/client-bedrock",
+    "@aws-sdk/client-bedrock-runtime",
+    "@aws-sdk/client-bedrock-agent-runtime",
+    "@anthropic-ai/bedrock-sdk",
+    "@anthropic-ai/vertex-sdk",
+    "@mistralai/*",
+    "@azure/openai",
+    "@azure-rest/ai-inference",
+    "cohere-ai",
+    "groq-sdk",
+    "ollama"
+  ],
+  "enforceCore": false
+}

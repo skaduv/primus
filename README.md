@@ -84,6 +84,11 @@ pnpm test                        # Vitest
 cargo nextest run                # Rust 单测（在 apps/desktop/src-tauri 下）
 ```
 
+## CI 与依赖升级
+
+- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上编译 `Primus.exe`。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图与导入图中的被禁 SDK（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
+- Renovate（`renovate.json`）：每月 1 日把纳入 Renovate 的稳定版升级合成一个 PR 提到 `dev`，锁定精确版本；`agent-core/` 不在升级范围内（随上游版本手动同步）；需要在 GitHub 上为本仓库安装 Renovate 应用。
+
 MSI 打包流程见 `scripts/build-msi.ps1` 与技术方案第 3.3 节。
 
 ## 路线图
