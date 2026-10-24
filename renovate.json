@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on the first day of the month"],
+  "rangeStrategy": "pin",
+  "ignorePaths": ["agent-core/**"],
+  "packageRules": [
+    { "matchUpdateTypes": ["major", "minor", "patch"], "groupName": "monthly upgrades" },
+    { "matchCurrentVersion": "/(alpha|beta|rc|canary|nightly|preview)/", "enabled": false }
+  ]
+}

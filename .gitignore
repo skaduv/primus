@@ -1,0 +1,31 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build outputs
+dist/
+out/
+.next/
+target/
+*.msi
+*.msi.sig
+*-setup.exe
+
+# dev data (第 4.1 节：开发模式数据目录)
+.dev-data/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+*.pfx
+*.key
+
+# logs & misc
+*.log
+coverage/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

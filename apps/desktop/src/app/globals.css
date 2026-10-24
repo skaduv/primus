@@ -1,0 +1,6 @@
+/* Tailwind 4：CSS 优先配置，没有 tailwind.config.js */
+@import "tailwindcss";
+
+@theme {
+  /* 设计令牌在此定义 */
+}

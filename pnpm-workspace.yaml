@@ -1,0 +1,5 @@
+# agent-core/ 不在 pnpm 工作区内：它用自带的 package-lock.json，由 npm ci 构建（第 6.3 节）
+packages:
+  - apps/*
+  - packages/*
+  - e2e

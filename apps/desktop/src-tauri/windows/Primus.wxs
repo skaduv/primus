@@ -1,0 +1,36 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <!-- TODO: 替换 <公司名> 与两个 GUID。UpgradeCode 一经发布永不改变。 -->
+  <Package Name="乾元 Primus" Manufacturer="&lt;公司名&gt;" Version="$(ProductVersion)"
+           UpgradeCode="00000000-0000-0000-0000-000000000000" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="已安装更新的版本。" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Primus">
+        <Component Id="MainExe">
+          <File Source="!(bindpath.app)\Primus.exe" KeyPath="yes" />
+        </Component>
+        <Directory Id="RESOURCES" Name="resources">
+          <Directory Id="RUNTIMEDIR" Name="runtime">
+            <Files Include="!(bindpath.runtime)\**" />
+          </Directory>
+          <Directory Id="COREDIR" Name="agent-core">
+            <Files Include="!(bindpath.core)\**" />
+          </Directory>
+        </Directory>
+        <Directory Id="DATADIR" Name="data">
+          <Component Id="DataDir" Permanent="yes" Guid="00000000-0000-0000-0000-000000000001">
+            <CreateFolder>
+              <util:PermissionEx User="Users" GenericAll="yes" />
+            </CreateFolder>
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <!-- TODO: WebView2 检查与引导、开始菜单快捷方式、ARPPRODUCTICON -->
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+  </Package>
+</Wix>

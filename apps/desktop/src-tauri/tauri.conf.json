@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Primus",
+  "identifier": "com.primus.desktop",
+  "version": "0.0.0",
+  "build": {
+    "frontendDist": "../out",
+    "devUrl": "http://localhost:3000",
+    "beforeDevCommand": "pnpm next dev",
+    "beforeBuildCommand": "pnpm next build"
+  },
+  "app": {
+    "windows": [{ "title": "乾元 Primus", "width": 1280, "height": 800, "minWidth": 960, "minHeight": 640 }],
+    "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost" }
+  },
+  "bundle": {
+    "active": false,
+    "resources": {
+      "../../../dist/agent-core": "resources/agent-core",
+      "../../../dist/runtime": "resources/runtime"
+    }
+  }
+}

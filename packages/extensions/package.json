@@ -1,0 +1,13 @@
+{
+  "name": "@primus/extensions",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=../../dist/agent-core/extensions/primus-bundle.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@primus/protocol": "workspace:*"
+  }
+}
