@@ -26,6 +26,7 @@
 
 ### 2.4 版本
 - 所有依赖、工具链只用**最新稳定版**，锁定**精确版本**（`pnpm-lock.yaml`、`Cargo.lock`、`rust-toolchain.toml`）。禁止 preview / beta / rc / nightly。
+- 版本基线在 `scripts/version-baseline.json`，CI 用 `pnpm check:versions` 核对；改版本时基线、清单文件、技术方案三处同步。
 - 新增依赖前先确认已有依赖不能满足；不要随手升级无关依赖（升级由 Renovate 月度 PR 统一处理）。
 - TypeScript 7 没有 JS 编译器 API：**不要引入** typescript-eslint、ts-morph 等依赖它的工具。规范用 Biome，打包用 esbuild，测试用 Vitest。
 - Tailwind 4 用 CSS 优先配置（`@import "tailwindcss"` + `@theme`），**不要创建 `tailwind.config.js`**。
@@ -88,7 +89,7 @@ pnpm dev                # Tauri 开发模式
 pnpm build:core         # 构建 Agent Core
 pnpm build:extensions   # 构建 primus-bundle.js
 pnpm lint && pnpm test  # Biome + Vitest
-pnpm check:tauri-imports && pnpm check:forbidden-sdk && pnpm check:naming
+pnpm check:versions && pnpm check:tauri-imports && pnpm check:forbidden-sdk && pnpm check:naming
 ```
 
 ## 8. 完成一项改动的标准

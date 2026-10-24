@@ -1,0 +1,51 @@
+{
+  "$comment": "技术方案第 2.4 节版本基线。升级时先改这里（并同步技术方案），再改各清单文件；scripts/check-versions.mjs 在 CI 中逐项核对。",
+  "toolchain": {
+    "node": "24.22.1",
+    "pnpm": "12.15.0",
+    "rust": "1.99.1",
+    "wix": "7.0.0"
+  },
+  "npm": {
+    "next": "16.4.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "7.0.2",
+    "tailwindcss": "4.3.3",
+    "radix-ui": "1.8.1",
+    "lucide-react": "1.61.0",
+    "zustand": "5.0.16",
+    "immer": "11.2.9",
+    "@tanstack/react-virtual": "3.14.22",
+    "markdown-it": "15.0.3",
+    "shiki": "4.5.0",
+    "@codemirror/view": "6.43.15",
+    "@codemirror/merge": "6.12.3",
+    "@xterm/xterm": "6.0.0",
+    "vitest": "5.0.5",
+    "@testing-library/react": "16.3.3",
+    "@biomejs/biome": "2.6.2",
+    "esbuild": "0.28.2",
+    "@tauri-apps/cli": "2.12.4",
+    "@tauri-apps/api": "2.12.4"
+  },
+  "cargo": {
+    "tauri": "2.12.5",
+    "tauri-build": "2.7.4",
+    "tauri-plugin-updater": "2.14.0",
+    "tauri-plugin-single-instance": "2.5.4",
+    "tauri-plugin-notification": "2.7.0",
+    "tauri-plugin-dialog": "2.8.3",
+    "tauri-plugin-opener": "2.7.2",
+    "tauri-plugin-log": "2.10.1",
+    "tokio": "1.54.1",
+    "serde": "1.0.229",
+    "serde_json": "1.0.154",
+    "tracing": "0.1.44",
+    "rusqlite": "0.40.2",
+    "notify": "8.2.0",
+    "windows": "0.62.2",
+    "windows-sys": "0.61.2",
+    "gix": "0.90.0"
+  }
+}

@@ -1,0 +1,103 @@
+# 乾元 Primus CI（技术方案第 22 章）
+# - 每次推送 dev / main 与每个指向 main 的 PR 都在 Windows 上完整编译
+# - 工具链版本全部来自仓库内的锁定文件：.node-version、packageManager（pnpm）、rust-toolchain.toml、
+#   以及下方 env 中的 WIX_VERSION；scripts/check-versions.mjs 保证它们与技术方案第 2.4 节一致
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  WIX_VERSION: "7.0.0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: 版本基线 · lint · 单测 · 前端构建（Linux）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: pnpm/action-setup@v6.1.0 # 版本取自 package.json 的 packageManager
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: 版本基线检查
+        run: node scripts/check-versions.mjs
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm --filter @primus/desktop typecheck
+      - run: pnpm --filter @primus/desktop build
+
+  windows:
+    name: Windows 编译（MSVC · Rust · WiX）
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: pnpm/action-setup@v6.1.0
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Rust 工具链（按 rust-toolchain.toml 安装）
+        shell: pwsh
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: 安装 WiX ${{ env.WIX_VERSION }}（.NET 工具，固定版本）
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION
+          # WiX 7 每条命令都要求先接受 OSMF EULA v1.1（年收入超 1 万美元需缴维护费，见技术方案第 3.3、25 章）
+          wix eula accept wix7
+          wix --version
+          wix extension add -g WixToolset.UI.wixext/$env:WIX_VERSION
+          wix extension add -g WixToolset.Util.wixext/$env:WIX_VERSION
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: rustfmt
+        working-directory: apps/desktop/src-tauri
+        run: cargo fmt --check
+
+      - name: 构建前端（静态导出，供 Tauri 嵌入）
+        run: pnpm --filter @primus/desktop build
+
+      - name: clippy
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: 编译 Primus.exe（不打包）
+        run: pnpm --filter @primus/desktop tauri build --no-bundle -- --locked
+
+      - name: 检查产物
+        shell: pwsh
+        run: |
+          $exe = "apps/desktop/src-tauri/target/release/Primus.exe"
+          if (-not (Test-Path $exe)) { throw "未找到 $exe" }
+          Get-Item $exe | Select-Object Name, Length

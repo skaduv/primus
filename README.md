@@ -84,6 +84,11 @@ pnpm test                        # Vitest
 cargo nextest run                # Rust 单测（在 apps/desktop/src-tauri 下）
 ```
 
+## CI 与依赖升级
+
+- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上编译 `Primus.exe`。
+- Renovate（`renovate.json`）：每月 1 日把全部升级合成一个 PR 提到 `dev`，只取稳定版并锁定精确版本；需要在 GitHub 上为本仓库安装 Renovate 应用。
+
 MSI 打包流程见 `scripts/build-msi.ps1` 与技术方案第 3.3 节。
 
 ## 路线图
