@@ -1,5 +1,7 @@
 "use client";
 
+import { strings } from "@/lib/strings";
+
 // 全局错误兜底：根布局本身出错时显示（必须自带 <html>/<body>）
 export default function GlobalError({
   reset,
@@ -10,9 +12,9 @@ export default function GlobalError({
   return (
     <html lang="zh-CN">
       <body>
-        <h2>出错了</h2>
+        <h2>{strings.errors.title}</h2>
         <button type="button" onClick={() => reset()}>
-          重试
+          {strings.errors.retry}
         </button>
       </body>
     </html>
