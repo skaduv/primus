@@ -15,15 +15,15 @@
   "commitMessagePrefix": "chore(deps):",
   "postUpdateOptions": ["pnpmDedupe"],
   "lockFileMaintenance": {
-    "enabled": true,
-    "schedule": ["* 0-6 1 * *"]
+    "enabled": false
   },
   "packageRules": [
     {
       "description": "全部升级合并成一个月度 PR",
       "matchPackageNames": ["*"],
       "groupName": "每月依赖升级",
-      "groupSlug": "monthly"
+      "groupSlug": "monthly",
+      "separateMajorMinor": false
     },
     {
       "description": "Node.js 只跟随 LTS：当前 24.x；Node 26 进入 LTS 后手动放开",

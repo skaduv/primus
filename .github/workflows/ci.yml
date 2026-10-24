@@ -43,7 +43,26 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm --filter @primus/desktop typecheck
-      - run: pnpm --filter @primus/desktop build
+      - run: pnpm --filter @primus/desktop build # 同时生成 Tauri 嵌入的 out/，Rust 单测需要
+
+      - name: Tauri Linux 系统依赖（Rust 单测用）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Rust 工具链（按 rust-toolchain.toml 安装）
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Rust 单测
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --all-targets
 
   windows:
     name: Windows 编译（MSVC · Rust · WiX）
@@ -91,6 +110,21 @@ jobs:
       - name: clippy
         working-directory: apps/desktop/src-tauri
         run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Rust 单测
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --all-targets
+
+      # Agent Core 以 git subtree 引入（第 6.1 节）；引入前跳过，引入后在 Windows 上实际构建
+      - name: 构建 Agent Core（npm ci · npm run build）
+        if: hashFiles('agent-core/package.json') != ''
+        working-directory: agent-core
+        run: |
+          npm ci
+          npm run build
+
+      - name: Core 依赖检查（被禁 SDK，第 6.2 节）
+        run: pnpm check:forbidden-sdk
 
       - name: 编译 Primus.exe（不打包）
         run: pnpm --filter @primus/desktop tauri build --no-bundle -- --locked
