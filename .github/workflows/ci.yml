@@ -62,6 +62,25 @@ jobs:
       - name: Agent Core RPC 冒烟（dist/agent-core · 当前 node）
         run: pnpm smoke:core:dist
 
+      # 被禁 SDK 检查（技术方案第 6.2 节第 2 条、第 22.1 节第 3 步）：构建后再查一遍，此时导入图从前端页面、
+      # 第一方扩展（源码与 primus-bundle.js）、Core 打包前入口与 dist/agent-core 产物入口实际遍历，
+      # 并检查 CycloneDX SBOM；--strict 要求这些入口与 SBOM 全部存在，缺失即失败
+      - name: 构建第一方扩展（primus-bundle.js）
+        run: pnpm build:extensions
+      - name: 生成 SBOM（CycloneDX：pnpm 工作区 + agent-core）
+        run: pnpm build:sbom
+      - name: 被禁 SDK 检查（导入图 + SBOM，严格模式）
+        run: node scripts/check-forbidden-sdk.mjs --strict
+      - name: 被禁 SDK 检查负向自检（经导入图或 SBOM 引入被禁 SDK 时必须失败）
+        run: node scripts/check-forbidden-sdk.mjs --self-test
+      - name: 上传 SBOM
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: sbom-cyclonedx
+          path: dist/sbom
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Tauri Linux 系统依赖（Rust 单测用）
         run: |
           sudo apt-get update
@@ -202,8 +221,12 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Core 依赖检查（被禁 SDK，第 6.2 节）
-        run: pnpm check:forbidden-sdk
+      - name: 构建第一方扩展（primus-bundle.js）
+        run: pnpm build:extensions
+      - name: 生成 SBOM（CycloneDX）
+        run: pnpm build:sbom
+      - name: Core 依赖检查（被禁 SDK：导入图 + SBOM，严格模式，第 6.2 节）
+        run: node scripts/check-forbidden-sdk.mjs --strict
       - name: 平台边界检查
         run: pnpm check:tauri-imports
 
