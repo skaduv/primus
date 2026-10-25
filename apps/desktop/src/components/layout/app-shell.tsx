@@ -77,7 +77,14 @@ function ModelPicker() {
         </GlassButton>
       </GlassPopoverTrigger>
       <GlassPopoverContent align="end" tint={0.75}>
-        <GlassPopoverItem icon={<Check />} label={t.mockModel} sublabel="mock" />
+        <GlassPopoverItem
+          // 模型切换在接入 set_model 前只作展示
+          disabled
+          className="data-[disabled]:opacity-50"
+          icon={<Check />}
+          label={t.mockModel}
+          sublabel="mock"
+        />
         <GlassPopoverSeparator />
         {(["off", "low", "medium", "high"] as const).map((k) => (
           <GlassPopoverItem
