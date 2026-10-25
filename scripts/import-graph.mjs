@@ -30,11 +30,17 @@ const CONDITIONS = new Set(["node", "import", "require", "module", "default"]);
 /**
  * 去掉整行注释（以 //、/*、* 开头的行）。只按行处理：完整的注释剥离需要区分正则字面量，
  * 在压缩产物里做错会吞掉大段代码、漏掉导入（漏报比误报更危险），所以行内注释保留原样。
+ * 以 /* 或 * 开头、同行有 *\/ 的行保留 *\/ 之后的代码（如 `/* c *\/ import x from "pkg"`），以免漏报。
  */
 export function stripLineComments(code) {
   return code
     .split("\n")
-    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .map((line) => {
+      if (!/^\s*(?:\/\/|\/\*|\*)/.test(line)) return line;
+      if (/^\s*\/\//.test(line)) return "";
+      const end = line.indexOf("*/");
+      return end === -1 ? "" : line.slice(end + 2);
+    })
     .join("\n");
 }
 

@@ -114,7 +114,7 @@ describe("check-forbidden-sdk", () => {
       { importGraph: [{ name: "前端", entries: ["apps/web/src/app/**/*.tsx"], required: true }] },
     );
     const { findings, graphs } = run(root);
-    expect(graphs).toEqual([{ name: "前端", entries: 1, files: 3, packages: 2 }]);
+    expect(graphs).toEqual([{ name: "前端", entries: 1, files: 3, packages: 2, unresolved: [] }]);
     expect(findings).toEqual([
       `导入图 前端：apps/web/src/app/page.tsx → 「chart-kit」 → apps/web/node_modules/chart-kit/index.js → 「${GENAI}」: ${GENAI}`,
     ]);
@@ -132,6 +132,47 @@ describe("check-forbidden-sdk", () => {
     expect(loose.findings).toEqual(["导入图 扩展：入口 packages/ext/src/index.ts 不存在"]);
     expect(loose.skipped).toEqual(["Core：入口 agent-core/dist/rpc-entry.js 不存在（先构建）"]);
     expect(run(root, { strict: true }).findings).toHaveLength(2);
+  });
+
+  it("导入图部分入口缺失：缺失的精确路径计入缺失、无匹配的 glob 单独提示，其余入口照常遍历", () => {
+    const root = fixture(
+      {
+        "apps/web/src/app/page.tsx": `import "${GENAI}";`,
+        [`apps/web/node_modules/${GENAI}/package.json`]: JSON.stringify({ name: GENAI }),
+        [`apps/web/node_modules/${GENAI}/index.js`]: "module.exports = {};",
+      },
+      true,
+      {
+        importGraph: [
+          {
+            name: "前端",
+            entries: ["apps/web/src/app/**/*.tsx", "apps/web/src/app/**/*.ts", "apps/web/x.js"],
+          },
+        ],
+      },
+    );
+    const { findings, skipped, graphs } = run(root);
+    expect(skipped).toEqual([
+      "前端：入口 apps/web/x.js 不存在",
+      "前端：入口模式 apps/web/src/app/**/*.ts 无匹配文件",
+    ]);
+    expect(run(root, { strict: true }).findings).toContain(
+      "导入图 前端：入口 apps/web/x.js 不存在",
+    );
+    expect(graphs.map((g: { entries: number }) => g.entries)).toEqual([1]);
+    expect(findings).toContain(`导入图 前端：apps/web/src/app/page.tsx → 「${GENAI}」: ${GENAI}`);
+  });
+
+  it("导入图：第一方文件中无法解析的脚本导入会被统计，.css 等资源不计", () => {
+    const root = fixture(
+      {
+        "apps/web/src/app/page.tsx": 'import "./gone";\nimport "./page.css";\nimport "~/alias/x";',
+      },
+      true,
+      { importGraph: [{ name: "前端", entries: ["apps/web/src/app/**/*.tsx"], required: true }] },
+    );
+    const { graphs } = run(root);
+    expect(graphs[0].unresolved).toEqual(["apps/web/src/app/page.tsx: ./gone"]);
   });
 
   it("解析 pnpm 与 npm 生成的 CycloneDX 组件名", () => {

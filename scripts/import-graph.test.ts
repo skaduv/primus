@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
-import { resolveExports, runtimeImports, walkImportGraph } from "./import-graph.mjs";
+import {
+  resolveExports,
+  runtimeImports,
+  stripLineComments,
+  walkImportGraph,
+} from "./import-graph.mjs";
 
 const dirs: string[] = [];
 
@@ -42,6 +47,30 @@ describe("runtimeImports", () => {
   it("压缩产物：引号必须成对，不会跨字符串误配", () => {
     const code = `import{x}from"./chunk-A.js";var s='",t=require("y"),u="';import("./lazy.js")`;
     expect(runtimeImports(code).sort()).toEqual(["./chunk-A.js", "./lazy.js", "y"]);
+  });
+});
+
+describe("stripLineComments", () => {
+  it("整行注释删除，但保留块注释结束符之后的同行代码", () => {
+    const code = [
+      "// import a from 'gone-a';",
+      '/* c */ import x from "pkg-x";',
+      "/**",
+      " * require('gone-b')",
+      ' */ require("pkg-y");',
+      " */",
+      "/* 未闭合 import z from 'gone-c'",
+    ].join("\n");
+    expect(stripLineComments(code).split("\n")).toEqual([
+      "",
+      ' import x from "pkg-x";',
+      "",
+      "",
+      ' require("pkg-y");',
+      "",
+      "",
+    ]);
+    expect([...runtimeImports(code)].sort()).toEqual(["pkg-x", "pkg-y"]);
   });
 });
 

@@ -36,13 +36,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { globToRegExp } from "./core-dist.mjs";
 import { walkImportGraph } from "./import-graph.mjs";
 
 const SOURCE_EXT = /\.(?:[cm]?[jt]s|tsx|jsx)$/;
+// 导入图里不计入"无法解析"的非脚本资源
+const ASSET_IMPORT_EXT = new Set(
+  ".css .scss .sass .less .svg .png .jpg .jpeg .gif .webp .avif .ico .woff .woff2 .ttf .otf .wasm .node .html .md .txt".split(
+    " ",
+  ),
+);
 const SKIP_DIRS = new Set(["node_modules", ".next", "out", "target", "gen", ".git", ".turbo"]);
 const DEP_FIELDS = [
   "dependencies",
@@ -238,17 +244,24 @@ export function run(rootDir, { strict = false } = {}) {
   const skipped = [];
   const chainText = (chain) => chain.map((p, i) => (i % 2 === 0 ? rel(p) : `「${p}」`)).join(" → ");
   for (const graph of config.importGraph ?? []) {
+    // 逐个入口检查：缺失的精确路径计入缺失入口（required 或严格模式下失败）；无匹配的 glob 单独提示
+    // （常见于预留的 **/*.ts 这类模式），整张图一个入口都没有时同样按缺失处理；其余入口照常遍历
     const entries = expandEntries(root, graph.entries, graph.exclude);
-    const missingEntries = graph.entries.filter(
-      (e) => !e.includes("*") && !existsSync(join(root, e)),
+    const unmatched = graph.entries.filter(
+      (e) => expandEntries(root, [e], graph.exclude).length === 0,
     );
-    if (entries.length === 0 || missingEntries.length > 0) {
-      const what = `${graph.name}：入口 ${(missingEntries.length ? missingEntries : graph.entries).join("、")} 不存在`;
-      if (graph.required || strict)
-        findings.push(`导入图 ${what}${graph.hint ? `（${graph.hint}）` : ""}`);
-      else skipped.push(`${what}${graph.hint ? `（${graph.hint}）` : ""}`);
-      continue;
+    const missingEntries =
+      entries.length === 0 ? unmatched : unmatched.filter((e) => !e.includes("*"));
+    const emptyGlobs = unmatched.filter((e) => !missingEntries.includes(e));
+    const hint = graph.hint ? `（${graph.hint}）` : "";
+    if (missingEntries.length > 0) {
+      const what = `${graph.name}：入口 ${missingEntries.join("、")} 不存在`;
+      if (graph.required || strict) findings.push(`导入图 ${what}${hint}`);
+      else skipped.push(`${what}${hint}`);
     }
+    if (emptyGlobs.length > 0)
+      skipped.push(`${graph.name}：入口模式 ${emptyGlobs.join("、")} 无匹配文件`);
+    if (entries.length === 0) continue;
     const aliases = Object.fromEntries(
       Object.entries(graph.aliases ?? {}).map(([k, v]) => [k, `${join(root, v)}${sep}`]),
     );
@@ -261,11 +274,21 @@ export function run(rootDir, { strict = false } = {}) {
       report(`导入图 ${graph.name}：${chainText(chain)}`, name, inCore);
     for (const [name, chain] of result.missing)
       report(`导入图 ${graph.name}（未安装）：${chainText(chain)}`, name, inCore);
+    // 第一方文件里解析不到的脚本导入（别名未配置、扩展名不在尝试列表等）会让子图漏遍历，计数并输出；
+    // .css 等非脚本资源不计
+    const unresolved = result.unresolved.filter((u) => {
+      const ext = extname(u.slice(u.lastIndexOf(": ") + 2).replace(/[?#].*$/, ""));
+      return !ASSET_IMPORT_EXT.has(ext.toLowerCase());
+    });
     graphs.push({
       name: graph.name,
       entries: entries.length,
       files: result.files,
       packages: result.packages.size,
+      unresolved: unresolved.map((u) => {
+        const i = u.lastIndexOf(": ");
+        return `${rel(u.slice(0, i))}: ${u.slice(i + 2)}`;
+      }),
     });
   }
 
@@ -420,10 +443,13 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   const { findings, coreWarnings, coreChecked, graphs, sboms, skipped } = run(root, {
     strict: args.strict,
   });
-  for (const g of graphs)
+  for (const g of graphs) {
     console.log(
-      `· 导入图 ${g.name}：${g.entries} 个入口，遍历 ${g.files} 个文件，涉及 ${g.packages} 个包`,
+      `· 导入图 ${g.name}：${g.entries} 个入口，遍历 ${g.files} 个文件，涉及 ${g.packages} 个包，${g.unresolved.length} 个无法解析的导入`,
     );
+    for (const u of g.unresolved.slice(0, 10)) console.warn(`  ⚠ 无法解析：${u}`);
+    if (g.unresolved.length > 10) console.warn(`  ⚠ ……另有 ${g.unresolved.length - 10} 个`);
+  }
   for (const b of sboms) console.log(`· SBOM ${b.file}：${b.components} 个组件`);
   for (const s of skipped) console.warn(`⚠ 跳过 ${s}`);
   if (coreWarnings.length > 0) {
