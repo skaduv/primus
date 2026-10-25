@@ -14,6 +14,7 @@
     "smoke:core:dist": "node scripts/smoke-core-rpc.mjs --dist",
     "build:extensions": "pnpm --filter @primus/extensions build",
     "build:sbom": "node scripts/generate-sbom.mjs",
+    "build:msi": "node scripts/build-msi.mjs",
     "build": "pnpm build:core && pnpm build:extensions && pnpm --filter @primus/desktop tauri build --no-bundle",
     "lint": "biome check .",
     "format": "biome format --write .",

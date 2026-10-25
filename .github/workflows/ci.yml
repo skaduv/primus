@@ -230,8 +230,10 @@ jobs:
       - name: 平台边界检查
         run: pnpm check:tauri-imports
 
-      - name: 编译 Primus.exe（不打包）
-        run: pnpm --filter @primus/desktop tauri build --no-bundle -- --locked
+      # 第 3.3.1 节：tauri build --no-bundle 编译 Primus.exe → wix build（WiX 7，-culture zh-CN，
+      # bindpath app/core/runtime）生成 MSI；证书与 updater 私钥未配置时跳过签名
+      - name: 构建 MSI（tauri build --no-bundle → wix build）
+        run: pnpm build:msi
 
       - name: 检查产物
         shell: pwsh
@@ -239,6 +241,27 @@ jobs:
           $exe = "apps/desktop/src-tauri/target/release/Primus.exe"
           if (-not (Test-Path $exe)) { throw "未找到 $exe" }
           Get-Item $exe | Select-Object Name, Length
+          $msi = @(Get-ChildItem -Path out -Filter "Primus_*_x64_zh-CN.msi")
+          if ($msi.Count -ne 1) { throw "out/ 中应恰有一个 MSI，实际 $($msi.Count) 个" }
+          $msi | Select-Object Name, Length
+          # 第 16.5 节：MSI 安装包 < 120MB
+          if ($msi[0].Length -ge 120MB) { throw "MSI 超过 120MB：$($msi[0].Length)" }
+          "PRIMUS_MSI=$($msi[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 上传 MSI
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: primus-msi-windows
+          path: |
+            out/Primus_*_x64_zh-CN.msi
+            out/Primus_*_x64_zh-CN.msi.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+      # 静默安装 → 检查布局与 Core 文件哈希 → 用安装后的 node.exe 跑 RPC 冒烟 → 静默卸载（GitHub 托管运行器以管理员运行）
+      - name: MSI 静默安装 / 卸载冒烟
+        shell: pwsh
+        run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
       # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
       - name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}

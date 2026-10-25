@@ -88,7 +88,7 @@ cargo nextest run                # Rust 单测（在 apps/desktop/src-tauri 下�
 
 ## CI 与依赖升级
 
-- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，并构建 Core、组装 `dist/` 后用当前 node 冒烟；再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上编译 `Primus.exe`，并用 `dist/runtime/node.exe` 冒烟 `dist/agent-core`、检查 `node.exe` 官方签名。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图与导入图中的被禁 SDK（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
+- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，并构建 Core、组装 `dist/` 后用当前 node 冒烟；再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上用 `pnpm build:msi` 编译 `Primus.exe` 并构建 MSI（上传为制品 `primus-msi-windows`），用 `scripts/msi-smoke.ps1` 静默安装、检查布局并卸载，并用 `dist/runtime/node.exe` 冒烟 `dist/agent-core`、检查 `node.exe` 官方签名。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图、导入图（从前端、扩展与 Core 入口实际遍历）与 CycloneDX SBOM（`pnpm build:sbom`）中的被禁 SDK，构建后以 `--strict` 再查一遍并做负向自检（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
 - Renovate（`renovate.json`）：每月 1 日把纳入 Renovate 的稳定版升级合成一个 PR 提到 `dev`，锁定精确版本；`agent-core/` 不在升级范围内（随上游版本手动同步）；需要在 GitHub 上为本仓库安装 Renovate 应用。
 
 ### Core 产物与内置运行时（dist/）
@@ -114,7 +114,7 @@ dist/
 - `--skip-build` 只用已有构建产物重新组装；`--platform current` 不下载运行时（非 Windows 本地调试用，冒烟改用当前 node）。例：`pnpm build:core --skip-build --platform current`。
 - `node.exe` 的 Authenticode 签名在 Windows CI 上用 `Get-AuthenticodeSignature` 检查；CI 会上传 `dist/` 产物（保留 7 天），可拿到干净的 Windows 上直接 `runtime\node.exe agent-core\rpc-entry.js` 验收。
 
-MSI 打包流程见 `scripts/build-msi.ps1` 与技术方案第 3.3 节。
+MSI 打包：`pnpm build:core && pnpm build:extensions && pnpm build:msi`（仅 Windows，需 WiX 7 .NET 工具与 UI、Util 扩展），流程见 `scripts/build-msi.mjs` 与技术方案第 3.3 节；`scripts/msi-smoke.ps1` 做静默安装 / 卸载冒烟。
 
 ## 路线图
 
