@@ -1,11 +1,14 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertSha256,
   buildManifest,
+  CORE_LICENSE_FILE,
+  copyCoreLicense,
   globToRegExp,
   listFiles,
   listZipEntries,
@@ -226,5 +229,37 @@ describe("manifest", () => {
   it("listFiles 返回以 / 分隔的排序相对路径", () => {
     const dir = fixture({ "b.txt": "", "a/c.txt": "", "a/b/d.txt": "" });
     expect(listFiles(dir)).toEqual(["a/b/d.txt", "a/c.txt", "b.txt"]);
+  });
+});
+
+describe("Core 许可文件", () => {
+  const MIT =
+    "MIT License\n\nCopyright (c) 2025 Someone\n\nPermission is hereby granted, free of charge, to any person\n";
+
+  it("原样复制到 dist/agent-core/LICENSE，并被 manifest 收录", () => {
+    const core = fixture({ LICENSE: MIT });
+    const dist = fixture({ "rpc-entry.js": "entry" });
+    expect(copyCoreLicense(core, dist)).toBe("LICENSE");
+    expect(CORE_LICENSE_FILE).toBe("LICENSE");
+    expect(readFileSync(join(dist, "LICENSE"), "utf8")).toBe(MIT);
+    const m = buildManifest(dist, {});
+    expect(m.files).toContainEqual({ path: "LICENSE", size: MIT.length, sha256: sha256(MIT) });
+    expect(verifyManifest(dist, m)).toEqual([]);
+  });
+
+  it("上游许可缺失或不再是 MIT 时构建失败", () => {
+    const dist = fixture({});
+    expect(() => copyCoreLicense(fixture({}), dist)).toThrow(/未找到 Core 许可文件/);
+    expect(() =>
+      copyCoreLicense(fixture({ LICENSE: "Apache License\nVersion 2.0" }), dist),
+    ).toThrow(/不是预期的 MIT/);
+    expect(existsSync(join(dist, "LICENSE"))).toBe(false);
+  });
+
+  it("仓库内 agent-core/LICENSE 是 MIT，可直接分发", () => {
+    const dist = fixture({});
+    expect(() =>
+      copyCoreLicense(fileURLToPath(new URL("../agent-core", import.meta.url)), dist),
+    ).not.toThrow();
   });
 });

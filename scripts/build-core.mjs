@@ -18,7 +18,7 @@
 // 组装（产物不入库，dist/ 在 .gitignore 中）：
 // - dist/agent-core/：沿用 Core npm 包的目录结构（package.json 在根，打包产物在 dist/bundle/，
 //   HTML 导出模板在 dist/core/export-html/），Core 按这个结构定位自身资源；根目录另放 rpc-entry.js、
-//   cli.js 两个转发入口。node_modules/ 只放打包时保留为外部依赖、运行时必须的少量模块的运行文件。
+//   cli.js 两个转发入口，以及 Core 上游的 MIT 许可文件 LICENSE（agent-core/LICENSE 原样复制）。node_modules/ 只放打包时保留为外部依赖、运行时必须的少量模块的运行文件。
 //   manifest.json 记录每个文件的大小与 SHA-256、Core 与外部模块的上游版本、内置运行时信息。
 //   extensions/ 由 pnpm build:extensions 写入，这里保留不动，也不计入 manifest。
 // - dist/runtime/：从 nodejs.org 下载 scripts/node-runtime.json 锁定版本的发行包，校验固化在仓库中的
@@ -42,6 +42,7 @@ import { parseArgs } from "node:util";
 import {
   assertSha256,
   buildManifest,
+  copyCoreLicense,
   listFiles,
   listZipEntries,
   MANIFEST_FILE,
@@ -202,6 +203,9 @@ function assembleCore() {
     copyPicked(src, join(distCore, "node_modules", name), patterns, `外部模块 ${name}`);
     externals[name] = JSON.parse(readFileSync(join(src, "package.json"), "utf8")).version;
   }
+
+  // Core 上游 MIT 许可：放在 dist/agent-core 根目录，计入 manifest，随 MSI 安装到 resources\agent-core\LICENSE
+  copyCoreLicense(coreDir, distCore);
 
   for (const [file, target] of Object.entries(LAUNCHERS)) {
     const dest = join(distCore, file);

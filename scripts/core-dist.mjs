@@ -1,8 +1,9 @@
 // dist/ 组装用的纯函数（scripts/build-core.mjs、scripts/smoke-core-rpc.mjs 共用，单测见 core-dist.test.ts）：
-// SHA-256、SHASUMS256.txt 解析、最小 zip 读取（只解出需要的文件）、按模式挑选文件、manifest 生成与校验。
+// SHA-256、SHASUMS256.txt 解析、最小 zip 读取（只解出需要的文件）、按模式挑选文件、manifest 生成与校验、
+// Core 许可文件随产物分发。
 // 只用 Node 内置模块，不引入解压依赖。
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { crc32, inflateRawSync } from "node:zlib";
 
@@ -222,4 +223,30 @@ export function verifyManifest(dir, manifest, { skip = [], strict = true } = {})
     }
   }
   return problems;
+}
+
+/** Core 上游许可文件（agent-core/LICENSE，MIT）：随 dist/agent-core 分发到安装目录，文件名保留 LICENSE */
+export const CORE_LICENSE_FILE = "LICENSE";
+
+/**
+ * 把 Core 的上游 MIT 许可文件原样复制到 destDir/LICENSE（MIT 要求随软件副本附带版权与许可声明）。
+ * 上游许可若不再是 MIT（文件缺失或内容变化），构建直接失败，需人工复核再调整分发方式。
+ * 文件在组装阶段写入，之后生成的 manifest 自然收录它，安装后由 msi-smoke.ps1 检查。
+ */
+export function copyCoreLicense(coreDir, destDir) {
+  const from = join(coreDir, CORE_LICENSE_FILE);
+  let bytes;
+  try {
+    bytes = readFileSync(from);
+  } catch {
+    throw new Error(`未找到 Core 许可文件 ${from}`);
+  }
+  const text = bytes.toString("utf8");
+  if (
+    !/^\s*MIT License\b/.test(text) ||
+    !text.includes("Permission is hereby granted, free of charge")
+  )
+    throw new Error(`${from} 不是预期的 MIT 许可文本，请复核上游许可后再调整分发方式`);
+  writeFileSync(join(destDir, CORE_LICENSE_FILE), bytes);
+  return CORE_LICENSE_FILE;
 }

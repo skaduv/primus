@@ -2,7 +2,7 @@
 
 | 脚本 | 作用 |
 |---|---|
-| `build-core.mjs` | `agent-core` 里 `npm ci`，下载并校验锁定的模型目录后离线构建（`build:offline`）；组装 `dist/agent-core/`（最小运行产物 + `manifest.json`），下载并校验 Node.js LTS 官方 zip、只解出 `node.exe` 与 `LICENSE` 到 `dist/runtime/`。参数：`--skip-install`、`--skip-build`、`--platform win-x64\|current` |
+| `build-core.mjs` | `agent-core` 里 `npm ci`，下载并校验锁定的模型目录后离线构建（`build:offline`）；组装 `dist/agent-core/`（最小运行产物 + Core 上游 MIT `LICENSE` + `manifest.json`），下载并校验 Node.js LTS 官方 zip、只解出 `node.exe` 与 `LICENSE` 到 `dist/runtime/`。参数：`--skip-install`、`--skip-build`、`--platform win-x64\|current` |
 | `core-dist.mjs` | 上面两步共用的纯函数：SHA-256、`SHASUMS256.txt` 解析、最小 zip 读取与文件过滤、manifest 生成与校验（单测 `core-dist.test.ts`） |
 | `node-runtime.json` | 内置 Node.js 运行时的锁定版本与固化哈希（发行包与解出文件） |
 | `smoke-core-rpc.mjs` | 启动 `rpc-entry.js`（临时 HOME、离线），发送 `get_state`，校验收到成功 `response`；`--dist` 跑组装好的 `dist/agent-core`（先按 manifest 校验，复制到含中文与空格的临时安装目录，Windows 上用 `dist/runtime/node.exe`），`--entry` / `--node` 可指定入口与运行时 |

@@ -101,6 +101,7 @@ dist/
 │  ├─ rpc-entry.js / cli.js    转发入口（薄壳启动 rpc-entry.js）
 │  ├─ package.json             Core 运行时读取的名称、版本与品牌配置（已去掉构建期字段）
 │  ├─ manifest.json            每个文件的大小与 SHA-256、Core 与外部模块上游版本、内置运行时信息
+│  ├─ LICENSE                  Core 上游 MIT 许可（agent-core/LICENSE 原样复制，计入 manifest）
 │  ├─ dist/bundle/             esbuild 打包产物（沿用 Core 包内目录结构，Core 据此定位资源）
 │  ├─ dist/core/export-html/   会话导出模板
 │  ├─ node_modules/            仅运行时必需的外部模块文件：photon-node、jiti、quickjs-wasi
