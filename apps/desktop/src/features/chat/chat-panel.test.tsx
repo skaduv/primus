@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
@@ -52,5 +52,24 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(await screen.findByRole("button", { name: t.stop }));
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
     expect(screen.queryByText(/mock 平台/)).toBeNull();
+  });
+
+  it("时间线按悬浮输入框的实测高度留出底部空间，欢迎页不被遮挡", () => {
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        const h = this.querySelector("form") ? 150 : 0;
+        return { height: h, width: 0, top: 0, left: 0, right: 0, bottom: h, x: 0, y: 0 } as DOMRect;
+      });
+    try {
+      render(<ChatPanel />);
+      const scroller = screen
+        .getByRole("heading", { name: t.welcomeTitle })
+        .closest(".overflow-y-auto") as HTMLElement;
+      // 输入框 150px + 间距 16px
+      expect(scroller.style.paddingBottom).toBe("166px");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

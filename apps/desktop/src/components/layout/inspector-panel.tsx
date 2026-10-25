@@ -17,10 +17,10 @@ function Empty({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   );
 }
 
-// 右栏（可收起，第 16.2 节）：变更 · 文件 · 计划。内容在第 14、15 章对应任务中实现。
-export function InspectorPanel() {
+// 右栏（可拖动、可收起，第 16.2 节）：变更 · 文件 · 计划。内容在第 14、15 章对应任务中实现。
+export function InspectorPanel({ width }: { width: number }) {
   return (
-    <GlassPanel className="w-[300px] shrink-0">
+    <GlassPanel className="shrink-0" style={{ width }}>
       <aside aria-label={strings.layout.inspector} className="flex h-full flex-col p-3">
         <Tabs defaultValue="changes" className="flex h-full flex-col">
           <TabsList className="self-center">
