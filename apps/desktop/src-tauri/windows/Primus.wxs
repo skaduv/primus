@@ -27,8 +27,8 @@
     <Icon Id="PrimusIcon.ico" SourceFile="$(ShellDir)\icons\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="PrimusIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/skaduv/primus" />
-    <!-- 安装目录在安装时选定，之后不能“更改”；修复与卸载照常可用 -->
-    <Property Id="ARPNOMODIFY" Value="1" />
+    <!-- 安装目录在安装时选定，之后不能“更改”；修复与卸载照常可用。ARPNOMODIFY=1 由下方 WixUI_InstallDir
+         自带（WixUI_InstallDir.wxs 已定义该属性），这里不能重复定义，否则 WIX0091 -->
 
     <!-- 查询本地化的内置账户名（WIX_ACCOUNT_USERS 等）：中文系统上 Users 组名不是 “Users”，
          data 目录授权按查询结果写入，而不是硬编码英文名 -->

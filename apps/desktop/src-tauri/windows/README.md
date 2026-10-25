@@ -19,6 +19,6 @@
 | 升级 | `MajorUpgrade` + 固定 `UpgradeCode`；降级给出中文提示 |
 | WebView2 | 注册表检测，缺失时运行内嵌引导程序 |
 | 快捷方式 | 公共开始菜单“乾元 Primus”，`System.AppUserModel.ID = com.primus.desktop`（通知归属） |
-| 卸载信息 | `ARPPRODUCTICON`、`ARPURLINFOABOUT`；`ARPNOMODIFY`（安装目录装后不可改，修复 / 卸载可用） |
+| 卸载信息 | `ARPPRODUCTICON`、`ARPURLINFOABOUT`；`ARPNOMODIFY`（由 WixUI_InstallDir 提供；安装目录装后不可改，修复 / 卸载可用） |
 
 CI（`.github/workflows/ci.yml` Windows 作业）构建 MSI 后用 `scripts/msi-smoke.ps1` 静默安装，检查布局、`data` 的 ACL（`BUILTIN\Users` 显式 Modify 且继承，显式与继承的 Users 授权都没有更改权限 / 取得所有权）、以中完整性级别（去掉管理员权限）实际写入 `data` 且写不进安装目录根、开始菜单快捷方式与 WebView2 处理，再卸载并确认 `data` 与其中文件仍在。
