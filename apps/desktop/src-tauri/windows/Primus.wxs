@@ -1,9 +1,10 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <!-- TODO: 替换 <公司名> 与两个 GUID。UpgradeCode 一经发布永不改变。 -->
-  <Package Name="乾元 Primus" Manufacturer="&lt;公司名&gt;" Version="$(ProductVersion)"
-           UpgradeCode="00000000-0000-0000-0000-000000000000" Scope="perMachine">
+  <!-- UpgradeCode 一经发布永不改变（技术方案第 3.3.2 节）：MajorUpgrade 靠它识别旧版本。
+       ProductVersion 由 scripts/build-msi.mjs 按第 3.3.3 节从 SemVer 映射后经 -d 传入。 -->
+  <Package Name="乾元 Primus" Manufacturer="乾元 Primus" Version="$(ProductVersion)"
+           UpgradeCode="5B4199DD-C352-459A-AEB0-7119A884608F" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="已安装更新的版本。" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
@@ -21,7 +22,7 @@
           </Directory>
         </Directory>
         <Directory Id="DATADIR" Name="data">
-          <Component Id="DataDir" Permanent="yes" Guid="00000000-0000-0000-0000-000000000001">
+          <Component Id="DataDir" Permanent="yes" Guid="6B4A531E-43AD-4B78-ADA7-24A955768EB5">
             <CreateFolder>
               <util:PermissionEx User="Users" GenericAll="yes" />
             </CreateFolder>

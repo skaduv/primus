@@ -1,0 +1,199 @@
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+// @ts-expect-error 纯 JS 脚本，无类型声明
+import {
+  checkExeStamp,
+  compareMsiVersions,
+  exeStamp,
+  msiFileName,
+  msiProductVersion,
+  signtoolArgs,
+  WXS,
+  wixBuildArgs,
+} from "./build-msi.mjs";
+
+const SCRIPT = fileURLToPath(new URL("./build-msi.mjs", import.meta.url));
+
+describe("build-msi", () => {
+  it("SemVer 按第 3.3.3 节映射为 MSI ProductVersion", () => {
+    expect(msiProductVersion("1.2.3")).toBe("1.2.399.0");
+    expect(msiProductVersion("0.0.0")).toBe("0.0.99.0");
+    expect(msiProductVersion("1.3.0-alpha.1")).toBe("1.3.1.0");
+    expect(msiProductVersion("1.3.0-beta.2")).toBe("1.3.32.0");
+    expect(msiProductVersion("2.0.0-rc.1+build.7")).toBe("2.0.61.0");
+    expect(msiProductVersion("1.0.0+build.7")).toBe("1.0.99.0");
+    expect(msiProductVersion("255.255.654")).toBe("255.255.65499.0");
+  });
+
+  it("预发布版到稳定版的顺序体现在 MSI 前三个字段（Windows Installer 忽略第四字段）", () => {
+    const ordered = [
+      "1.2.2",
+      "1.2.3-alpha.0",
+      "1.2.3-alpha.29",
+      "1.2.3-beta.0",
+      "1.2.3-beta.2",
+      "1.2.3-rc.1",
+      "1.2.3-rc.29",
+      "1.2.3",
+      "1.2.4-alpha.0",
+      "1.2.654",
+      "1.3.0-beta.1",
+      "1.3.0",
+      "2.0.0-alpha.0",
+    ].map(msiProductVersion);
+    for (let i = 1; i < ordered.length; i++) {
+      // 后一个严格更高：MajorUpgrade（AllowSameVersionUpgrades=no）可替换前一个
+      expect(compareMsiVersions(ordered[i], ordered[i - 1])).toBeGreaterThan(0);
+      // 反向替换是降级，被 MajorUpgrade 拒绝
+      expect(compareMsiVersions(ordered[i - 1], ordered[i])).toBeLessThan(0);
+    }
+    for (const v of ordered) expect(v.endsWith(".0")).toBe(true);
+    // 比较只看前三个字段
+    expect(compareMsiVersions("1.2.3.0", "1.2.3.9")).toBe(0);
+  });
+
+  it("非法版本与越界版本直接失败", () => {
+    expect(() => msiProductVersion("1.2")).toThrow();
+    expect(() => msiProductVersion("v1.2.3")).toThrow();
+    expect(() => msiProductVersion("01.2.3")).toThrow();
+    expect(() => msiProductVersion("256.0.0")).toThrow();
+    expect(() => msiProductVersion("1.0.655")).toThrow("654");
+    expect(() => msiProductVersion("1.0.0-beta")).toThrow("alpha.N");
+    expect(() => msiProductVersion("1.0.0-preview.1")).toThrow("alpha.N");
+    expect(() => msiProductVersion("1.0.0-beta.1.2")).toThrow();
+    expect(() => msiProductVersion("1.0.0-rc.30")).toThrow("29");
+  });
+
+  it("交付物文件名", () => {
+    expect(msiFileName("1.2.3")).toBe("Primus_1.2.3_x64_zh-CN.msi");
+  });
+
+  it("wix build 参数与技术方案第 3.3.1 节一致", () => {
+    const args = wixBuildArgs({
+      appDir: "C:/t/release",
+      coreDir: "C:/r/dist/agent-core",
+      runtimeDir: "C:/r/dist/runtime",
+      productVersion: "1.2.399.0",
+      out: "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
+    });
+    expect(args).toEqual([
+      "build",
+      WXS,
+      "-arch",
+      "x64",
+      "-culture",
+      "zh-CN",
+      "-acceptEula",
+      "wix7",
+      "-ext",
+      "WixToolset.UI.wixext",
+      "-ext",
+      "WixToolset.Util.wixext",
+      "-bindpath",
+      "app=C:/t/release",
+      "-bindpath",
+      "core=C:/r/dist/agent-core",
+      "-bindpath",
+      "runtime=C:/r/dist/runtime",
+      "-d",
+      "ProductVersion=1.2.399.0",
+      "-o",
+      "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
+    ]);
+  });
+
+  it("只有同时配置证书指纹与时间戳服务器才签名", () => {
+    expect(signtoolArgs("a.msi", {})).toBeNull();
+    expect(signtoolArgs("a.msi", { PRIMUS_SIGN_CERT_SHA1: "AB" })).toBeNull();
+    expect(
+      signtoolArgs("a.msi", { PRIMUS_SIGN_CERT_SHA1: "AB", PRIMUS_SIGN_TIMESTAMP_URL: "http://t" }),
+    ).toEqual([
+      "sign",
+      "/fd",
+      "sha256",
+      "/tr",
+      "http://t",
+      "/td",
+      "sha256",
+      "/sha1",
+      "AB",
+      "a.msi",
+    ]);
+  });
+
+  it("Primus.wxs 引用的 bindpath 都由脚本传入，UpgradeCode 已固定", () => {
+    const wxs = readFileSync(WXS, "utf8");
+    const used = new Set([...wxs.matchAll(/!\(bindpath\.(\w+)\)/g)].map((m) => m[1]));
+    const passed = new Set(
+      wixBuildArgs({ appDir: "a", coreDir: "c", runtimeDir: "r", productVersion: "1", out: "o" })
+        .filter((a: string) => /^\w+=/.test(a) && !a.startsWith("ProductVersion="))
+        .map((a: string) => a.split("=")[0]),
+    );
+    expect([...used].sort()).toEqual([...passed].sort());
+    const upgradeCode = /UpgradeCode="([^"]+)"/.exec(wxs)?.[1];
+    expect(upgradeCode).toBe("5B4199DD-C352-459A-AEB0-7119A884608F");
+    expect(wxs).toContain('Version="$(ProductVersion)"');
+  });
+
+  it.skipIf(process.platform === "win32")("非 Windows 上拒绝真实构建，--dry-run 列出命令", () => {
+    const real = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });
+    expect(real.status).toBe(1);
+    expect(real.stderr).toContain("WiX 只能在 Windows 上运行");
+    const dry = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--version", "1.3.0-beta.2"], {
+      encoding: "utf8",
+    });
+    expect(dry.status).toBe(0);
+    expect(dry.stdout).toContain("ProductVersion 1.3.32.0");
+    expect(dry.stdout).toContain("-acceptEula wix7");
+    expect(dry.stdout).toContain("Primus_1.3.0-beta.2_x64_zh-CN.msi");
+    // 覆盖版本同步给 tauri build，Primus.exe 与 MSI 同一版本
+    expect(dry.stdout).toMatch(
+      /tauri build --no-bundle --config \S*tauri\.version\.json -- --locked/,
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "--version 与 tauri.conf.json 一致时不加 --config",
+    () => {
+      const conf = JSON.parse(
+        readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+      );
+      const dry = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--version", conf.version], {
+        encoding: "utf8",
+      });
+      expect(dry.status).toBe(0);
+      expect(dry.stdout).toContain("tauri build --no-bundle -- --locked");
+      expect(dry.stdout).not.toContain("--config");
+    },
+  );
+
+  it("--version 覆盖与 --skip-tauri 同用时拒绝构建", () => {
+    const r = spawnSync(
+      process.execPath,
+      [SCRIPT, "--dry-run", "--skip-tauri", "--version", "9.9.9"],
+      { encoding: "utf8" },
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("不能与 --skip-tauri 同用");
+  });
+
+  it("--skip-tauri 校验已有 Primus.exe 的构建记录", () => {
+    const stat = { size: 1234, mtimeMs: 1700000000123.7 };
+    const stamp = exeStamp("1.2.3", stat);
+    expect(stamp).toEqual({ version: "1.2.3", size: 1234, mtimeMs: 1700000000123 });
+    expect(checkExeStamp(stamp, "1.2.3", stat)).toBeNull();
+    // 记录缺失
+    expect(checkExeStamp(null, "1.2.3", stat)).toContain("未找到构建记录");
+    // 上次以 --version 9.9.9 构建，这次不带 --version 跳过编译
+    expect(checkExeStamp(exeStamp("9.9.9", stat), "1.2.3", stat)).toContain("9.9.9");
+    // exe 被其他方式重新生成
+    expect(checkExeStamp(stamp, "1.2.3", { size: 1234, mtimeMs: 1700000009999 })).toContain(
+      "重新生成",
+    );
+    expect(checkExeStamp(stamp, "1.2.3", { size: 4321, mtimeMs: 1700000000123 })).toContain(
+      "重新生成",
+    );
+  });
+});
