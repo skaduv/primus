@@ -23,6 +23,9 @@ env:
   # 测试工具（技术方案第 2.4、18 章）：cargo-nextest 跑薄壳单测，tauri-driver 跑 Windows 端到端测试
   CARGO_NEXTEST_VERSION: "0.9.149"
   TAURI_DRIVER_VERSION: "2.1.0"
+  # 端到端测试降权运行所需（见 Windows 作业的端到端冒烟步骤）
+  GSUDO_VERSION: "2.6.1"
+  GSUDO_SHA256: "21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -209,5 +212,31 @@ jobs:
           & $driver --version
           "PRIMUS_NATIVE_DRIVER=$driver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: 端到端冒烟（WebdriverIO + tauri-driver）
-        run: pnpm test:e2e
+      # WebView2 运行时 150 起，宿主进程以管理员（高完整性级别）运行时会忽略
+      # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS，而 msedgedriver 只能经由它注入 --remote-debugging-port；
+      # GitHub 托管运行器以管理员运行，会话因此建不起来（DevToolsActivePort file doesn't exist）。
+      # 微软确认属设计行为，做法是用 gsudo 把整条链（wdio → tauri-driver → msedgedriver → Primus.exe）
+      # 降到中完整性级别运行。参见 https://github.com/tauri-apps/wry/issues/1782
+      - name: 安装 gsudo ${{ env.GSUDO_VERSION }}（降权运行端到端测试）
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "gsudo.portable.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "gsudo"
+          Invoke-WebRequest -Uri "https://github.com/gerardog/gsudo/releases/download/v$env:GSUDO_VERSION/gsudo.portable.zip" -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:GSUDO_SHA256) { throw "gsudo.portable.zip 校验失败：$hash" }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          Join-Path $dir "x64" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # 降权后的进程不再享有管理员组权限：放开工作区与临时目录（msedgedriver 在此）的读写
+          icacls "$env:GITHUB_WORKSPACE" /grant "Everyone:(OI)(CI)F" | Out-Null
+          icacls "$env:RUNNER_TEMP" /grant "Everyone:(OI)(CI)F" | Out-Null
+
+      # 直接调用 wdio，不经 pnpm run 嵌套：pnpm 12 在 Windows 上会等残留的 msedgedriver 进程而挂起
+      - name: 端到端冒烟（WebdriverIO + tauri-driver，中完整性级别）
+        shell: pwsh
+        timeout-minutes: 15
+        working-directory: e2e
+        run: |
+          whoami /groups | Select-String "Mandatory Label"
+          gsudo --integrity Medium pwsh -NoProfile -Command "whoami /groups | Select-String 'Mandatory Label'; ./node_modules/.bin/wdio.cmd run wdio.conf.ts; exit `$LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

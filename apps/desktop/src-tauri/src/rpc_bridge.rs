@@ -14,6 +14,9 @@
 #[derive(Debug, Default)]
 pub(crate) struct LineFramer {
     buf: Vec<u8>,
+    /// `buf` 开头已确认不含 LF 的字节数：下次只扫描新追加的部分，
+    /// 大帧分成许多小块到达时总扫描量保持线性。
+    scanned: usize,
 }
 
 impl LineFramer {
@@ -22,16 +25,20 @@ impl LineFramer {
         self.buf.extend_from_slice(chunk);
         let mut frames = Vec::new();
         let mut start = 0;
-        while let Some(offset) = self.buf[start..].iter().position(|&b| b == b'\n') {
-            let end = start + offset;
+        let mut search_from = self.scanned;
+        while let Some(offset) = self.buf[search_from..].iter().position(|&b| b == b'\n') {
+            let end = search_from + offset;
             let line = &self.buf[start..end];
             let line = line.strip_suffix(b"\r").unwrap_or(line);
             if !line.is_empty() {
                 frames.push(line.to_vec());
             }
             start = end + 1;
+            search_from = start;
         }
         self.buf.drain(..start);
+        // 剩下的都是不含 LF 的不完整尾部
+        self.scanned = self.buf.len();
         frames
     }
 
@@ -92,6 +99,22 @@ mod tests {
             frames,
             vec![b"{\"text\":\"\xE4\xB9\xBE\xE5\x85\x83\"}".to_vec()]
         );
+    }
+
+    #[test]
+    fn scans_only_new_bytes_across_many_small_chunks() {
+        let mut framer = LineFramer::default();
+        for _ in 0..1000 {
+            assert!(framer.push(b"ab").is_empty());
+        }
+        assert_eq!(framer.pending_len(), 2000);
+        // 一块里同时有上一帧的结尾、LF 与下一帧的开头
+        let frames = framer.push(b"c\n{\"x\"");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].len(), 2001);
+        assert_eq!(framer.pending_len(), 5);
+        assert_eq!(push_str(&mut framer, ":1}\n"), vec!["{\"x\":1}"]);
+        assert_eq!(framer.pending_len(), 0);
     }
 
     #[test]

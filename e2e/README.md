@@ -22,4 +22,6 @@ pnpm test:e2e
 
 `wdio.conf.ts` 在每个会话前启动 `~/.cargo/bin/tauri-driver` 并等待 `127.0.0.1:4444` 就绪，会话结束或进程退出时关闭它。
 
+**必须以非管理员身份运行。** WebView2 运行时 150 起，宿主进程以管理员（高完整性级别）运行时会忽略 msedgedriver 注入的 `--remote-debugging-port`，会话报 `DevToolsActivePort file doesn't exist`（[tauri-apps/wry#1782](https://github.com/tauri-apps/wry/issues/1782)）。普通终端不受影响；CI 的托管运行器以管理员运行，因此用 gsudo（版本与 SHA-256 固定在 `ci.yml`）把整条链降到中完整性级别，并直接调用 `wdio`（pnpm 12 嵌套 `pnpm run` 时会等残留的 msedgedriver 而挂起）。
+
 类型检查（任何平台）：`pnpm --filter @primus/e2e typecheck`。根目录 `pnpm test`（Vitest）不包含 e2e。
