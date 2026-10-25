@@ -170,6 +170,17 @@ describe("build-msi", () => {
     expect(wxs).toMatch(
       /<Custom Action="InstallWebView2"[^>]*Condition="WEBVIEW2_MISSING AND NOT REMOVE"/,
     );
+    // 重大升级沿用原安装目录：写入 HKLM，AppSearch 读回，用户未显式指定时在 CostFinalize 之前赋给 INSTALLFOLDER
+    expect(wxs).toMatch(
+      /<RegistryValue Root="HKLM" Key="Software\\Primus" Name="InstallDir"[^>]*Value="\[INSTALLFOLDER\]"/,
+    );
+    expect(wxs).toMatch(/<ComponentRef Id="InstallDirRegistry" \/>/);
+    expect(wxs).toMatch(
+      /<RegistrySearch Id="PreviousInstallFolderSearch" Root="HKLM" Key="Software\\Primus" Name="InstallDir"/,
+    );
+    expect(wxs).toMatch(
+      /<SetProperty Id="INSTALLFOLDER" Value="\[PREVIOUS_INSTALLFOLDER\]" After="AppSearch"[^>]*Condition="PREVIOUS_INSTALLFOLDER AND NOT INSTALLFOLDER"/,
+    );
   });
 
   it("WebView2 引导程序只接受微软签名有效的文件", () => {

@@ -34,10 +34,26 @@
          data 目录授权按查询结果写入，而不是硬编码英文名 -->
     <util:QueryWindowsWellKnownSIDs />
 
+    <!-- 记住安装目录（约束 C2：可装到其他盘）：重大升级时旧版本在 RemoveExistingProducts 才移除，
+         AppSearch 先读出旧版本写在 HKLM 的安装目录；用户（命令行或界面传入）没有指定 INSTALLFOLDER 时沿用它，
+         新版本装回原目录、继续使用原来的 data。SetProperty 排在 AppSearch 之后、CostFinalize 解析目录之前，
+         此时 INSTALLFOLDER 只有用户显式传入才非空；SetDirectory 排在 CostFinalize 之后，无法区分，不能用。 -->
+    <Property Id="PREVIOUS_INSTALLFOLDER" Secure="yes">
+      <RegistrySearch Id="PreviousInstallFolderSearch" Root="HKLM" Key="Software\Primus" Name="InstallDir"
+                      Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="INSTALLFOLDER" Value="[PREVIOUS_INSTALLFOLDER]" After="AppSearch" Sequence="both"
+                 Condition="PREVIOUS_INSTALLFOLDER AND NOT INSTALLFOLDER" />
+
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Primus">
         <Component Id="MainExe">
           <File Id="MainExeFile" Source="!(bindpath.app)\Primus.exe" KeyPath="yes" />
+        </Component>
+        <!-- 供下一次重大升级读取的安装目录（见上方 PREVIOUS_INSTALLFOLDER），卸载时随产品移除 -->
+        <Component Id="InstallDirRegistry" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="Software\Primus" Name="InstallDir" Type="string"
+                         Value="[INSTALLFOLDER]" KeyPath="yes" />
         </Component>
         <Directory Id="RESOURCES" Name="resources">
           <Directory Id="RUNTIMEDIR" Name="runtime" />
@@ -77,6 +93,7 @@
 
     <Feature Id="Main" Title="乾元 Primus" AllowAbsent="no">
       <ComponentRef Id="MainExe" />
+      <ComponentRef Id="InstallDirRegistry" />
       <ComponentRef Id="DataDir" />
       <ComponentRef Id="StartMenuShortcut" />
       <!-- 整目录收集（第 3.3.2 节）：不逐个列文件，Core 升级后自动包含新文件 -->

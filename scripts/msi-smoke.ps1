@@ -6,12 +6,13 @@
 .DESCRIPTION
   1. msiexec /i 静默安装到指定目录（默认 C:\Program Files\Primus），失败时输出安装日志末尾
   2. 检查安装布局：Primus.exe、resources\runtime\node.exe（官方签名）、resources\agent-core（按 manifest.json
-     逐个校验 SHA-256，确认 WiX 的 Files 收集完整）、primus-bundle.js、卸载信息、开始菜单快捷方式
+     逐个校验 SHA-256，确认 WiX 的 Files 收集完整）、primus-bundle.js、卸载信息、HKLM 中的安装目录记录（重大升级
+     沿用原目录）、开始菜单快捷方式
   3. data 目录：ACL 含 BUILTIN\Users（S-1-5-32-545）显式“修改”且继承到子项；有 gsudo 时再以中完整性级别
      （管理员组降为仅拒绝，相当于普通用户）实际写入 data，并确认写不进安装目录根
   4. WebView2：安装前已有运行时则引导程序应被跳过；没有则应运行，装完后注册表中有版本
   5. 用安装目录里的 node.exe 跑 Core RPC 冒烟（scripts/smoke-core-rpc.mjs --entry/--node）
-  6. 在 data 中留一个文件后 msiexec /x 静默卸载：程序文件、快捷方式、卸载信息被移除，data 与其中文件保留
+  6. 在 data 中留一个文件后 msiexec /x 静默卸载：程序文件、快捷方式、卸载信息、安装目录记录被移除，data 与其中文件保留
   7. 清理保留的 data（-KeepData 时不清理），便于重复运行
 
   需要管理员权限（按机器安装）。任何一步不符合预期即抛错，退出码非 0。
@@ -66,6 +67,14 @@ function Write-Step([string] $Message) { Write-Host "`n==> $Message" -Foreground
 function Assert-True([bool] $Condition, [string] $Message) {
   if (-not $Condition) { throw "✗ $Message" }
   Write-Host "  ✓ $Message"
+}
+
+# Primus.wxs 写入的安装目录记录（64 位注册表视图）；没有时返回 $null
+$InstallDirKey = 'HKLM:\SOFTWARE\Primus'
+function Get-RecordedInstallDir {
+  $item = Get-ItemProperty -LiteralPath $InstallDirKey -Name 'InstallDir' -ErrorAction SilentlyContinue
+  if ($null -eq $item) { return $null }
+  return [string] $item.InstallDir
 }
 
 function Test-Administrator {
@@ -202,6 +211,10 @@ $entry = Get-UninstallEntry
 Assert-True ($null -ne $entry) "已写入卸载信息（$ProductName）"
 Write-Host "  · 版本 $($entry.DisplayVersion)，发布者 $($entry.Publisher)"
 
+# 重大升级靠这条记录沿用原安装目录（Primus.wxs 的 PREVIOUS_INSTALLFOLDER）
+$recordedDir = Get-RecordedInstallDir
+Assert-True ($null -ne $recordedDir -and $recordedDir.TrimEnd('\') -ieq $InstallDir) "已在 $InstallDirKey 记录安装目录（实际 $recordedDir）"
+
 Assert-True (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) "开始菜单快捷方式 $ShortcutPath"
 $target = Get-ShortcutTarget $ShortcutPath
 Assert-True ($target -ieq $mainExe) "快捷方式指向 $mainExe（实际 $target）"
@@ -304,6 +317,7 @@ Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'resources\runt
 Assert-True (-not (Test-Path -LiteralPath $coreDir)) '已移除 resources\agent-core'
 Assert-True (-not (Test-Path -LiteralPath $ShortcutPath)) '已移除开始菜单快捷方式'
 Assert-True ($null -eq (Get-UninstallEntry)) '已清除卸载信息'
+Assert-True ($null -eq (Get-RecordedInstallDir)) "已清除 $InstallDirKey 中的安装目录记录"
 Assert-True (Test-Path -LiteralPath $DataDir -PathType Container) "卸载后 data 目录保留（$DataDir）"
 Assert-True ((Get-Content -LiteralPath $marker) -eq 'keep') '卸载后 data 中的文件保留'
 

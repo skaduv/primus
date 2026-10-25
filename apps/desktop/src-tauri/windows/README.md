@@ -16,7 +16,7 @@
 | 安装目录可选 | `WixUI_InstallDir`，默认 `C:\Program Files\Primus`；静默安装可传 `INSTALLFOLDER="D:\某目录"` |
 | 主程序与资源 | `Primus.exe` 在安装目录根；`resources\runtime`、`resources\agent-core` 用 `<Files>` 整目录收集 |
 | `data` 目录 | `CreateFolder` + `util:PermissionEx` 给本地化的 Users 组（`util:QueryWindowsWellKnownSIDs` 查出的 `[WIX_ACCOUNT_USERS]`）授予“修改”(M)，继承到子项；组件 `Permanent`，卸载与升级保留 |
-| 升级 | `MajorUpgrade` + 固定 `UpgradeCode`；降级给出中文提示 |
+| 升级 | `MajorUpgrade` + 固定 `UpgradeCode`；降级给出中文提示。安装目录写入 `HKLM\Software\Primus\InstallDir`，重大升级时（未显式传 `INSTALLFOLDER`）由 `AppSearch` 读回并沿用，装在其他盘的实例升级后仍在原目录、复用原 `data` |
 | WebView2 | 注册表检测，缺失时运行内嵌引导程序 |
 | 快捷方式 | 公共开始菜单“乾元 Primus”，`System.AppUserModel.ID = com.primus.desktop`（通知归属） |
 | 卸载信息 | `ARPPRODUCTICON`、`ARPURLINFOABOUT`；`ARPNOMODIFY`（由 WixUI_InstallDir 提供；安装目录装后不可改，修复 / 卸载可用） |
