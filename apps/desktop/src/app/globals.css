@@ -8,6 +8,7 @@
   --color-muted: #6e7781;
   --color-border: #d0d7de;
   --color-hover: #f3f4f6;
+  --color-danger: #cf222e;
   --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
 }
 
@@ -18,6 +19,7 @@
     --color-muted: #9aa0a6;
     --color-border: #34363a;
     --color-hover: #2b2d31;
+    --color-danger: #ff7b72;
   }
 }
 

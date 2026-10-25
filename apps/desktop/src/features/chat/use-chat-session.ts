@@ -1,0 +1,108 @@
+"use client";
+
+import type { CoreBatch, RpcCommand } from "@primus/protocol";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
+import { getPlatform, type Platform } from "@/lib/platform";
+import {
+  applyBatches,
+  createSessionStore,
+  type SessionState,
+  type SessionStore,
+} from "@/stores/session-store";
+
+// 一个会话的生命周期：首次发送时打开会话（浏览器预览下由 mock 平台提供假 Core 事件流），
+// 薄壳推来的批次先缓存，在 requestAnimationFrame 中一次性合并进 store（第 16.4 节）。
+
+const nextFrame: (cb: () => void) => void =
+  typeof requestAnimationFrame === "function"
+    ? (cb) => requestAnimationFrame(() => cb())
+    : (cb) => setTimeout(cb, 16);
+
+export interface ChatSession {
+  state: SessionState;
+  /** 打开会话或发送命令时的错误 */
+  error?: string;
+  send: (message: string) => Promise<void>;
+  abort: () => Promise<void>;
+}
+
+export function useChatSession(): ChatSession {
+  const storeRef = useRef<SessionStore>(null);
+  storeRef.current ??= createSessionStore();
+  const store = storeRef.current;
+  const state = useStore(store);
+  const [error, setError] = useState<string>();
+
+  const conn = useRef<{ platform: Platform; sessionKey: string; nextId: number }>(null);
+  const pending = useRef<CoreBatch[]>([]);
+  const frameQueued = useRef(false);
+
+  const onBatch = useCallback(
+    (batch: CoreBatch) => {
+      pending.current.push(batch);
+      if (frameQueued.current) return;
+      frameQueued.current = true;
+      nextFrame(() => {
+        frameQueued.current = false;
+        const batches = pending.current;
+        pending.current = [];
+        store.setState((s) => applyBatches(s, batches), true);
+      });
+    },
+    [store],
+  );
+
+  const command = useCallback(async (type: string, fields: Record<string, unknown> = {}) => {
+    const c = conn.current;
+    if (!c) return;
+    const record: RpcCommand = { id: `${c.sessionKey}-${c.nextId++}`, type, ...fields };
+    await c.platform.coreSend(c.sessionKey, record);
+  }, []);
+
+  const ensureOpen = useCallback(async () => {
+    if (conn.current) return;
+    const platform = await getPlatform();
+    const [workspace] = await platform.workspaceList();
+    const { sessionKey } = await platform.sessionOpen(workspace?.path ?? "", undefined, onBatch);
+    conn.current = { platform, sessionKey, nextId: 1 };
+  }, [onBatch]);
+
+  // 缺号时用完整历史重建
+  useEffect(() => {
+    if (state.needsResync) void command("get_messages").catch(() => {});
+  }, [state.needsResync, command]);
+
+  // 卸载时关闭会话
+  useEffect(
+    () => () => {
+      const c = conn.current;
+      conn.current = null;
+      if (c) void c.platform.sessionClose(c.sessionKey).catch(() => {});
+    },
+    [],
+  );
+
+  const send = useCallback(
+    async (message: string) => {
+      setError(undefined);
+      try {
+        await ensureOpen();
+        await command("prompt", { message });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [ensureOpen, command],
+  );
+
+  const abort = useCallback(async () => {
+    try {
+      await command("abort");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [command]);
+
+  return { state, error, send, abort };
+}

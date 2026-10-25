@@ -42,6 +42,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm check:forbidden-sdk # 与 Windows 作业相同，尽早失败
+      - run: pnpm check:tauri-imports
       - run: pnpm test
       - run: pnpm --filter @primus/desktop typecheck
       - run: pnpm --filter @primus/desktop build # 同时生成 Tauri 嵌入的 out/，Rust 单测需要
@@ -129,6 +130,8 @@ jobs:
 
       - name: Core 依赖检查（被禁 SDK，第 6.2 节）
         run: pnpm check:forbidden-sdk
+      - name: 平台边界检查
+        run: pnpm check:tauri-imports
 
       - name: 编译 Primus.exe（不打包）
         run: pnpm --filter @primus/desktop tauri build --no-bundle -- --locked
