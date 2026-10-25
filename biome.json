@@ -8,7 +8,14 @@
       "!**/out",
       "!**/.next",
       "!**/target",
-      "!**/src-tauri/gen"
+      "!**/src-tauri/gen",
+      "!apps/desktop/src/components/ui/glass.tsx",
+      "!apps/desktop/src/components/ui/glass-motion.ts",
+      "!apps/desktop/src/components/ui/glass-surface.tsx",
+      "!apps/desktop/src/components/ui/glass-webgl.ts",
+      "!apps/desktop/src/components/ui/glass-button.tsx",
+      "!apps/desktop/src/components/ui/glass-switch.tsx",
+      "!apps/desktop/src/components/ui/glass-slider.tsx"
     ]
   },
   "formatter": {

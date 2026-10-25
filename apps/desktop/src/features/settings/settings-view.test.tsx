@@ -1,0 +1,54 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { useRouter } from "next/navigation";
+import { afterEach, describe, expect, it } from "vitest";
+import { strings } from "@/lib/strings";
+import { initialAppearance, useAppearanceStore } from "@/stores/appearance-store";
+import { SettingsView } from "./settings-view";
+
+const t = strings.settings;
+
+describe("设置页", () => {
+  afterEach(() => useAppearanceStore.setState(initialAppearance));
+
+  it("列出第 18 章的全部分组，默认显示通用", () => {
+    render(<SettingsView />);
+    const nav = screen.getByRole("navigation", { name: t.title });
+    for (const label of Object.values(t.groups)) expect(nav.textContent).toContain(label);
+    expect(screen.getByRole("main", { name: t.groups.general })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: t.groups.general }).getAttribute("aria-current"),
+    ).toBe("page");
+  });
+
+  it("切换分组显示对应内容", () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: t.groups.models }));
+    expect(screen.getByRole("main", { name: t.groups.models }).textContent).toContain(
+      t.groupItems.models,
+    );
+  });
+
+  it("主题选项写入外观设置", () => {
+    render(<SettingsView />);
+    const dark = screen.getByRole("tab", { name: t.themes.dark });
+    // Radix Tabs 在 mousedown 时切换
+    fireEvent.mouseDown(dark);
+    expect(useAppearanceStore.getState().theme).toBe("dark");
+    expect(dark.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("玻璃效果滑块显示当前着色程度", () => {
+    useAppearanceStore.setState({ glassTint: 0.6 });
+    render(<SettingsView />);
+    const slider = screen.getByRole("slider", { name: t.glass }) as HTMLInputElement;
+    expect(slider.value).toBe("60");
+    fireEvent.change(slider, { target: { value: "20" } });
+    expect(useAppearanceStore.getState().glassTint).toBe(0.2);
+  });
+
+  it("返回按钮回到主界面", () => {
+    render(<SettingsView />);
+    fireEvent.click(screen.getByRole("button", { name: t.back }));
+    expect(useRouter().push).toHaveBeenCalledWith("/");
+  });
+});
