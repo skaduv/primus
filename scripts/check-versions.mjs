@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 版本基线检查（技术方案第 2.4 节）：
-// 1. 工具链版本（.node-version、packageManager、rust-toolchain.toml、CI 中的 WIX / cargo-nextest / tauri-driver 版本）与基线一致
+// 1. 工具链版本（.node-version、scripts/node-runtime.json、packageManager、rust-toolchain.toml、CI 中的 WIX / cargo-nextest / tauri-driver 版本）与基线一致
 // 2. 所有 package.json 依赖（含 peerDependencies）锁定精确版本（不允许 ^ ~ * latest 等范围；仅 workspace:* 除外）
 // 3. Cargo.toml 依赖一律 "=x.y.z" 精确锁定
 // 4. 出现在基线中的依赖，版本必须与基线一致（尚未引入的依赖跳过）
@@ -21,6 +21,20 @@ const EXACT = /^\d+\.\d+\.\d+$/;
 const nodeVersion = read(".node-version").trim();
 if (nodeVersion !== baseline.toolchain.node)
   fail(`.node-version 为 ${nodeVersion}，基线为 ${baseline.toolchain.node}`);
+
+// 内置运行时（scripts/node-runtime.json）与构建用 Node 同一版本，且每个平台都固化了发行包与解出文件的哈希
+const runtimePin = JSON.parse(read("scripts/node-runtime.json"));
+if (runtimePin.version !== baseline.toolchain.node)
+  fail(
+    `scripts/node-runtime.json version 为 ${runtimePin.version}，基线为 ${baseline.toolchain.node}`,
+  );
+for (const [platform, target] of Object.entries(runtimePin.platforms ?? {})) {
+  if (!String(target.archive ?? "").startsWith(`node-v${runtimePin.version}-${platform}.`))
+    fail(`scripts/node-runtime.json ${platform} 的 archive（${target.archive}）与版本不符`);
+  const hashes = [target.sha256, ...Object.values(target.files ?? {})];
+  if (!Object.keys(target.files ?? {}).length || hashes.some((h) => !/^[0-9a-f]{64}$/.test(h)))
+    fail(`scripts/node-runtime.json ${platform} 缺少或含有格式不正确的 SHA-256`);
+}
 
 const rootPkg = JSON.parse(read("package.json"));
 const pm = rootPkg.packageManager ?? "";
