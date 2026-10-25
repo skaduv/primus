@@ -20,7 +20,7 @@ Pi keeps the two pairs apart:
 | | Selection | Dispatch |
 |---|---|---|
 | Recorded in | `model_change` and `thinking_level_change` entries | Each assistant message: `provider`, `api`, `model`, `thinkingLevel` |
-| Visible as | `ctx.model`, `ctx.thinkingLevel`, `PI_MODEL`, `PI_REASONING_LEVEL`, `/model` | The assistant message of each response |
+| Visible as | `ctx.model`, `ctx.thinkingLevel`, `PRIMUS_MODEL`, `PRIMUS_REASONING_LEVEL`, `/model` | The assistant message of each response |
 
 Providers only receive physical models. Assistant messages name the physical model, so replaying a conversation across different physical models works the same as after a manual model switch. Resuming a session restores the virtual selection from its latest `model_change` entry. If the virtual model is no longer registered, Pi falls back to the physical model that answered last.
 

@@ -133,8 +133,8 @@ async function main() {
 			cwd: tempDir,
 			env: {
 				...process.env,
-				PI_CODING_AGENT_DIR: tempDir,
-				PI_OFFLINE: "1",
+				PRIMUS_CODING_AGENT_DIR: tempDir,
+				PRIMUS_OFFLINE: "1",
 			},
 			stdio: ["ignore", "pipe", "pipe"],
 		});

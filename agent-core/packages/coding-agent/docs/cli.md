@@ -94,7 +94,7 @@ See [Sessions and Context](sessions.md) for resuming, forking, naming, and stori
 - `--fork <path|id>`<br>
   Forks an existing session into a new session for the current project.
 - `--session-dir <dir>`<br>
-  Overrides storage and lookup. It takes precedence over `PI_CODING_AGENT_SESSION_DIR` and the `sessionDir` setting.
+  Overrides storage and lookup. It takes precedence over `PRIMUS_CODING_AGENT_SESSION_DIR` and the `sessionDir` setting.
 - `--no-session`<br>
   Uses an in-memory session that is not persisted.
 - `-n`, `--name <name>`<br>
@@ -239,7 +239,7 @@ See [Configuration](configuration.md) for saved configuration, [Security](securi
 - `-na`, `--no-approve`<br>
   Ignores trust-gated project-local configuration and resources for this process.
 - `--offline`<br>
-  Disables automatic network activity, including model catalog refreshes. Equivalent to `PI_OFFLINE=1`.
+  Disables automatic network activity, including model catalog refreshes. Equivalent to `PRIMUS_OFFLINE=1`.
 - `-h`, `--help`<br>
   Shows help, including flags registered by loaded extensions, then exits.
 - `-v`, `--version`<br>

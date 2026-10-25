@@ -36,9 +36,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
 import { spawnProcess, spawnProcessSync, waitForChildProcess } from "./utils/child-process.ts";
 import { canonicalizePath, getCwdRelativePath } from "./utils/paths.ts";
-import { getPiUserAgent } from "./utils/pi-user-agent.ts";
 import { stripBom } from "./utils/text.ts";
-import { formatVersionCheckError, getLatestPiRelease, isNewerPackageVersion } from "./utils/version-check.ts";
 import {
 	cleanupWindowsSelfUpdateQuarantine,
 	quarantineWindowsNativeDependencies,
@@ -53,7 +51,7 @@ const MANAGED_INSTALL_MARKER = "managed-install.json";
 const MANAGED_RELEASE_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function getActiveManagedInstallRoot(): string | undefined {
-	const configuredRoot = process.env.PI_MANAGED_INSTALL_ROOT?.trim();
+	const configuredRoot = process.env.PRIMUS_MANAGED_INSTALL_ROOT?.trim();
 	if (!configuredRoot) return undefined;
 
 	const managedRoot = resolve(configuredRoot);
@@ -79,12 +77,9 @@ function getActiveManagedInstallRoot(): string | undefined {
 	return managedRoot;
 }
 
+// Primus: the upstream installer service is never contacted; Core versions are managed by the desktop app.
 async function fetchInstallerArtifact(url: string, label: string): Promise<string> {
-	const response = await fetch(url, { headers: { "User-Agent": getPiUserAgent(VERSION) } });
-	if (!response.ok) {
-		throw new Error(`Could not download managed installer ${label} from ${url}: HTTP ${response.status}`);
-	}
-	return await response.text();
+	throw new Error(`Managed installer downloads are disabled in ${APP_NAME} (${label}: ${url}).`);
 }
 
 async function runManagedNpmCi(stageDir: string): Promise<void> {
@@ -207,7 +202,7 @@ async function runManagedSelfUpdate(managedRoot: string, version: string): Promi
 	let stageDir: string | undefined;
 	try {
 		cleanupManagedStaging(managedRoot);
-		const installerApiBase = (process.env.PI_INSTALLER_API_BASE?.trim() || DEFAULT_INSTALLER_API_BASE).replace(
+		const installerApiBase = (process.env.PRIMUS_INSTALLER_API_BASE?.trim() || DEFAULT_INSTALLER_API_BASE).replace(
 			/\/+$/,
 			"",
 		);
@@ -292,7 +287,7 @@ function getPackageCommandUsage(command: PackageCommand): string {
 		case "remove":
 			return `${APP_NAME} remove <source> [-l] [--approve|--no-approve]`;
 		case "update":
-			return `${APP_NAME} update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
+			return `${APP_NAME} update [source|self] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
 		case "list":
 			return `${APP_NAME} list [--approve|--no-approve]`;
 	}
@@ -360,24 +355,24 @@ Examples:
 			console.log(`${chalk.bold("Usage:")}
   ${getPackageCommandUsage("update")}
 
-Update pi, installed packages, or model catalogs.
+Update installed packages or model catalogs. Self-update is disabled: Core is updated together with the desktop app.
 
 Options:
-  --self                  Update pi only (default when no target is given)
+  --self                  Update ${APP_NAME} itself (disabled; default when no target is given)
   --extensions            Update installed packages only
   --models                Refresh model catalogs only
-  --all                   Update pi and installed packages
+  --all                   Update ${APP_NAME} and installed packages (self-update part is disabled)
   --extension <source>    Update one package only
   -a, --approve           Trust project-local files for this command
   -na, --no-approve       Ignore project-local files for this command
-  --force                 Reinstall pi even if the current version is latest
+  --force                 Reinstall ${APP_NAME} even if the current version is latest
 
 Short forms:
-  ${APP_NAME} update                Update pi only
-  ${APP_NAME} update --all          Update pi and all extensions
+  ${APP_NAME} update                Update ${APP_NAME} only (disabled)
+  ${APP_NAME} update --all          Update ${APP_NAME} and all extensions
   ${APP_NAME} update --models       Refresh model catalogs only
   ${APP_NAME} update <source>       Update one package
-  ${APP_NAME} update pi             Update pi only (self works as alias to pi)
+  ${APP_NAME} update self           Same as --self
 `);
 			return;
 
@@ -554,7 +549,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 			}
 			updateTarget = { type: "extensions", source: extensionFlagSource };
 		} else if (source) {
-			const sourceIsSelf = source === "self" || source === "pi";
+			const sourceIsSelf = source === "self" || source === "pi" || source === APP_NAME;
 			if (sourceIsSelf) {
 				updateTarget = extensionsFlag ? { type: "all" } : { type: "self" };
 			} else {
@@ -682,33 +677,9 @@ interface SelfUpdatePlan {
 	note?: string;
 }
 
-async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
-	let latestRelease: Awaited<ReturnType<typeof getLatestPiRelease>>;
-	try {
-		latestRelease = await getLatestPiRelease(VERSION, { retry: true });
-	} catch (error: unknown) {
-		throw new Error(`Could not determine latest ${APP_NAME} version: ${formatVersionCheckError(error)}`, {
-			cause: error,
-		});
-	}
-	if (!latestRelease) {
-		throw new Error(`Could not determine latest ${APP_NAME} version.`);
-	}
-
-	const packageName = latestRelease.packageName ?? PACKAGE_NAME;
-	const installSpec = `${packageName}@${latestRelease.version}`;
-	if (force || packageName !== PACKAGE_NAME || isNewerPackageVersion(latestRelease.version, VERSION)) {
-		return {
-			packageName,
-			installSpec,
-			version: latestRelease.version,
-			...(latestRelease.note ? { note: latestRelease.note } : {}),
-			shouldRun: true,
-		};
-	}
-
-	console.log(chalk.green(`${APP_NAME} is already up to date (v${VERSION})`));
-	return { packageName, installSpec, version: latestRelease.version, shouldRun: false };
+// Primus: self-update is disabled; the desktop app ships and updates Core.
+async function getSelfUpdatePlan(_force: boolean): Promise<SelfUpdatePlan> {
+	throw new Error(`${APP_NAME} self-update is disabled; Core is updated together with the desktop app.`);
 }
 
 async function runSelfUpdate(command: SelfUpdateCommand): Promise<void> {
@@ -1116,19 +1087,6 @@ export async function handlePackageCommand(
 						return true;
 					}
 					console.log(chalk.green(`Updated ${APP_NAME} from ${VERSION} to ${selfUpdatePlan.version}`));
-					// The pi.dev installer migrates global npm installs to a managed install
-					// that pins all dependencies. It does not migrate pnpm, yarn, or bun installs.
-					if (installMethod === "npm") {
-						const installerCommand =
-							process.platform === "win32"
-								? 'powershell -c "irm https://pi.dev/install.ps1 | iex"'
-								: "curl -fsSL https://pi.dev/install.sh | sh";
-						console.log();
-						console.log(chalk.yellow(`This npm installation of ${APP_NAME} does not pin its dependencies.`));
-						console.log(chalk.yellow("Run the installer to migrate to a managed installation that does:"));
-						console.log();
-						console.log(`  ${chalk.bold(installerCommand)}`);
-					}
 				}
 				return true;
 			}

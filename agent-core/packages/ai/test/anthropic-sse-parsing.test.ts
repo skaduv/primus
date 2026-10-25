@@ -268,28 +268,6 @@ describe("Anthropic raw SSE parsing", () => {
 		expect(streaming).toBe(true);
 	});
 
-	it("omits the interleaved-thinking beta when thinking is disabled", async () => {
-		let betaFeatures: string[] | undefined;
-		const client = {
-			beta: {
-				messages: {
-					create: (params: { betas?: string[] }) => {
-						betaFeatures = params.betas;
-						return { asResponse: async () => createSseResponse(minimalAnthropicEvents) };
-					},
-				},
-			},
-		} as unknown as Anthropic;
-
-		await streamAnthropic(
-			getModel("openrouter", "anthropic/claude-haiku-4.5"),
-			normalizeContext({ messages: [{ role: "user", content: "Hello", timestamp: 1 }] }),
-			{ client, thinkingEnabled: false },
-		).result();
-
-		expect(betaFeatures ?? []).not.toContain("interleaved-thinking-2025-05-14");
-	});
-
 	it("passes managed beta features to injected clients", async () => {
 		let betaFeatures: string[] | undefined;
 		const client = {

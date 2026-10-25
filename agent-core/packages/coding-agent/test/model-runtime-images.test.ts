@@ -10,7 +10,6 @@ import {
 	type ImageModel,
 	type ImagesOptions,
 	InMemoryModelsStore,
-	isModelType,
 	type Model,
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
@@ -89,20 +88,6 @@ describe("ModelRuntime image generation", () => {
 			allowModelNetwork: false,
 		});
 	}
-
-	it("lists built-in OpenRouter image models separately from chat models", async () => {
-		const runtime = await createRuntime();
-		const images = runtime.getModelsOfType("image", "openrouter");
-		expect(images.length).toBeGreaterThan(0);
-		expect(runtime.getModels("openrouter").every((model) => isModelType(model, "chat"))).toBe(true);
-		expect(runtime.getModelOfType("image", "openrouter", images[0].id)).toBe(images[0]);
-		expect(runtime.getModel("openrouter", "google/gemini-3-pro-image")?.api).toBe("openai-completions");
-		expect(runtime.getModelOfType("image", "openrouter", "google/gemini-3-pro-image")?.type).toBe("image");
-		const classifiers = runtime.getModelsOfType("classifier", "openrouter");
-		expect(runtime.getAllModels("openrouter").length).toBe(
-			runtime.getModels("openrouter").length + images.length + classifiers.length,
-		);
-	});
 
 	it("extension model lists replace undeclared models of every operation", async () => {
 		const runtime = await createRuntime();
@@ -281,44 +266,5 @@ describe("ModelRuntime image generation", () => {
 		}
 		await expect(runtime.cancelDeferred(chat, handle)).rejects.toThrow("is not a chat model");
 		expect(chatDispatches).toBe(0);
-	});
-
-	it("keeps image generation on a built-in provider composed with models.json overrides", async () => {
-		const runtime = await createRuntime({
-			providers: {
-				openrouter: {
-					headers: { "X-Title": "pi" },
-					modelOverrides: {
-						"openrouter/auto": { name: "Auto (renamed)" },
-						"google/gemini-3-pro-image": { headers: { "X-Chat-Only": "yes" } },
-					},
-				},
-			},
-		});
-		const provider = runtime.getProvider("openrouter")!;
-		expect(provider.generateImages).toBeDefined();
-		expect(runtime.getModel("openrouter", "openrouter/auto")?.name).toBe("Auto (renamed)");
-		expect(runtime.getModelsOfType("image", "openrouter").length).toBeGreaterThan(0);
-
-		// Auth is provider-scoped: the same key serves chat and image models.
-		await runtime.setRuntimeApiKey("openrouter", "sk-or");
-		const chat = runtime.getModel("openrouter", "google/gemini-3-pro-image")!;
-		const image = runtime.getModelOfType("image", "openrouter", "google/gemini-3-pro-image")!;
-		const chatAuth = await runtime.getAuth(chat);
-		const imageAuth = await runtime.getAuth(image);
-		expect(imageAuth?.auth.apiKey).toBe("sk-or");
-		expect(chatAuth?.auth.headers).toMatchObject({ "X-Title": "pi", "X-Chat-Only": "yes" });
-		expect(imageAuth?.auth.headers).toEqual({ "X-Title": "pi" });
-	});
-
-	it("does not add image generation or classification to composed chat-only providers", async () => {
-		const runtime = await createRuntime({
-			providers: { anthropic: { headers: { "X-Title": "pi" } } },
-		});
-		const provider = runtime.getProvider("anthropic")!;
-		expect(provider.generateImages).toBeUndefined();
-		expect(provider.classify).toBeUndefined();
-		expect(runtime.getProvider("openrouter")?.generateImages).toBeDefined();
-		expect(runtime.getProvider("typesafe")?.classify).toBeDefined();
 	});
 });

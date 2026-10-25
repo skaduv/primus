@@ -85,7 +85,7 @@ function collectEnvironment() {
 		},
 		// Names help diagnose configuration; values never leave the machine.
 		piEnvironmentVariables: Object.keys(process.env)
-			.filter((name) => name.startsWith("PI_"))
+			.filter((name) => name.startsWith("PRIMUS_"))
 			.sort(),
 	};
 }

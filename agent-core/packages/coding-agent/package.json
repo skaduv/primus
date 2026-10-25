@@ -4,7 +4,8 @@
 	"description": "Coding agent CLI with read, bash, edit, write tools and session management",
 	"type": "module",
 	"piConfig": {
-		"configDir": ".pi"
+		"name": "primus",
+		"configDir": ".primus"
 	},
 	"bin": {
 		"pi": "dist/bundle/cli.js"

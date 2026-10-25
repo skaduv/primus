@@ -15,6 +15,12 @@ import {
 
 type CatalogEntry = ModelCatalogEntry & Record<string, unknown>;
 
+/**
+ * Primus: only the OpenAI Responses and Anthropic Messages protocols are
+ * supported. Catalog entries for any other API are dropped during hydration.
+ */
+const ALLOWED_APIS = new Set(["openai-responses", "anthropic-messages"]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -53,7 +59,11 @@ export function hydrateModelCatalog(
 		const entries: CatalogEntry[] = [];
 		for (const model of models) {
 			if (!isCatalogEntry(model)) throw new Error(`Model catalog has an invalid entry for provider ${provider}`);
+			if (!ALLOWED_APIS.has(model.api)) continue;
 			entries.push(model);
+		}
+		if (entries.length === 0) {
+			throw new Error(`Model catalog has no ${[...ALLOWED_APIS].join(" or ")} models for provider: ${provider}`);
 		}
 		const grouped = groupProviderModelData(provider, entries);
 		structure[provider] = grouped.structure;

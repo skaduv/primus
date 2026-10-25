@@ -42,7 +42,7 @@ function createFixture(): {
 
 	const structure: ModelDataStructure = {
 		"test-provider": {
-			"chat:model-a": "openai-completions",
+			"chat:model-a": "openai-responses",
 		},
 	};
 	const values: Record<string, unknown> = {
@@ -50,7 +50,7 @@ function createFixture(): {
 			type: "chat",
 			id: "model-a",
 			name: "Model A",
-			api: "openai-completions",
+			api: "openai-responses",
 			provider: "test-provider",
 			baseUrl: "https://example.test/v1",
 			reasoning: false,
@@ -69,7 +69,7 @@ function writeFixtureData(
 	structure: ModelDataStructure,
 	values: Record<string, unknown>,
 	manifestSchemaVersion = MODEL_DATA_SCHEMA_VERSION,
-	apiGroup = "openai-completions",
+	apiGroup = "openai-responses",
 ): void {
 	const filename = "test-provider.json";
 	const content = `${JSON.stringify({ [apiGroup]: values })}\n`;
@@ -111,16 +111,21 @@ describe("published model catalog hydration", () => {
 		writeFileSync(
 			catalogPath,
 			JSON.stringify({
-				"test-provider": [model, { ...model, id: "model-b", api: "anthropic-messages" }],
+				"test-provider": [
+					model,
+					{ ...model, id: "model-b", api: "anthropic-messages" },
+					// Primus: APIs other than OpenAI Responses and Anthropic Messages are dropped.
+					{ ...model, id: "model-c", api: "openai-completions" },
+				],
 			}),
 		);
 		hydrateModelCatalog(packageRoot, catalogPath);
 		expect(readModelDataStructure(packageRoot)).toEqual({
-			"test-provider": { "chat:model-a": "openai-completions", "chat:model-b": "anthropic-messages" },
+			"test-provider": { "chat:model-a": "openai-responses", "chat:model-b": "anthropic-messages" },
 		});
 	});
 
-	it("keys chat and image models with the same id separately", () => {
+	it("drops image models whose API is not built in", () => {
 		const { packageRoot, values } = createFixture();
 		const image = {
 			type: "image",
@@ -137,8 +142,20 @@ describe("published model catalog hydration", () => {
 		writeFileSync(catalogPath, JSON.stringify({ "test-provider": [chatModel(values), image] }));
 		hydrateModelCatalog(packageRoot, catalogPath);
 		expect(readModelDataStructure(packageRoot)).toEqual({
-			"test-provider": { "chat:model-a": "openai-completions", "image:model-a": "openrouter-images" },
+			"test-provider": { "chat:model-a": "openai-responses" },
 		});
+	});
+
+	it("rejects a provider with no built-in API models without replacing existing data", () => {
+		const { dataDir, packageRoot, values } = createFixture();
+		const original = readFileSync(join(dataDir, "test-provider.json"), "utf8");
+		const catalogPath = join(packageRoot, "catalog.json");
+		writeFileSync(
+			catalogPath,
+			JSON.stringify({ "test-provider": [{ ...chatModel(values), api: "openai-completions" }] }),
+		);
+		expect(() => hydrateModelCatalog(packageRoot, catalogPath)).toThrow(/no openai-responses or anthropic-messages/);
+		expect(readFileSync(join(dataDir, "test-provider.json"), "utf8")).toBe(original);
 	});
 
 	it("validates without replacing existing data", () => {
@@ -308,7 +325,7 @@ describe("generated model data validation", () => {
 		const fixture = createFixture();
 		const filename = "test-provider.json";
 		const content = `${JSON.stringify({
-			"openai-completions": fixture.values,
+			"openai-responses": fixture.values,
 			"anthropic-messages": fixture.values,
 		})}\n`;
 		writeFileSync(join(fixture.dataDir, filename), content);

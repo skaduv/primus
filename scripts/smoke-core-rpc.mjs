@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Agent Core RPC 冒烟测试（第 1 周验收：发送 get_state 能收到 response）。
-// 用临时目录作为 Core 的配置目录与工作目录，离线模式运行，不读写用户真实数据。
+// 按薄壳的启动方式（技术方案第 4.4 节）设置 PRIMUS_ 环境变量，把 Core 的配置与会话目录
+// 重定向到临时目录，离线模式运行，不读写用户真实数据；并确认 Core 没有回退到主目录下的 .primus。
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,12 +17,25 @@ if (!existsSync(entry)) {
 }
 
 const sandbox = mkdtempSync(join(tmpdir(), "primus-core-smoke-"));
+const coreDir = join(sandbox, "core");
+const workDir = join(sandbox, "work");
+mkdirSync(coreDir);
+mkdirSync(workDir);
 const timeoutMs = 30_000;
-// 把 HOME / USERPROFILE 指到临时目录，Core 的配置与会话都落在其中；--offline 关闭一切联网
-// TODO（品牌改动后）：改用 PRIMUS_ 前缀的配置目录变量，见 agent-core/PATCHES.md
+// HOME / USERPROFILE 也指到临时目录：若 Core 忽略 PRIMUS_CODING_AGENT_DIR 回退到主目录，
+// 会在 sandbox/.primus 下留下痕迹，下面据此判定失败。--offline 关闭一切联网。
 const child = spawn(process.execPath, [entry, "--offline"], {
-  cwd: sandbox,
-  env: { ...process.env, HOME: sandbox, USERPROFILE: sandbox },
+  cwd: workDir,
+  env: {
+    ...process.env,
+    HOME: sandbox,
+    USERPROFILE: sandbox,
+    PRIMUS_CODING_AGENT_DIR: coreDir,
+    PRIMUS_CODING_AGENT_SESSION_DIR: join(coreDir, "sessions"),
+    PRIMUS_SKIP_VERSION_CHECK: "1",
+    PRIMUS_TELEMETRY: "0",
+    NODE_OPTIONS: "",
+  },
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -77,12 +91,22 @@ createInterface({ input: child.stdout }).on("line", (line) => {
   }
   if (msg.type !== "response" || msg.id !== "smoke-1") return;
   if (
-    msg.command === "get_state" &&
-    msg.success === true &&
-    typeof msg.data?.sessionId === "string"
+    !(
+      msg.command === "get_state" &&
+      msg.success === true &&
+      typeof msg.data?.sessionId === "string"
+    )
   )
-    finish(0, `✓ get_state 响应正常（sessionId ${msg.data.sessionId}）`);
-  else finish(1, `✗ get_state 响应异常：${line}`);
+    finish(1, `✗ get_state 响应异常：${line}`);
+  else if (existsSync(join(sandbox, ".primus")))
+    finish(1, "✗ Core 未使用 PRIMUS_CODING_AGENT_DIR，回退到了主目录下的 .primus");
+  else if (!existsSync(join(coreDir, "auth.json")))
+    finish(1, `✗ Core 配置目录未落在 PRIMUS_CODING_AGENT_DIR（${coreDir}）`);
+  else
+    finish(
+      0,
+      `✓ get_state 响应正常（sessionId ${msg.data.sessionId}），配置目录为 PRIMUS_CODING_AGENT_DIR`,
+    );
 });
 
 child.on("exit", (code) => {

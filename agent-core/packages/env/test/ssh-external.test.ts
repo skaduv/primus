@@ -19,10 +19,10 @@ import {
 import { daemon } from "./daemon.ts";
 
 /**
- * The conformance suite over a real SSH server on this machine, configured by CI: `PI_ENV_SSH_HOST`, `PI_ENV_SSH_USER`
- * `PI_ENV_SSH_KEY` and `PI_ENV_SSH_PROGRAM`. On Windows this covers deployment and the daemon's launch through the server's default shell.
+ * The conformance suite over a real SSH server on this machine, configured by CI: `PRIMUS_ENV_SSH_HOST`, `PRIMUS_ENV_SSH_USER`
+ * `PRIMUS_ENV_SSH_KEY` and `PRIMUS_ENV_SSH_PROGRAM`. On Windows this covers deployment and the daemon's launch through the server's default shell.
  */
-const host = process.env.PI_ENV_SSH_HOST;
+const host = process.env.PRIMUS_ENV_SSH_HOST;
 const root = mkdtempSync(join(tmpdir(), "pi-env-ssh-external-"));
 let connected: Promise<{ connection: Connection; remote: RemotePlatform }> | undefined;
 
@@ -30,10 +30,10 @@ async function connect(): Promise<{ connection: Connection; remote: RemotePlatfo
 	connected ??= (async () => {
 		const target: SshTarget = {
 			host: host!,
-			...(process.env.PI_ENV_SSH_USER === undefined ? {} : { user: process.env.PI_ENV_SSH_USER }),
-			...(process.env.PI_ENV_SSH_PORT === undefined ? {} : { port: Number(process.env.PI_ENV_SSH_PORT) }),
-			...(process.env.PI_ENV_SSH_KEY === undefined ? {} : { identityFile: process.env.PI_ENV_SSH_KEY }),
-			...(process.env.PI_ENV_SSH_PROGRAM === undefined ? {} : { ssh: process.env.PI_ENV_SSH_PROGRAM }),
+			...(process.env.PRIMUS_ENV_SSH_USER === undefined ? {} : { user: process.env.PRIMUS_ENV_SSH_USER }),
+			...(process.env.PRIMUS_ENV_SSH_PORT === undefined ? {} : { port: Number(process.env.PRIMUS_ENV_SSH_PORT) }),
+			...(process.env.PRIMUS_ENV_SSH_KEY === undefined ? {} : { identityFile: process.env.PRIMUS_ENV_SSH_KEY }),
+			...(process.env.PRIMUS_ENV_SSH_PROGRAM === undefined ? {} : { ssh: process.env.PRIMUS_ENV_SSH_PROGRAM }),
 			knownHostsFile: join(root, "known_hosts"),
 			hostKeyAlias: "pi-env-external",
 		};
@@ -66,7 +66,7 @@ describe.skipIf(host === undefined)("SSH to this machine's server", () => {
 		const { connection, remote } = await connect();
 		const info = await connection.info();
 		expect(nodePlatform(info).platform).toBe(process.platform);
-		if (windows) expect(remote.shell).toBe(process.env.PI_ENV_SSH_SHELL ?? "cmd");
+		if (windows) expect(remote.shell).toBe(process.env.PRIMUS_ENV_SSH_SHELL ?? "cmd");
 	}, 120_000);
 });
 

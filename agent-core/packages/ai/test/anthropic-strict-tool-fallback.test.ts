@@ -3,7 +3,6 @@ import type { BetaTool, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/r
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { type AnthropicOptions, stream as streamAnthropic } from "../src/api/anthropic-messages.ts";
-import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
 import type { Model, Tool, TranscriptContext } from "../src/types.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
@@ -256,33 +255,5 @@ describe("Anthropic preferred strict tool fallback", () => {
 		await streamAnthropic(model, transcript, options).result();
 		await streamAnthropic(model, transcript, options).result();
 		expect(payloads.map((payload) => (payload.tools as BetaTool[])[0].strict)).toEqual([true, undefined, true]);
-	});
-
-	it("preserves prefer through pi-messages so the gateway's Anthropic adapter can fall back", async () => {
-		const { payloads, options } = harness((_payload, attempt) =>
-			attempt === 1 ? errorResponse() : successResponse(),
-		);
-		const transcript = context([tool("lookup", "prefer")]);
-		const gatewayModel: Model<"pi-messages"> = {
-			...model,
-			api: "pi-messages",
-			provider: "radius",
-			baseUrl: "https://radius.example/v1",
-			compat: undefined,
-		};
-		const result = await streamPiMessages(gatewayModel, transcript, {
-			apiKey: "radius-test",
-			fetch: async (_input, init) => {
-				const request = JSON.parse(init?.body as string) as { context: TranscriptContext };
-				expect(request.context).toEqual(JSON.parse(JSON.stringify(transcript)));
-				const upstream = await streamAnthropic(model, request.context, options).result();
-				return new Response(
-					`data: ${JSON.stringify({ type: "done", reason: upstream.stopReason, usage: upstream.usage })}\n\n`,
-					{ headers: { "content-type": "text/event-stream" } },
-				);
-			},
-		}).result();
-		expect(result.stopReason).toBe("stop");
-		expect(payloads.map((payload) => (payload.tools as BetaTool[])[0].strict)).toEqual([true, undefined]);
 	});
 });

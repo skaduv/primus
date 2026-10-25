@@ -1,16 +1,15 @@
-import { type ClientIdentity, PI_ATTRIBUTION } from "@earendil-works/pi-ai";
+import type { ClientIdentity } from "@earendil-works/pi-ai";
 import { VERSION } from "../config.ts";
 import type { SettingsManager } from "./settings-manager.ts";
-import { isInstallTelemetryEnabled } from "./telemetry.ts";
 
 /**
- * How pi's requests identify it to providers: a detailed `User-Agent` with pi's version, and attribution to pi as a
- * CLI agent while install telemetry is enabled.
+ * How requests identify the app to providers: a detailed `User-Agent` with the Core version.
+ * Primus: no provider attribution headers are sent (they would attribute traffic to the upstream project).
  */
-export function getClientIdentity(settingsManager: SettingsManager): ClientIdentity {
+export function getClientIdentity(_settingsManager: SettingsManager): ClientIdentity {
 	return {
 		userAgent: "detailed",
 		version: VERSION,
-		attribution: isInstallTelemetryEnabled(settingsManager) ? PI_ATTRIBUTION : null,
+		attribution: null,
 	};
 }
