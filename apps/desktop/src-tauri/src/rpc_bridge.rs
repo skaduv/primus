@@ -112,7 +112,7 @@ mod tests {
         let frames = framer.push(b"c\n{\"x\"");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].len(), 2001);
-        assert_eq!(framer.pending_len(), 5);
+        assert_eq!(framer.pending_len(), 4);
         assert_eq!(push_str(&mut framer, ":1}\n"), vec!["{\"x\":1}"]);
         assert_eq!(framer.pending_len(), 0);
     }
