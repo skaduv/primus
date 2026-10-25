@@ -20,3 +20,6 @@ minimumReleaseAgeExclude:
 allowBuilds:
   esbuild: true
   "@biomejs/biome": true
+  # webdriverio 依赖的驱动下载器：E2E 由 tauri-driver + CI 按 WebView2 版本下载的 msedgedriver 驱动，不需要它们的安装脚本
+  edgedriver: false
+  geckodriver: false

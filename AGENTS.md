@@ -92,6 +92,8 @@ pnpm build:core         # 构建 Agent Core
 pnpm smoke:core         # Agent Core RPC 冒烟（get_state）
 pnpm build:extensions   # 构建 primus-bundle.js
 pnpm lint && pnpm test  # Biome + Vitest
+pnpm test:e2e           # 端到端冒烟（仅 Windows：先 pnpm build，需 tauri-driver 与匹配 WebView2 的 msedgedriver）
+cd apps/desktop/src-tauri && cargo nextest run --all-targets   # Rust 单测（CI 用 --profile ci 输出 JUnit）
 pnpm check:versions && pnpm check:tauri-imports && pnpm check:forbidden-sdk && pnpm check:naming
 ```
 

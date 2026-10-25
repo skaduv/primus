@@ -20,6 +20,9 @@ concurrency:
 
 env:
   WIX_VERSION: "7.0.0"
+  # 测试工具（技术方案第 2.4、18 章）：cargo-nextest 跑薄壳单测，tauri-driver 跑 Windows 端到端测试
+  CARGO_NEXTEST_VERSION: "0.9.149"
+  TAURI_DRIVER_VERSION: "2.1.0"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -64,9 +67,29 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
 
-      - name: Rust 单测
+      - name: 安装 cargo-nextest ${{ env.CARGO_NEXTEST_VERSION }}
+        uses: taiki-e/install-action@v2.87.31
+        with:
+          tool: cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+
+      - name: Rust 单测（cargo-nextest）
         working-directory: apps/desktop/src-tauri
-        run: cargo test --locked --all-targets
+        run: cargo nextest run --locked --all-targets --profile ci
+
+      - name: Rust 文档测试
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --doc
+
+      - name: 上传 Rust 单测报告（JUnit）
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: nextest-junit-linux
+          path: apps/desktop/src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
+      - name: e2e 类型检查
+        run: pnpm --filter @primus/e2e typecheck
 
   windows:
     name: Windows 编译（MSVC · Rust · WiX）
@@ -117,9 +140,26 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Rust 单测
+      - name: 安装 cargo-nextest ${{ env.CARGO_NEXTEST_VERSION }}
+        uses: taiki-e/install-action@v2.87.31
+        with:
+          tool: cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+
+      - name: Rust 单测（cargo-nextest）
         working-directory: apps/desktop/src-tauri
-        run: cargo test --locked --all-targets
+        run: cargo nextest run --locked --all-targets --profile ci
+
+      - name: Rust 文档测试
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --doc
+
+      - name: 上传 Rust 单测报告（JUnit）
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: nextest-junit-windows
+          path: apps/desktop/src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: ignore
 
       # Agent Core 以 git subtree 引入（第 6.1 节）：用锁文件安装、锁定版本的模型目录，在 Windows 上实际构建
       - name: 构建 Agent Core
@@ -142,3 +182,32 @@ jobs:
           $exe = "apps/desktop/src-tauri/target/release/Primus.exe"
           if (-not (Test-Path $exe)) { throw "未找到 $exe" }
           Get-Item $exe | Select-Object Name, Length
+
+      # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
+      - name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}
+        run: cargo install tauri-driver --locked --version ${{ env.TAURI_DRIVER_VERSION }}
+
+      - name: 安装与 WebView2 运行时匹配的 msedgedriver
+        shell: pwsh
+        run: |
+          $guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' # WebView2 Evergreen 运行时
+          $keys = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$guid",
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$guid",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$guid"
+          )
+          $version = $keys | Where-Object { Test-Path $_ } |
+            ForEach-Object { (Get-ItemProperty -Path $_ -Name pv -ErrorAction SilentlyContinue).pv } |
+            Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -First 1
+          if (-not $version) { throw "未找到 WebView2 运行时版本" }
+          Write-Host "WebView2 运行时 $version"
+          $dir = Join-Path $env:RUNNER_TEMP "msedgedriver"
+          $zip = Join-Path $env:RUNNER_TEMP "edgedriver_win64.zip"
+          Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $driver = Join-Path $dir "msedgedriver.exe"
+          & $driver --version
+          "PRIMUS_NATIVE_DRIVER=$driver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 端到端冒烟（WebdriverIO + tauri-driver）
+        run: pnpm test:e2e
