@@ -5,10 +5,10 @@ import {
 	type Api,
 	type AssistantMessage,
 	createAssistantMessageEventStream,
+	formatUserAgent,
 	getAttributionHeaders,
 	type Model,
 	normalizeContext,
-	PI_ATTRIBUTION,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -31,15 +31,15 @@ describe("createAgentSession client identity", () => {
 		agentDir = join(tempDir, "agent");
 		mkdirSync(cwd, { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
-		originalTelemetryEnv = process.env.PI_TELEMETRY;
-		delete process.env.PI_TELEMETRY;
+		originalTelemetryEnv = process.env.PRIMUS_TELEMETRY;
+		delete process.env.PRIMUS_TELEMETRY;
 	});
 
 	afterEach(() => {
 		if (originalTelemetryEnv === undefined) {
-			delete process.env.PI_TELEMETRY;
+			delete process.env.PRIMUS_TELEMETRY;
 		} else {
-			process.env.PI_TELEMETRY = originalTelemetryEnv;
+			process.env.PRIMUS_TELEMETRY = originalTelemetryEnv;
 		}
 		if (tempDir && existsSync(tempDir)) {
 			rmSync(tempDir, { recursive: true, force: true });
@@ -139,20 +139,17 @@ describe("createAgentSession client identity", () => {
 		}
 	}
 
-	it("identifies pi with a detailed User-Agent and attribution as a CLI agent", async () => {
+	it("identifies primus with a detailed User-Agent and no provider attribution", async () => {
 		const model = createModel("openrouter", "https://openrouter.ai/api/v1");
 		const options = await captureOptions(model);
 
 		expect(options?.identity).toEqual({
 			userAgent: "detailed",
 			version: VERSION,
-			attribution: PI_ATTRIBUTION,
+			attribution: null,
 		});
-		expect(getAttributionHeaders(model, options?.identity)).toEqual({
-			"HTTP-Referer": "https://pi.dev",
-			"X-OpenRouter-Title": "pi",
-			"X-OpenRouter-Categories": "cli-agent",
-		});
+		expect(formatUserAgent(options?.identity).startsWith(`primus/${VERSION} (`)).toBe(true);
+		expect(getAttributionHeaders(model, options?.identity)).toEqual({});
 	});
 
 	it("turns attribution off when telemetry is disabled", async () => {
@@ -163,8 +160,8 @@ describe("createAgentSession client identity", () => {
 		expect(getAttributionHeaders(model, options?.identity)).toEqual({});
 	});
 
-	it("turns attribution off with PI_TELEMETRY=0", async () => {
-		process.env.PI_TELEMETRY = "0";
+	it("turns attribution off with PRIMUS_TELEMETRY=0", async () => {
+		process.env.PRIMUS_TELEMETRY = "0";
 		const options = await captureOptions(createModel("openrouter", "https://openrouter.ai/api/v1"));
 
 		expect(options?.identity?.attribution).toBeNull();

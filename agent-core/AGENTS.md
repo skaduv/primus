@@ -1,5 +1,10 @@
 # Development Rules
 
+## Primus Fork Constraints
+
+- This directory is the Primus fork of the upstream agent core. Every change must be recorded in `PATCHES.md`; only branding, two-protocol pruning, and build-entry changes are allowed.
+- Only the `openai-responses` and `anthropic-messages` APIs exist. Do not add LLM providers, API adapters, or provider SDKs (Google, AWS Bedrock, Mistral, and others). Use `models.json` endpoints for compatible gateways.
+
 ## Conversational Style
 
 - Keep answers short and concise

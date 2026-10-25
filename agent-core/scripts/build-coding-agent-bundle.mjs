@@ -143,7 +143,6 @@ for (const entry of [
 	join(codingAgentDistDir, "rpc-entry.js"),
 	join(codingAgentDistDir, "utils", "image-resize-worker.js"),
 	join(codingAgentDistDir, "extensions", "codemode", "worker.js"),
-	join(aiDistDir, "api", "bedrock-converse-stream.js"),
 	join(aiDistDir, "auth", "oauth", "anthropic.js"),
 ]) {
 	if (!existsSync(entry)) {
@@ -167,29 +166,18 @@ const mainResult = await build({
 	splitting: true,
 });
 
-const bedrockLoaderOutput = findContainingOutput(mainResult.metafile, "packages/ai/dist/api/bedrock-converse-stream.lazy.js");
+// Primus: the Bedrock adapter is removed (two-protocol pruning); the OAuth loader anchors the lazy entries.
 const oauthLoaderOutput = findContainingOutput(mainResult.metafile, "packages/ai/dist/auth/oauth/load.js");
 const imageResizeOutput = findContainingOutput(mainResult.metafile, "packages/coding-agent/dist/utils/image-resize.js");
 const configOutput = findContainingOutput(mainResult.metafile, "packages/coding-agent/dist/config.js");
-if (dirname(bedrockLoaderOutput) !== dirname(oauthLoaderOutput)) {
-	throw new Error("Bedrock and OAuth lazy loaders were emitted into different directories");
-}
 
 // These implementations are reached through variable-specifier imports or a
 // worker URL, so the main bundle cannot follow them. Emit one self-contained
 // file per implementation beside the code that resolves it.
 const lazyEntryPoints = {
 	anthropic: join(aiDistDir, "auth", "oauth", "anthropic.js"),
-	"bedrock-converse-stream": join(aiDistDir, "api", "bedrock-converse-stream.js"),
-	"github-copilot": join(aiDistDir, "auth", "oauth", "github-copilot.js"),
 	"image-resize-worker": join(codingAgentDistDir, "utils", "image-resize-worker.js"),
-	"kimi-coding": join(aiDistDir, "auth", "oauth", "kimi-coding.js"),
-	meta: join(aiDistDir, "auth", "oauth", "meta.js"),
 	"openai-chatgpt": join(aiDistDir, "auth", "oauth", "openai-chatgpt.js"),
-	"openai-codex": join(aiDistDir, "auth", "oauth", "openai-codex.js"),
-	openrouter: join(aiDistDir, "auth", "oauth", "openrouter.js"),
-	radius: join(aiDistDir, "auth", "oauth", "radius.js"),
-	xai: join(aiDistDir, "auth", "oauth", "xai.js"),
 };
 
 // Every OAuth flow loaded through importOAuthModule() must have a lazy entry,
@@ -205,7 +193,7 @@ const lazyResult = await build({
 	...commonBuildOptions(),
 	entryNames: "[name]",
 	entryPoints: lazyEntryPoints,
-	outdir: dirname(bedrockLoaderOutput),
+	outdir: dirname(oauthLoaderOutput),
 	splitting: false,
 });
 
@@ -218,7 +206,7 @@ const codemodeWorkerResult = await build({
 	banner: undefined,
 	entryNames: "[name]",
 	entryPoints: { "codemode-worker": join(codingAgentDistDir, "extensions", "codemode", "worker.js") },
-	outdir: dirname(bedrockLoaderOutput),
+	outdir: dirname(oauthLoaderOutput),
 	splitting: false,
 });
 for (const [outputPath, output] of Object.entries(codemodeWorkerResult.metafile.outputs)) {
@@ -233,12 +221,12 @@ for (const [outputPath, output] of Object.entries(codemodeWorkerResult.metafile.
 	}
 }
 
-const imageResizeWorkerOutput = resolve(dirname(bedrockLoaderOutput), "image-resize-worker.js");
+const imageResizeWorkerOutput = resolve(dirname(oauthLoaderOutput), "image-resize-worker.js");
 if (dirname(imageResizeOutput) !== dirname(imageResizeWorkerOutput)) {
 	throw new Error("Image resize implementation and worker were emitted into different directories");
 }
 // getCodemodeWorkerUrl() in config.ts resolves the worker next to its own chunk.
-if (dirname(configOutput) !== dirname(bedrockLoaderOutput)) {
+if (dirname(configOutput) !== dirname(oauthLoaderOutput)) {
 	throw new Error("config.ts and the codemode worker were emitted into different directories");
 }
 

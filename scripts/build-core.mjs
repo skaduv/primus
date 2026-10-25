@@ -6,6 +6,8 @@
 //
 // 可复现性：
 // - 依赖：只用 agent-core/package-lock.json（npm ci），HUSKY=0 防止 Core 的 prepare 脚本改动本仓库的 git hooks。
+// - 产物：编译前清空各包的 dist/。tsc 不会删除已删源文件的旧产物（如裁剪掉的供应商适配器），
+//   不清空会让旧文件残留在产物里，被禁 SDK 检查也会误报。
 // - 模型数据：Core 构建需要内置模型目录。上游默认构建会在线抓取最新数据（每次结果不同），
 //   这里改为下载 agent-core/nix/model-catalog.json 锁定的目录修订版，校验 SHA-256 后离线生成，
 //   再执行 build:offline。
@@ -13,7 +15,7 @@
 // TODO（打包阶段，第 3.2 节）：把产物复制到 dist/agent-core/，并放入校验过的 node.exe 到 dist/runtime/。
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -66,8 +68,17 @@ async function fetchPinnedCatalog() {
   return file;
 }
 
+function cleanDist() {
+  const packagesDir = join(coreDir, "packages");
+  for (const name of readdirSync(packagesDir)) {
+    const dist = join(packagesDir, name, "dist");
+    if (existsSync(dist)) rmSync(dist, { recursive: true, force: true });
+  }
+}
+
 if (!skipInstall) run("npm", ["ci", "--no-audit", "--no-fund"]);
 const catalog = await fetchPinnedCatalog();
 run("node", ["packages/ai/scripts/hydrate-model-catalog.ts", catalog]);
+cleanDist();
 run("npm", ["run", "build:offline"]);
 console.log("\n✓ Agent Core 构建完成：agent-core/packages/coding-agent/dist/bundle/rpc-entry.js");

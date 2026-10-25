@@ -130,7 +130,9 @@ describe("AgentSession actionable boundaries", () => {
 		const requests: string[] = [];
 		const instruction = "EXACT-REPLACEMENT-INSTRUCTION ".repeat(100);
 		const harness = await createHarness({
-			models: [{ id: "faux-1", contextWindow: 2_000, maxTokens: 100 }],
+			// Primus: the default system prompt is shorter (no upstream docs section), so the
+			// window is smaller to keep the replacement above the compaction threshold.
+			models: [{ id: "faux-1", contextWindow: 1_200, maxTokens: 100 }],
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
 				(pi) => {

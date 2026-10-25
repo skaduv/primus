@@ -68,7 +68,7 @@ Both must pass.
 
 Do not edit `CHANGELOG.md`. Changelog entries are added by maintainers.
 
-If you are adding a new provider to `packages/ai`, see `AGENTS.md` for required tests.
+Primus fork: do not add LLM providers to `packages/ai`. Only the OpenAI Responses and Anthropic Messages protocols are supported (see `PATCHES.md`).
 
 ## Questions?
 

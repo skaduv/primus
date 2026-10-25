@@ -75,8 +75,9 @@ function runtimeDescription(): string | undefined {
 export function formatUserAgent(identity?: ClientIdentity): string {
 	const mode = identity?.userAgent ?? "detailed";
 	if (typeof mode === "object") return mode.custom;
-	if (mode === "short") return "pi";
-	const product = `pi/${getClientVersion(identity)}`;
+	// Primus: the product token is "primus".
+	if (mode === "short") return "primus";
+	const product = `primus/${getClientVersion(identity)}`;
 	const runtime = runtimeDescription();
 	return runtime ? `${product} (${process.platform}; ${runtime}; ${process.arch})` : `${product} (browser)`;
 }

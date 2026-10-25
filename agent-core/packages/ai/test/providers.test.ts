@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { lazyApi } from "../src/api/lazy.ts";
 import { envApiKeyAuth } from "../src/auth/helpers.ts";
-import type { AuthContext, AuthEvent } from "../src/auth/types.ts";
+import type { AuthContext } from "../src/auth/types.ts";
 import { getModel as getCompatModel, getModels as getCompatModels } from "../src/compat.ts";
-import { createModels, createProvider, getSupportedThinkingLevels } from "../src/models.ts";
+import { createModels, createProvider } from "../src/models.ts";
 import { InMemoryModelsStore } from "../src/models-store.ts";
 import {
 	builtinModels,
@@ -17,12 +17,8 @@ import {
 	getBuiltinModels,
 	getBuiltinProviders,
 } from "../src/providers/all.ts";
-import { amazonBedrockProvider } from "../src/providers/amazon-bedrock.ts";
 import { anthropicProvider } from "../src/providers/anthropic.ts";
-import { cloudflareAIGatewayProvider } from "../src/providers/cloudflare-ai-gateway.ts";
-import { cloudflareWorkersAIProvider } from "../src/providers/cloudflare-workers-ai.ts";
 import { fauxAssistantMessage, fauxProvider } from "../src/providers/faux.ts";
-import { googleVertexProvider } from "../src/providers/google-vertex.ts";
 import type {
 	Api,
 	DeferredCancelOptions,
@@ -63,17 +59,13 @@ describe("builtin providers", () => {
 		expect(anthropic?.api).toBe("anthropic-messages");
 
 		const all = models.getModels();
-		expect(all.length).toBeGreaterThan(500);
+		expect(all.length).toBeGreaterThan(0);
 
 		for (const provider of providers) {
 			const list = models.getAllModels(provider.id);
 			expect(list.length).toBeGreaterThan(0);
 			expect(list.every((m) => m.provider === provider.id)).toBe(true);
 		}
-		expect(getBuiltinModel("radius", "balanced")).toMatchObject({
-			api: "pi-messages",
-			provider: "radius",
-		});
 	});
 
 	it("returns empty results for unknown provider ids", () => {
@@ -118,170 +110,10 @@ describe("builtin providers", () => {
 			images: { maxPerRequest: 100 },
 		});
 		expect(getBuiltinModel("anthropic", "claude-opus-5").inputLimits?.images?.maxPerRequest).toBe(600);
-		expect(getBuiltinModel("amazon-bedrock", "anthropic.claude-haiku-4-5-20251001-v1:0").inputLimits).toMatchObject({
-			images: { maxPerMessage: 20 },
-		});
 		expect(getBuiltinModel("openai", "gpt-4o").inputLimits).toMatchObject({
 			maxRequestBytes: 512 * 1024 * 1024,
 			images: { maxPerRequest: 1500 },
 		});
-		expect(getBuiltinModel("google", "gemini-2.5-flash").inputLimits).toMatchObject({
-			maxRequestBytes: 20 * 1024 * 1024,
-			images: { maxPerRequest: 3600 },
-		});
-	});
-
-	it("does not infer image limits from gateway API compatibility", () => {
-		const openRouterModel = getBuiltinModels("openrouter").find((model) => model.input.includes("image"));
-		expect(openRouterModel?.inputLimits).toEqual({ images: { resize: DEFAULT_IMAGE_RESIZE } });
-	});
-
-	it("uses models.dev effort levels for Google thinking models", () => {
-		// Regression test for https://github.com/earendil-works/pi/issues/9455
-		for (const provider of ["google", "google-vertex"] as const) {
-			expect(getSupportedThinkingLevels(getBuiltinModel(provider, "gemini-3.6-flash"))).toContain("minimal");
-			expect(getSupportedThinkingLevels(getBuiltinModel(provider, "gemini-3.8-flash"))).toEqual([
-				"low",
-				"medium",
-				"high",
-			]);
-			expect(getSupportedThinkingLevels(getBuiltinModel(provider, "gemini-3.1-pro-preview"))).toEqual([
-				"low",
-				"medium",
-				"high",
-			]);
-		}
-		expect(getSupportedThinkingLevels(getBuiltinModel("opencode", "gemini-3.8-flash"))).toEqual([
-			"low",
-			"medium",
-			"high",
-		]);
-		expect(getSupportedThinkingLevels(getBuiltinModel("google", "gemma-4-31b-it"))).toEqual(["minimal", "high"]);
-	});
-
-	it("enables mid-conversation system messages only for verified models", () => {
-		const models = builtinModels();
-		const supported = [
-			["moonshotai", "kimi-k2.6"],
-			["moonshotai", "kimi-k2.7-code"],
-			["moonshotai", "kimi-k2.7-code-highspeed"],
-			["moonshotai", "kimi-k3"],
-			["moonshotai-cn", "kimi-k2.6"],
-			["moonshotai-cn", "kimi-k2.7-code"],
-			["moonshotai-cn", "kimi-k2.7-code-highspeed"],
-			["moonshotai-cn", "kimi-k3"],
-			["fireworks", "accounts/fireworks/models/kimi-k3"],
-			["fireworks", "accounts/fireworks/routers/kimi-k3-fast"],
-			["openai", "gpt-5.4"],
-			["openai", "gpt-5.5"],
-			["openai", "gpt-6-astra"],
-			["openai-codex", "gpt-5.6-sol"],
-			["anthropic", "claude-opus-5"],
-			["opencode", "gpt-5.4"],
-			["opencode", "gpt-5.6-terra"],
-			["opencode-go", "gpt-5.6-luna"],
-			["opencode", "claude-opus-4-8"],
-			["opencode", "claude-opus-5"],
-			["opencode", "kimi-k3"],
-			["opencode-go", "kimi-k3"],
-			["github-copilot", "gpt-5.6-terra"],
-			["github-copilot", "claude-opus-5"],
-			["github-copilot", "claude-opus-4.8"],
-			["github-copilot", "kimi-k3"],
-			["deepseek", "deepseek-v4-pro"],
-			["openrouter", "openai/gpt-5.6-terra"],
-		] as const;
-		const unsupported = [
-			["fireworks", "accounts/fireworks/models/nemotron-3-ultra-nvfp4"],
-			["openai", "gpt-4.1"],
-			["openai", "gpt-5.2"],
-			["anthropic", "claude-sonnet-4-5"],
-			["google", "gemini-2.5-pro"],
-			["opencode", "gpt-5.2"],
-			["opencode", "claude-sonnet-4-5"],
-			["github-copilot", "claude-sonnet-4.6"],
-			["deepseek", "deepseek-flash"],
-			["openrouter", "anthropic/claude-opus-5"],
-			["openrouter", "moonshotai/kimi-k3"],
-			["openrouter", "openai/gpt-5.6-terra:batch"],
-		] as const;
-		for (const [provider, modelId] of supported) {
-			expect(models.getModel(provider, modelId), `${provider}/${modelId}`).toHaveProperty(
-				"compat.supportsMidConvoSystemMessages",
-				true,
-			);
-		}
-		for (const [provider, modelId] of unsupported) {
-			expect(models.getModel(provider, modelId), `${provider}/${modelId}`).not.toHaveProperty(
-				"compat.supportsMidConvoSystemMessages",
-			);
-		}
-	});
-
-	it("routes proxied tool changes through verified transports only", () => {
-		const models = builtinModels();
-		for (const [provider, modelId] of [
-			["opencode", "gpt-5.6-terra"],
-			["github-copilot", "gpt-5.6-terra"],
-		] as const) {
-			// Proxies pass `additional_tools` through to OpenAI but are not verified for tool search.
-			expect(models.getModel(provider, modelId)?.compat, `${provider}/${modelId}`).toMatchObject({
-				supportsAdditionalTools: true,
-			});
-			expect(models.getModel(provider, modelId)?.compat, `${provider}/${modelId}`).not.toHaveProperty(
-				"supportsToolSearch",
-			);
-		}
-		// Proxied Anthropic endpoints reject `tool_addition`/`tool_removal` blocks.
-		for (const provider of ["opencode", "github-copilot"] as const) {
-			expect(models.getModel(provider, "claude-opus-5")?.compat, provider).not.toHaveProperty(
-				"supportsMidConvoToolChanges",
-			);
-		}
-		expect(models.getModel("anthropic", "claude-opus-5")?.compat).toMatchObject({
-			supportsMidConvoToolChanges: true,
-		});
-		// Kimi-style tool-bearing system messages survive Moonshot and OpenCode but not Copilot.
-		for (const provider of ["moonshotai", "moonshotai-cn", "opencode", "opencode-go"] as const) {
-			expect(models.getModel(provider, "kimi-k3")?.compat, provider).toMatchObject({
-				supportsMidConvoToolAdditions: true,
-			});
-		}
-		for (const provider of ["moonshotai", "moonshotai-cn"] as const) {
-			for (const modelId of ["kimi-k2.6", "kimi-k2.7-code", "kimi-k2.7-code-highspeed"] as const) {
-				expect(models.getModel(provider, modelId)?.compat, `${provider}/${modelId}`).not.toHaveProperty(
-					"supportsMidConvoToolAdditions",
-				);
-			}
-		}
-		expect(models.getModel("github-copilot", "kimi-k3")?.compat).not.toHaveProperty("supportsMidConvoToolAdditions");
-		expect(models.getModel("openrouter", "openai/gpt-5.6-terra")?.compat).not.toHaveProperty(
-			"supportsMidConvoToolAdditions",
-		);
-	});
-
-	it("uses official Kimi K3 pricing for Moonshot providers", () => {
-		const models = builtinModels();
-		for (const provider of ["moonshotai", "moonshotai-cn"]) {
-			expect(models.getModel(provider, "kimi-k3")?.cost).toEqual({
-				input: 3,
-				output: 15,
-				cacheRead: 0.3,
-				cacheWrite: 0,
-			});
-		}
-	});
-
-	it("uses API-equivalent implied pricing for Kimi Coding subscription models", () => {
-		const models = builtinModels();
-		const expectedCosts = {
-			k3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 0 },
-			"kimi-for-coding-highspeed": { input: 1.9, output: 8, cacheRead: 0.38, cacheWrite: 0 },
-		};
-
-		for (const [modelId, cost] of Object.entries(expectedCosts)) {
-			expect(models.getModel("kimi-coding", modelId)?.cost).toEqual(cost);
-		}
 	});
 
 	it("resolves Anthropic bearer auth from env with auth token precedence", async () => {
@@ -309,167 +141,6 @@ describe("builtin providers", () => {
 		const result = await models.getAuth("anthropic");
 		expect(result?.auth.apiKey).toBe("oauth-token");
 		expect(result?.source).toBe("ANTHROPIC_OAUTH_TOKEN");
-	});
-
-	it("runs provider-owned Bedrock bearer token and AWS profile login flows", async () => {
-		const auth = amazonBedrockProvider().auth.apiKey!;
-		const bearerAnswers = ["bearer-token", "bedrock-token"];
-		expect(
-			await auth.login?.({
-				signal: neverAbortedSignal,
-				prompt: async () => bearerAnswers.shift()!,
-				notify: () => {},
-			}),
-		).toEqual({ type: "api_key", key: "bedrock-token" });
-
-		const profileAnswers = ["aws-profile", "work"];
-		const events: AuthEvent[] = [];
-		expect(
-			await auth.login?.({
-				signal: neverAbortedSignal,
-				prompt: async () => profileAnswers.shift()!,
-				notify: (event) => events.push(event),
-			}),
-		).toEqual({ type: "api_key", env: { AWS_PROFILE: "work" } });
-		expect(events).toEqual([
-			expect.objectContaining({
-				type: "info",
-				links: [expect.objectContaining({ label: "AWS credential provider chain" })],
-			}),
-		]);
-		expect(
-			await auth.resolve({
-				ctx: fakeAuthContext({}),
-				credential: { type: "api_key", env: { AWS_PROFILE: "work" } },
-				signal: neverAbortedSignal,
-			}),
-		).toMatchObject({ auth: {}, env: { AWS_PROFILE: "work" } });
-	});
-
-	it("reports bedrock as configured from ambient AWS credentials without an api key", async () => {
-		const models = createModels({ authContext: fakeAuthContext({ AWS_PROFILE: "dev" }) });
-		models.setProvider(amazonBedrockProvider());
-		const model = models.getModels("amazon-bedrock")[0];
-
-		const result = await models.getAuth(model.provider);
-		expect(result?.auth).toEqual({});
-		expect(result?.source).toBe("AWS_PROFILE");
-
-		const unconfigured = createModels({ authContext: fakeAuthContext({}) });
-		unconfigured.setProvider(amazonBedrockProvider());
-		expect(await unconfigured.getAuth(model.provider)).toBeUndefined();
-	});
-
-	it("requires Cloudflare Workers AI account config and returns scoped env", async () => {
-		const missingAccount = createModels({ authContext: fakeAuthContext({ CLOUDFLARE_API_KEY: "cf-key" }) });
-		missingAccount.setProvider(cloudflareWorkersAIProvider());
-		const model = missingAccount.getModels("cloudflare-workers-ai")[0];
-		expect(await missingAccount.getAuth(model.provider)).toBeUndefined();
-
-		const configured = createModels({
-			authContext: fakeAuthContext({ CLOUDFLARE_API_KEY: "cf-key", CLOUDFLARE_ACCOUNT_ID: "account-id" }),
-		});
-		configured.setProvider(cloudflareWorkersAIProvider());
-		const result = await configured.getAuth(model.provider);
-		expect(result?.auth).toEqual({ apiKey: "cf-key" });
-		expect(result?.env).toEqual({ CLOUDFLARE_ACCOUNT_ID: "account-id" });
-	});
-
-	it("requires Cloudflare AI Gateway account and gateway config and returns scoped env headers", async () => {
-		const missingGateway = createModels({
-			authContext: fakeAuthContext({ CLOUDFLARE_API_KEY: "cf-key", CLOUDFLARE_ACCOUNT_ID: "account-id" }),
-		});
-		missingGateway.setProvider(cloudflareAIGatewayProvider());
-		const model = missingGateway.getModels("cloudflare-ai-gateway")[0];
-		expect(await missingGateway.getAuth(model.provider)).toBeUndefined();
-
-		const configured = createModels({
-			authContext: fakeAuthContext({
-				CLOUDFLARE_API_KEY: "cf-key",
-				CLOUDFLARE_ACCOUNT_ID: "account-id",
-				CLOUDFLARE_GATEWAY_ID: "gateway-id",
-			}),
-		});
-		configured.setProvider(cloudflareAIGatewayProvider());
-		const result = await configured.getAuth(model.provider);
-		expect(result?.auth).toEqual({
-			headers: {
-				"cf-aig-authorization": "Bearer cf-key",
-				Authorization: null,
-				"x-api-key": null,
-			},
-		});
-		expect(result?.env).toEqual({
-			CLOUDFLARE_ACCOUNT_ID: "account-id",
-			CLOUDFLARE_GATEWAY_ID: "gateway-id",
-		});
-	});
-
-	it("runs provider-owned Vertex API key and ADC login flows", async () => {
-		const auth = googleVertexProvider().auth.apiKey!;
-		const keyAnswers = ["api-key", "vertex-key"];
-		expect(
-			await auth.login?.({
-				signal: neverAbortedSignal,
-				prompt: async () => keyAnswers.shift()!,
-				notify: () => {},
-			}),
-		).toEqual({ type: "api_key", key: "vertex-key" });
-
-		const adcAnswers = ["adc", "project-id", "us-central1"];
-		const events: AuthEvent[] = [];
-		expect(
-			await auth.login?.({
-				signal: neverAbortedSignal,
-				prompt: async () => adcAnswers.shift()!,
-				notify: (event) => events.push(event),
-			}),
-		).toEqual({
-			type: "api_key",
-			env: { GOOGLE_CLOUD_PROJECT: "project-id", GOOGLE_CLOUD_LOCATION: "us-central1" },
-		});
-		expect(events).toEqual([
-			expect.objectContaining({
-				type: "info",
-				links: [expect.objectContaining({ label: "Application Default Credentials" })],
-			}),
-		]);
-		expect(
-			await auth.resolve({
-				ctx: fakeAuthContext({}, ["~/.config/gcloud/application_default_credentials.json"]),
-				credential: {
-					type: "api_key",
-					env: { GOOGLE_CLOUD_PROJECT: "project-id", GOOGLE_CLOUD_LOCATION: "us-central1" },
-				},
-				signal: neverAbortedSignal,
-			}),
-		).toMatchObject({
-			auth: {},
-			env: { GOOGLE_CLOUD_PROJECT: "project-id", GOOGLE_CLOUD_LOCATION: "us-central1" },
-		});
-	});
-
-	it("resolves vertex via ADC file plus project and location", async () => {
-		const adc = "~/.config/gcloud/application_default_credentials.json";
-		const configured = createModels({
-			authContext: fakeAuthContext({ GOOGLE_CLOUD_PROJECT: "proj", GOOGLE_CLOUD_LOCATION: "us-central1" }, [adc]),
-		});
-		configured.setProvider(googleVertexProvider());
-		const model = configured.getModels("google-vertex")[0];
-
-		const result = await configured.getAuth(model.provider);
-		expect(result?.auth).toEqual({});
-		expect(result?.source).toContain("application default");
-
-		// ADC without project/location is not configured
-		const partial = createModels({ authContext: fakeAuthContext({ GOOGLE_CLOUD_PROJECT: "proj" }, [adc]) });
-		partial.setProvider(googleVertexProvider());
-		expect(await partial.getAuth(model.provider)).toBeUndefined();
-
-		// explicit key wins over ADC
-		const keyed = createModels({ authContext: fakeAuthContext({ GOOGLE_CLOUD_API_KEY: "vertex-key" }) });
-		keyed.setProvider(googleVertexProvider());
-		expect((await keyed.getAuth(model.provider))?.auth.apiKey).toBe("vertex-key");
 	});
 });
 

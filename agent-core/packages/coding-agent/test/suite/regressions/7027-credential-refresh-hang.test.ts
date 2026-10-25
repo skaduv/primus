@@ -1,7 +1,6 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
-import { defaultModelPerProvider } from "../../../src/core/model-resolver.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
@@ -162,7 +161,7 @@ describe("post-login model discovery", () => {
 			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
 			ui: { requestRender: vi.fn() },
 		};
-		await complete.call(context, "radius", "Radius", "oauth", unknownModel);
+		await complete.call(context, "anthropic", "Anthropic", "oauth", unknownModel);
 		expect(context.showStatus).toHaveBeenCalledWith(expect.stringContaining("Credentials saved"));
 		expect(context.showError).not.toHaveBeenCalled();
 		expect(setModel).not.toHaveBeenCalled();
@@ -172,25 +171,12 @@ describe("post-login model discovery", () => {
 			setModel,
 			currentModel,
 			async discover(ids: string[]) {
-				availableModels.mockReturnValue(ids.map((id) => ({ ...model, provider: "radius", id })));
+				availableModels.mockReturnValue(ids.map((id) => ({ ...model, provider: "anthropic", id })));
 				finishRefresh();
 				await vi.advanceTimersByTimeAsync(0);
 			},
 		};
 	}
-
-	it.each([
-		{ models: ["fast", "balanced"], selected: "balanced" },
-		{ models: ["fast", "powerful"], selected: "fast" },
-	])("selects $selected from the refreshed catalog $models", async ({ models, selected }) => {
-		expect(defaultModelPerProvider.radius).toBe("balanced");
-		const login = await startLogin();
-		await login.discover(models);
-		expect(login.setModel).toHaveBeenCalledWith(expect.objectContaining({ provider: "radius", id: selected }), {
-			persist: true,
-		});
-		expect(login.showError).not.toHaveBeenCalled();
-	});
 
 	it("reports an empty catalog only after refresh", async () => {
 		const login = await startLogin();

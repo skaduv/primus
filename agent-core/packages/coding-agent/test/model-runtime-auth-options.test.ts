@@ -74,35 +74,33 @@ describe("ModelRuntime auth options", () => {
 		const runtime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
 		const options = authOptions(runtime);
 
+		// Primus: only the anthropic and openai providers are built in.
+		expect(new Set(options.map((option) => option.provider.id))).toEqual(new Set(["anthropic", "openai"]));
 		expect(options).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
 					type: "api_key",
-					provider: expect.objectContaining({ id: "amazon-bedrock", name: "Amazon Bedrock" }),
-					method: expect.objectContaining({ name: "AWS credentials or bearer token" }),
-				}),
-				expect.objectContaining({
-					type: "api_key",
-					provider: expect.objectContaining({ id: "google-vertex", name: "Google Vertex AI" }),
-					method: expect.objectContaining({ name: "Google Cloud credentials" }),
+					provider: expect.objectContaining({ id: "anthropic", name: "Anthropic" }),
+					method: expect.objectContaining({ name: "Anthropic API key" }),
 				}),
 				expect.objectContaining({
 					type: "oauth",
 					provider: expect.objectContaining({ id: "anthropic", name: "Anthropic" }),
+					method: expect.objectContaining({ name: "Anthropic (Claude Pro/Max)" }),
 				}),
 				expect.objectContaining({
 					type: "api_key",
-					provider: expect.objectContaining({ id: "cloudflare-ai-gateway", name: "Cloudflare AI Gateway" }),
+					provider: expect.objectContaining({ id: "openai", name: "OpenAI" }),
 				}),
 				expect.objectContaining({
-					type: "api_key",
-					provider: expect.objectContaining({ id: "cloudflare-workers-ai", name: "Cloudflare Workers AI" }),
+					type: "oauth",
+					provider: expect.objectContaining({ id: "openai", name: "OpenAI" }),
+					method: expect.objectContaining({ name: "OpenAI (ChatGPT subscription)" }),
 				}),
 			]),
 		);
 		expect(authOptions(runtime, "api_key").every((option) => option.type === "api_key")).toBe(true);
 		expect(authOptions(runtime, "oauth").every((option) => option.type === "oauth")).toBe(true);
-		expect(options.some((option) => option.provider.id === "openai-codex" && option.type === "api_key")).toBe(false);
 	});
 
 	it("attaches the provider's active auth status to every method option", async () => {
@@ -132,28 +130,15 @@ describe("ModelRuntime auth options", () => {
 					refresh: "anthropic-refresh",
 					expires: Date.now() + 60 * 60_000,
 				},
-				openrouter: {
-					type: "oauth",
-					access: "openrouter-key",
-					refresh: "",
-					expires: Number.MAX_SAFE_INTEGER,
-				},
-				radius: {
-					type: "oauth",
-					access: "radius-access",
-					refresh: "radius-refresh",
-					expires: Date.now() + 60 * 60_000,
-				},
 			}),
 			modelsPath: null,
 		});
 
 		expect(runtime.isUsingOAuth("anthropic")).toBe(true);
 		expect(runtime.isUsingSubscription("anthropic")).toBe(true);
-		expect(runtime.isUsingOAuth("openrouter")).toBe(true);
-		expect(runtime.isUsingSubscription("openrouter")).toBe(false);
-		expect(runtime.isUsingOAuth("radius")).toBe(true);
-		expect(runtime.isUsingSubscription("radius")).toBe(false);
+		// Primus: the generic OAuth providers (OpenRouter, Radius) are removed; openai without credentials is neither.
+		expect(runtime.isUsingOAuth("openai")).toBe(false);
+		expect(runtime.isUsingSubscription("openai")).toBe(false);
 	});
 
 	it("constructs an API key method for an extension API-key provider", async () => {

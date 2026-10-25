@@ -95,7 +95,7 @@ async function captureSimplePayload(model: Model<Api>, options?: SimpleStreamOpt
 
 describe("sampling params", () => {
 	it("merges request sampling params into the request body", async () => {
-		const payload = await capturePayload(makeModel("openai-completions"), {
+		const payload = await capturePayload(makeModel("openai-responses"), {
 			samplingParams: { top_p: 0.95, top_k: 0, min_p: 0 },
 		});
 
@@ -105,14 +105,14 @@ describe("sampling params", () => {
 	});
 
 	it("omits sampling params when neither options nor model set them", async () => {
-		const payload = await capturePayload(makeModel("openai-completions"));
+		const payload = await capturePayload(makeModel("openai-responses"));
 
 		expect(payload.temperature).toBeUndefined();
 		expect(payload.top_p).toBeUndefined();
 	});
 
 	// Model defaults must apply to direct stream()/complete() calls, not only streamSimple() (#9506)
-	it.each(["openai-completions", "openai-responses", "azure-openai-responses"] as const)(
+	it.each(["openai-responses"] as const)(
 		"applies model-level sampling params with request keys taking precedence for %s",
 		async (api) => {
 			const payload = await capturePayload(makeModel(api, { top_p: 0.95, min_p: 0.05 }), {
@@ -125,7 +125,7 @@ describe("sampling params", () => {
 	);
 
 	it("passes request sampling params through streamSimple", async () => {
-		const payload = await captureSimplePayload(makeModel("openai-completions"), {
+		const payload = await captureSimplePayload(makeModel("openai-responses"), {
 			samplingParams: { top_p: 0.5 },
 		});
 
@@ -135,7 +135,7 @@ describe("sampling params", () => {
 	it("applies sampling params for the effective thinking level over model defaults", async () => {
 		const payload = await captureSimplePayload(
 			makeModel(
-				"openai-completions",
+				"openai-responses",
 				{ temperature: 1, top_p: 0.95 },
 				{
 					reasoning: true,
@@ -153,7 +153,7 @@ describe("sampling params", () => {
 
 	it("applies off sampling params when reasoning is disabled", async () => {
 		const payload = await captureSimplePayload(
-			makeModel("openai-completions", undefined, {
+			makeModel("openai-responses", undefined, {
 				samplingParamsByThinkingLevel: { off: { temperature: 0.7 } },
 			}),
 		);
@@ -163,7 +163,7 @@ describe("sampling params", () => {
 
 	it("merges stream-option keys over thinking-level keys", async () => {
 		const payload = await captureSimplePayload(
-			makeModel("openai-completions", undefined, {
+			makeModel("openai-responses", undefined, {
 				reasoning: true,
 				samplingParamsByThinkingLevel: { low: { temperature: 0.6, top_p: 0.95 } },
 			}),
@@ -174,7 +174,7 @@ describe("sampling params", () => {
 		expect(payload.top_p).toBe(0.5);
 	});
 
-	it.each(["openai-completions", "openai-responses", "azure-openai-responses"] as const)(
+	it.each(["openai-responses"] as const)(
 		"applies thinking-level params between model and request params for %s",
 		async (api) => {
 			const payload = await capturePayload(
@@ -195,27 +195,24 @@ describe("sampling params", () => {
 		},
 	);
 
-	it.each(["openai-responses", "azure-openai-responses"] as const)(
-		"uses medium sampling params for summary-only %s requests",
-		async (api) => {
-			const payload = await capturePayload(
-				makeModel(api, undefined, {
-					reasoning: true,
-					samplingParamsByThinkingLevel: {
-						off: { temperature: 0.7 },
-						medium: { temperature: 0.8 },
-					},
-				}),
-				{ reasoningSummary: "auto" },
-			);
+	it.each(["openai-responses"] as const)("uses medium sampling params for summary-only %s requests", async (api) => {
+		const payload = await capturePayload(
+			makeModel(api, undefined, {
+				reasoning: true,
+				samplingParamsByThinkingLevel: {
+					off: { temperature: 0.7 },
+					medium: { temperature: 0.8 },
+				},
+			}),
+			{ reasoningSummary: "auto" },
+		);
 
-			expect(payload.reasoning?.effort).toBe("medium");
-			expect(payload.temperature).toBe(0.8);
-		},
-	);
+		expect(payload.reasoning?.effort).toBe("medium");
+		expect(payload.temperature).toBe(0.8);
+	});
 
 	it("overrides named request fields", async () => {
-		const payload = await capturePayload(makeModel("openai-completions"), {
+		const payload = await capturePayload(makeModel("openai-responses"), {
 			temperature: 0,
 			samplingParams: { temperature: 1 },
 		});

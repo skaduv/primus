@@ -688,7 +688,7 @@ describe("durable tools", () => {
 		it("prepares command, cwd, and an explicit environment with the call's api", async () => {
 			const env = new NodeExecutionEnv({
 				cwd: createTempDir(),
-				shellEnv: { PI_BASH_PREPARE_INHERITED: "inherited" },
+				shellEnv: { PRIMUS_BASH_PREPARE_INHERITED: "inherited" },
 			});
 			getOrThrow(await env.createDir("workspace", undefined, BACKGROUND_CONTEXT));
 			const workspace = `${env.cwd}/workspace`;
@@ -701,9 +701,9 @@ describe("durable tools", () => {
 					receivedEnv = api.env;
 					receivedSignal = callContext.abortSignal;
 					execution.cwd = workspace;
-					execution.env = { PI_BASH_PREPARE_EXPLICIT: "explicit" };
+					execution.env = { PRIMUS_BASH_PREPARE_EXPLICIT: "explicit" };
 					execution.inheritEnv = false;
-					execution.command += `\n: > prepared-cwd\nprintf '%s:%s:%s' "$prefix" "\${PI_BASH_PREPARE_INHERITED-}" "$PI_BASH_PREPARE_EXPLICIT"`;
+					execution.command += `\n: > prepared-cwd\nprintf '%s:%s:%s' "$prefix" "\${PRIMUS_BASH_PREPARE_INHERITED-}" "$PRIMUS_BASH_PREPARE_EXPLICIT"`;
 					// Git Bash on Windows reports $PWD as an MSYS path, so only POSIX compares it.
 					if (process.platform !== "win32") execution.command += `\nprintf ':%s' "$PWD"`;
 				},

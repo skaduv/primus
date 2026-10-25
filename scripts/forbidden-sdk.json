@@ -16,5 +16,5 @@
     "groq-sdk",
     "ollama"
   ],
-  "enforceCore": false
+  "enforceCore": true
 }

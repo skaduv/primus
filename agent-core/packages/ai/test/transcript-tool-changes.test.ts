@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
-import { getModel, streamSimple } from "../src/compat.ts";
+import { streamSimple } from "../src/compat.ts";
 import type { Api, Context, Message, Model, SystemMessage, Tool } from "../src/types.ts";
 import { resolveTranscriptTools } from "../src/utils/transcript.ts";
 
@@ -497,111 +497,5 @@ describe("transcript system messages", () => {
 			requestTools: [baseTool, dropTool, { ...lateTool, description: "y" }],
 			foldedSystemMessages: 5,
 		});
-	});
-
-	test("anchors Kimi additions in tool-bearing system messages", async () => {
-		const model: Model<"openai-completions"> = {
-			...modelBase,
-			id: "kimi-k3",
-			name: "Kimi K3",
-			api: "openai-completions",
-			provider: "moonshotai",
-			compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true },
-		};
-		const payload = await capturePayload<{
-			tools?: Array<{ function?: { name: string } }>;
-			messages: Array<{ role: string; content?: string; tools?: Array<{ function?: { name: string } }> }>;
-		}>(model, additionContext);
-
-		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool"]);
-		expect(payload.messages.find((message) => message.tools)?.tools?.map((value) => value.function?.name)).toEqual([
-			"late_tool",
-		]);
-		expect(payload.messages.filter((message) => message.role === "system").map((message) => message.content)).toEqual(
-			["base prompt", undefined, "updated guidance"],
-		);
-	});
-
-	type KimiPayload = {
-		tools?: Array<{ function?: { name: string } }>;
-		messages: Array<{ role: string; tools?: Array<{ function?: { name: string } }> }>;
-	};
-
-	// #10940: Kimi tool messages cannot remove tools, so a removal rewrites the prefix once.
-	test("keeps the Kimi prefix across loads after a removal", async () => {
-		const [beforeRemoval, ...afterRemoval] = await captureToolHistory<KimiPayload>(getModel("kimi-coding", "k3"));
-
-		expect(beforeRemoval?.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "drop_tool"]);
-		for (const payload of afterRemoval) {
-			expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool"]);
-		}
-		expectGrowingPrefix(afterRemoval.map((payload) => payload.messages));
-		expect(
-			afterRemoval
-				.at(-1)
-				?.messages.filter((message) => message.tools)
-				.map((message) => message.tools?.[0]?.function?.name),
-		).toEqual(["late_tool", "later_tool"]);
-	});
-
-	// #10720: Kimi Coding uses Chat Completions so K3-style models keep added tools out of the top-level list.
-	test.each(["k3", "k3-256k", "kimi-for-coding"] as const)("anchors additions for Kimi Coding %s", async (modelId) => {
-		const payload = await capturePayload<KimiPayload>(getModel("kimi-coding", modelId), additionContext);
-
-		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool"]);
-		expect(payload.messages.find((message) => message.tools)?.tools?.map((value) => value.function?.name)).toEqual([
-			"late_tool",
-		]);
-	});
-
-	// #10720: Kimi Code Highspeed rejects tool-bearing system messages.
-	test("keeps Kimi Coding Highspeed additions in top-level tools", async () => {
-		const payload = await capturePayload<KimiPayload>(
-			getModel("kimi-coding", "kimi-for-coding-highspeed"),
-			additionContext,
-		);
-
-		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "late_tool"]);
-		expect(payload.messages.some((message) => message.tools !== undefined)).toBe(false);
-	});
-
-	test("keeps Kimi K2 system text inline without dynamic tool messages", async () => {
-		const model: Model<"openai-completions"> = {
-			...modelBase,
-			id: "kimi-k2.7-code",
-			name: "Kimi K2.7 Code",
-			api: "openai-completions",
-			provider: "moonshotai",
-			compat: { supportsMidConvoSystemMessages: true },
-		};
-		const payload = await capturePayload<{
-			tools?: Array<{ function?: { name: string } }>;
-			messages: Array<{ role: string; content?: string; tools?: Array<{ function?: { name: string } }> }>;
-		}>(model, additionContext);
-
-		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "late_tool"]);
-		expect(payload.messages.some((message) => message.tools !== undefined)).toBe(false);
-		expect(payload.messages.filter((message) => message.role === "system").map((message) => message.content)).toEqual(
-			["base prompt", "updated guidance"],
-		);
-	});
-
-	test("folds OpenAI-compatible updates into the system prompt without native support", async () => {
-		const model: Model<"openai-completions"> = {
-			...modelBase,
-			id: "custom-model",
-			name: "Custom model",
-			api: "openai-completions",
-			provider: "custom-provider",
-			reasoning: false,
-		};
-		const payload = await capturePayload<{
-			tools?: Array<{ function?: { name: string } }>;
-			messages: Array<{ role: string; content?: string }>;
-		}>(model, context);
-
-		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["late_tool"]);
-		expect(payload.messages.map((message) => message.role)).toEqual(["system", "user"]);
-		expect(payload.messages[0]?.content).toBe("base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>");
 	});
 });
