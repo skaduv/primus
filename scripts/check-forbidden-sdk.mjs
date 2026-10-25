@@ -244,14 +244,16 @@ export function run(rootDir, { strict = false } = {}) {
   const skipped = [];
   const chainText = (chain) => chain.map((p, i) => (i % 2 === 0 ? rel(p) : `「${p}」`)).join(" → ");
   for (const graph of config.importGraph ?? []) {
-    // 逐个入口检查：缺失的精确路径计入缺失入口（required 或严格模式下失败）；无匹配的 glob 单独提示
-    // （常见于预留的 **/*.ts 这类模式），整张图一个入口都没有时同样按缺失处理；其余入口照常遍历
+    // 逐个入口检查：缺失的精确路径与无匹配的 glob 计入缺失入口（required 或严格模式下失败）；
+    // 只有 allowEmptyGlobs 显式列出的预留模式无匹配时仅提示。整张图一个入口都没有时一律按缺失处理；
+    // 其余入口照常遍历
     const entries = expandEntries(root, graph.entries, graph.exclude);
     const unmatched = graph.entries.filter(
       (e) => expandEntries(root, [e], graph.exclude).length === 0,
     );
+    const allowEmpty = new Set(graph.allowEmptyGlobs ?? []);
     const missingEntries =
-      entries.length === 0 ? unmatched : unmatched.filter((e) => !e.includes("*"));
+      entries.length === 0 ? unmatched : unmatched.filter((e) => !allowEmpty.has(e));
     const emptyGlobs = unmatched.filter((e) => !missingEntries.includes(e));
     const hint = graph.hint ? `（${graph.hint}）` : "";
     if (missingEntries.length > 0) {

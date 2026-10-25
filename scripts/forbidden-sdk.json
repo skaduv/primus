@@ -1,5 +1,5 @@
 {
-  "$comment": "被禁 SDK 规则（技术方案第 6.2 节 C1）。外部模型只允许 OpenAI Responses 与 Anthropic Messages。forbidden 为被禁包名（支持 \"@scope/*\" 通配）；enforceCore 为 false 时 agent-core/ 中的发现只告警（Core 两协议裁剪已合入，现为 true）。importGraph：导入图入口（glob，相对仓库根）；required 为 true 的入口必须存在，其余入口在 --strict（CI 构建之后）时必须存在。sbom：scripts/generate-sbom.mjs 输出目录与必需文件，core 中列出的文件按 Core 处理。",
+  "$comment": "被禁 SDK 规则（技术方案第 6.2 节 C1）。外部模型只允许 OpenAI Responses 与 Anthropic Messages。forbidden 为被禁包名（支持 \"@scope/*\" 通配）；enforceCore 为 false 时 agent-core/ 中的发现只告警（Core 两协议裁剪已合入，现为 true）。importGraph：导入图入口（glob，相对仓库根）；required 为 true 的入口必须存在，其余入口在 --strict（CI 构建之后）时必须存在；每个入口（精确路径或 glob）都须匹配到文件，allowEmptyGlobs 列出的预留 glob 无匹配时仅提示。sbom：scripts/generate-sbom.mjs 输出目录与必需文件，core 中列出的文件按 Core 处理。",
   "forbidden": [
     "@google/*",
     "@google-cloud/*",
@@ -22,6 +22,7 @@
       "name": "前端页面",
       "entries": ["apps/desktop/src/app/**/*.tsx", "apps/desktop/src/app/**/*.ts"],
       "exclude": ["**/*.test.ts", "**/*.test.tsx"],
+      "allowEmptyGlobs": ["apps/desktop/src/app/**/*.ts"],
       "aliases": {
         "@/": "apps/desktop/src/"
       },
