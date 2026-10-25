@@ -1,6 +1,8 @@
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
 import {
@@ -9,6 +11,8 @@ import {
   packageName,
   pnpmLockPackages,
   run,
+  sbomPackages,
+  writeSelfTestFixture,
 } from "./check-forbidden-sdk.mjs";
 
 const RULES = ["@google/*", "@aws-sdk/client-bedrock-runtime", "groq-sdk"];
@@ -16,11 +20,17 @@ const RULES = ["@google/*", "@aws-sdk/client-bedrock-runtime", "groq-sdk"];
 const GENAI = ["@google", "genai"].join("/");
 const dirs: string[] = [];
 
-function fixture(files: Record<string, string>, enforceCore = false): string {
+const SCRIPT = fileURLToPath(new URL("./check-forbidden-sdk.mjs", import.meta.url));
+
+function fixture(
+  files: Record<string, string>,
+  enforceCore = false,
+  extra: Record<string, unknown> = {},
+): string {
   const root = mkdtempSync(join(tmpdir(), "forbidden-sdk-"));
   dirs.push(root);
   const all = {
-    "scripts/forbidden-sdk.json": JSON.stringify({ forbidden: RULES, enforceCore }),
+    "scripts/forbidden-sdk.json": JSON.stringify({ forbidden: RULES, enforceCore, ...extra }),
     "package.json": JSON.stringify({ name: "fixture", devDependencies: { vitest: "5.0.5" } }),
     ...files,
   };
@@ -89,5 +99,93 @@ describe("check-forbidden-sdk", () => {
     ]);
     const on = run(fixture({ "agent-core/package-lock.json": lock }, true));
     expect(on.findings).toEqual(["agent-core/package-lock.json: @aws-sdk/client-bedrock-runtime"]);
+  });
+
+  it("导入图：被禁 SDK 只经第三方包传递引入时也能发现，并给出导入链", () => {
+    const root = fixture(
+      {
+        "apps/web/src/app/page.tsx": 'import { draw } from "chart-kit";',
+        "apps/web/node_modules/chart-kit/package.json": JSON.stringify({ name: "chart-kit" }),
+        "apps/web/node_modules/chart-kit/index.js": `module.exports = require("${GENAI}");`,
+        [`apps/web/node_modules/${GENAI}/package.json`]: JSON.stringify({ name: GENAI }),
+        [`apps/web/node_modules/${GENAI}/index.js`]: "module.exports = {};",
+      },
+      false,
+      { importGraph: [{ name: "前端", entries: ["apps/web/src/app/**/*.tsx"], required: true }] },
+    );
+    const { findings, graphs } = run(root);
+    expect(graphs).toEqual([{ name: "前端", entries: 1, files: 3, packages: 2 }]);
+    expect(findings).toEqual([
+      `导入图 前端：apps/web/src/app/page.tsx → 「chart-kit」 → apps/web/node_modules/chart-kit/index.js → 「${GENAI}」: ${GENAI}`,
+    ]);
+  });
+
+  it("导入图入口缺失：required 总是失败，其余入口仅在严格模式下失败", () => {
+    const extra = {
+      importGraph: [
+        { name: "扩展", entries: ["packages/ext/src/index.ts"], required: true },
+        { name: "Core", entries: ["agent-core/dist/rpc-entry.js"], core: true, hint: "先构建" },
+      ],
+    };
+    const root = fixture({}, true, extra);
+    const loose = run(root);
+    expect(loose.findings).toEqual(["导入图 扩展：入口 packages/ext/src/index.ts 不存在"]);
+    expect(loose.skipped).toEqual(["Core：入口 agent-core/dist/rpc-entry.js 不存在（先构建）"]);
+    expect(run(root, { strict: true }).findings).toHaveLength(2);
+  });
+
+  it("解析 pnpm 与 npm 生成的 CycloneDX 组件名", () => {
+    const bom = {
+      bomFormat: "CycloneDX",
+      components: [
+        { group: "@wdio", name: "globals", version: "1", purl: "pkg:npm/%40wdio/globals@1" },
+        { name: "chalk", version: "5", purl: "pkg:npm/chalk@5" },
+        { group: "@x", name: "y", version: "2", components: [{ name: "@a/b", version: "3" }] },
+      ],
+    };
+    expect(sbomPackages(bom).map((c: { name: string }) => c.name)).toEqual([
+      "@wdio/globals",
+      "chalk",
+      "@x/y",
+      "@a/b",
+    ]);
+    expect(() => sbomPackages({ bomFormat: "SPDX" })).toThrow();
+  });
+
+  it("SBOM 中出现被禁 SDK 时失败；严格模式下缺少必需 SBOM 也失败", () => {
+    const sbom = { dir: "dist/sbom", required: ["ws.cdx.json"], core: ["core.cdx.json"] };
+    const bom = (name: string) =>
+      JSON.stringify({ bomFormat: "CycloneDX", components: [{ name, version: "1.0.0" }] });
+    const root = fixture(
+      { "dist/sbom/ws.cdx.json": bom("groq-sdk"), "dist/sbom/core.cdx.json": bom("openai") },
+      true,
+      { sbom },
+    );
+    expect(run(root).findings).toEqual(["SBOM dist/sbom/ws.cdx.json（1.0.0）: groq-sdk"]);
+    const missing = fixture({}, true, { sbom });
+    expect(run(missing).findings).toEqual([]);
+    expect(run(missing, { strict: true }).findings).toEqual([
+      "SBOM dist/sbom/ws.cdx.json 不存在（先运行 pnpm build:sbom）",
+    ]);
+  });
+
+  it.each([
+    ["clean", 0],
+    ["graph", 1],
+    ["sbom", 1],
+  ])("命令行：%s 夹具的退出码为 %i", (kind, code) => {
+    const root = writeSelfTestFixture(kind, GENAI);
+    dirs.push(root);
+    const r = spawnSync(process.execPath, [SCRIPT, "--root", root, "--strict"], {
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(code);
+    if (code !== 0) expect(r.stderr).toContain(GENAI);
+  });
+
+  it("命令行负向自检通过", () => {
+    const r = spawnSync(process.execPath, [SCRIPT, "--self-test"], { encoding: "utf8" });
+    expect(r.stdout).toContain("负向自检通过");
+    expect(r.status).toBe(0);
   });
 });
