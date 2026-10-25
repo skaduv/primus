@@ -52,15 +52,16 @@ function Row({
   );
 }
 
+/** 启动与通知开关的默认值（第 18 章），settings.toml 接入前只读 */
+const PENDING_DEFAULTS = { reopen: true, tray: false, notify: true } as const;
+
 function GeneralSettings() {
   const theme = useAppearanceStore((s) => s.theme);
   const setTheme = useAppearanceStore((s) => s.setTheme);
   const glassTint = useAppearanceStore((s) => s.glassTint);
   const setGlassTint = useAppearanceStore((s) => s.setGlassTint);
-  // 以下开关在薄壳 settings 命令接入前只保存在界面状态里
-  const [reopen, setReopen] = useState(true);
-  const [tray, setTray] = useState(false);
-  const [notify, setNotify] = useState(true);
+  // 启动与通知开关要写入 settings.toml（薄壳 settings_get/settings_set），接入前显示默认值并禁用
+  const pending = PENDING_DEFAULTS;
   const themeLabel = useId();
 
   return (
@@ -95,16 +96,16 @@ function GeneralSettings() {
         </Row>
       </Section>
       <Section title={t.startup}>
-        <Row label={t.reopenWorkspace}>
-          <GlassSwitch ariaLabel={t.reopenWorkspace} checked={reopen} onCheckedChange={setReopen} />
+        <Row label={t.reopenWorkspace} hint={t.pendingSettingsHint}>
+          <GlassSwitch ariaLabel={t.reopenWorkspace} checked={pending.reopen} disabled />
         </Row>
-        <Row label={t.minimizeToTray}>
-          <GlassSwitch ariaLabel={t.minimizeToTray} checked={tray} onCheckedChange={setTray} />
+        <Row label={t.minimizeToTray} hint={t.pendingSettingsHint}>
+          <GlassSwitch ariaLabel={t.minimizeToTray} checked={pending.tray} disabled />
         </Row>
       </Section>
       <Section title={t.notifications}>
-        <Row label={t.notifyEnabled}>
-          <GlassSwitch ariaLabel={t.notifyEnabled} checked={notify} onCheckedChange={setNotify} />
+        <Row label={t.notifyEnabled} hint={t.pendingSettingsHint}>
+          <GlassSwitch ariaLabel={t.notifyEnabled} checked={pending.notify} disabled />
         </Row>
       </Section>
     </div>

@@ -146,6 +146,9 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
   );
 }
 
+/** 距底部小于该值视为"停在底部" */
+const STICK_THRESHOLD_PX = 48;
+
 export function ChatPanel() {
   const { state, error, send, abort } = useChatSession();
   const composerGlass = useGlassStyle(0.1);
@@ -158,10 +161,17 @@ export function ChatPanel() {
   // 只在客户端判断运行环境，避免水合不一致
   useEffect(() => setPreview(!isTauriRuntime()), []);
 
-  // 新内容到达时滚到底部（后续换成虚拟列表的"贴底"逻辑）
+  // 贴底：只有用户停在底部附近或刚发送消息时，新内容到达才滚到底部；
+  // 用户向上翻看历史时，流式更新不打断阅读（后续换成虚拟列表的"贴底"逻辑）
+  const stickToBottom = useRef(true);
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+  };
   const lastMessage = state.messages.at(-1);
   useEffect(() => {
-    if (!lastMessage) return;
+    if (!lastMessage || !stickToBottom.current) return;
     const el = scrollRef.current;
     el?.scrollTo?.({ top: el.scrollHeight, behavior: reducedMotion ? "auto" : "smooth" });
   }, [lastMessage, reducedMotion]);
@@ -171,6 +181,7 @@ export function ChatPanel() {
     const text = draft.trim();
     if (!text || state.running) return;
     setDraft("");
+    stickToBottom.current = true;
     void send(text);
   };
 
@@ -184,6 +195,7 @@ export function ChatPanel() {
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollRef}
+        onScroll={onScroll}
         className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 pb-44 text-sm"
       >
         <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4">
@@ -234,7 +246,10 @@ export function ChatPanel() {
               <button
                 type="button"
                 aria-label={t.attach}
-                className="rounded-full p-1.5 hover:bg-hover hover:text-fg"
+                title={t.attachSoon}
+                // 附件选择在后续任务接入，接入前禁用
+                disabled
+                className="rounded-full p-1.5 enabled:hover:bg-hover enabled:hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Paperclip aria-hidden size={15} />
               </button>

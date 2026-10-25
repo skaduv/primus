@@ -28,6 +28,13 @@ describe("设置页", () => {
     );
   });
 
+  it("启动与通知开关在接入 settings.toml 前禁用", () => {
+    render(<SettingsView />);
+    for (const name of [t.reopenWorkspace, t.minimizeToTray, t.notifyEnabled]) {
+      expect((screen.getByRole("switch", { name }) as HTMLInputElement).disabled).toBe(true);
+    }
+  });
+
   it("主题选项写入外观设置", () => {
     render(<SettingsView />);
     const dark = screen.getByRole("tab", { name: t.themes.dark });

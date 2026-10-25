@@ -82,6 +82,9 @@ function ModelPicker() {
         {(["off", "low", "medium", "high"] as const).map((k) => (
           <GlassPopoverItem
             key={k}
+            // 思考强度在接入 set_thinking_level 前只作展示
+            disabled
+            className="data-[disabled]:opacity-50"
             icon={k === "medium" ? <Check /> : <span />}
             label={`${t.thinkingLevel}：${levels[k]}`}
           />

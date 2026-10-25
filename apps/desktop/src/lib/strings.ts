@@ -45,6 +45,7 @@ export const strings = {
     send: "发送",
     stop: "停止",
     attach: "添加附件",
+    attachSoon: "添加附件（后续版本提供）",
     you: "你",
     assistant: "乾元",
     thinking: "思考过程",
@@ -92,6 +93,7 @@ export const strings = {
     minimizeToTray: "关闭窗口时最小化到托盘",
     notifications: "通知",
     notifyEnabled: "运行完成、需要确认或出错时发送系统通知",
+    pendingSettingsHint: "接入应用设置（settings.toml）后可修改",
     comingSoon: "这一组设置会在后续版本提供，包括：",
     groupItems: {
       models: "端点列表、默认模型、默认思考强度、压缩模型、子 Agent 模型、标题生成模型",
