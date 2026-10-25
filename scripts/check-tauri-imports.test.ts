@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -45,6 +45,22 @@ describe("平台边界检查", () => {
     const code = `// import { invoke } from "${TAURI}";\n/* import("${TAURI}") */\nconst a = 1;`;
     expect(stripComments(code)).not.toContain("@tauri-apps");
     expect(findViolations(code)).toEqual([]);
+  });
+
+  it("多行块注释之后的违规行号与原文件一致", () => {
+    const code = `/**\n * 文件头\n * 多行说明\n */\nconst a = 1;\nimport { invoke } from "${TAURI}";`;
+    expect(findViolations(code).map((v: { line: number }) => v.line)).toEqual([6]);
+  });
+
+  it("跳过符号链接（含悬空链接），不越出根目录", () => {
+    const imp = `import { invoke } from "${TAURI}";\n`;
+    const outside = fixture({ "secret/bad.ts": imp });
+    const root = fixture({ "packages/ui/src/ok.ts": "export const a = 1;\n" });
+    symlinkSync(join(outside, "secret"), join(root, "packages/ui/src/linked"), "dir");
+    symlinkSync(join(outside, "missing.ts"), join(root, "packages/ui/src/dangling.ts"));
+    const { findings, scanned } = run(root);
+    expect(findings).toEqual([]);
+    expect(scanned).toBe(1);
   });
 
   it("只放行 platform/tauri/ 目录，其余位置报错", () => {

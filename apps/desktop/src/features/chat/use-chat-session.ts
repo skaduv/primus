@@ -60,12 +60,26 @@ export function useChatSession(): ChatSession {
     await c.platform.coreSend(c.sessionKey, record);
   }, []);
 
-  const ensureOpen = useCallback(async () => {
-    if (conn.current) return;
-    const platform = await getPlatform();
-    const [workspace] = await platform.workspaceList();
-    const { sessionKey } = await platform.sessionOpen(workspace?.path ?? "", undefined, onBatch);
-    conn.current = { platform, sessionKey, nextId: 1 };
+  // 正在打开的会话：并发的 send 复用同一个 Promise，避免重复 sessionOpen 泄漏 Core 进程
+  const opening = useRef<Promise<void>>(null);
+  const disposed = useRef(false);
+
+  const ensureOpen = useCallback((): Promise<void> => {
+    if (conn.current) return Promise.resolve();
+    opening.current ??= (async () => {
+      const platform = await getPlatform();
+      const [workspace] = await platform.workspaceList();
+      const { sessionKey } = await platform.sessionOpen(workspace?.path ?? "", undefined, onBatch);
+      if (disposed.current) {
+        // 打开期间组件已卸载：立即关闭，避免会话泄漏
+        void platform.sessionClose(sessionKey).catch(() => {});
+        throw new Error("会话已关闭");
+      }
+      conn.current = { platform, sessionKey, nextId: 1 };
+    })().finally(() => {
+      opening.current = null;
+    });
+    return opening.current;
   }, [onBatch]);
 
   // 缺号时用完整历史重建
@@ -74,14 +88,16 @@ export function useChatSession(): ChatSession {
   }, [state.needsResync, command]);
 
   // 卸载时关闭会话
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    disposed.current = false;
+    return () => {
+      disposed.current = true;
+      opening.current = null;
       const c = conn.current;
       conn.current = null;
       if (c) void c.platform.sessionClose(c.sessionKey).catch(() => {});
-    },
-    [],
-  );
+    };
+  }, []);
 
   const send = useCallback(
     async (message: string) => {

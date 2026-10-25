@@ -2,7 +2,7 @@
 // 平台边界检查（技术方案第 16.1.1 节）：
 // 只有 apps/desktop/src/lib/platform/tauri/ 可以 import `@tauri-apps/*` 或直接访问 Tauri 注入的全局对象；
 // 其他前端代码与共享包一律通过 src/lib/platform 的接口调用，保证 `pnpm dev:web` 能脱离 Rust 用 mock 运行。
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,9 +13,13 @@ export const ALLOWED_DIR = "apps/desktop/src/lib/platform/tauri/";
 const EXTENSIONS = /\.(?:[cm]?[jt]sx?)$/;
 const SKIP_DIRS = new Set(["node_modules", "dist", "out", ".next", "src-tauri"]);
 
-/** 去掉注释，避免注释里的示例代码被误报（字符串里的 // 也会被去掉，只会减少命中，不会误报） */
+/**
+ * 去掉注释，避免注释里的示例代码被误报（字符串里的 // 也会被去掉，只会减少命中，不会误报）。
+ * 块注释替换为等量空白并保留换行，保证报告的行号与原文件一致。
+ */
 export function stripComments(code) {
-  return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\\])\/\/.*$/gm, "$1");
+  const blank = (m) => m.replace(/[^\n]/g, " ");
+  return code.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|[^:\\])\/\/.*$/gm, "$1");
 }
 
 const PATTERNS = [
@@ -50,8 +54,16 @@ function* walk(dir) {
   for (const name of entries) {
     if (SKIP_DIRS.has(name)) continue;
     const full = join(dir, name);
-    if (statSync(full).isDirectory()) yield* walk(full);
-    else if (EXTENSIONS.test(name)) yield full;
+    let st;
+    try {
+      // 用 lstat 不跟随符号链接：跳过链接，避免扫描越出根目录、成环或因悬空链接崩溃
+      st = lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink()) continue;
+    if (st.isDirectory()) yield* walk(full);
+    else if (st.isFile() && EXTENSIONS.test(name)) yield full;
   }
 }
 
