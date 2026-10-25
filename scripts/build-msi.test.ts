@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
 import {
   checkExeStamp,
+  compareMsiVersions,
   exeStamp,
   msiFileName,
   msiProductVersion,
@@ -17,19 +18,52 @@ const SCRIPT = fileURLToPath(new URL("./build-msi.mjs", import.meta.url));
 
 describe("build-msi", () => {
   it("SemVer 按第 3.3.3 节映射为 MSI ProductVersion", () => {
-    expect(msiProductVersion("1.2.3")).toBe("1.2.3.0");
-    expect(msiProductVersion("0.0.0")).toBe("0.0.0.0");
-    expect(msiProductVersion("1.3.0-beta.2")).toBe("1.3.0.2");
-    expect(msiProductVersion("2.0.0-rc.1+build.7")).toBe("2.0.0.1");
-    expect(msiProductVersion("255.255.65535")).toBe("255.255.65535.0");
+    expect(msiProductVersion("1.2.3")).toBe("1.2.399.0");
+    expect(msiProductVersion("0.0.0")).toBe("0.0.99.0");
+    expect(msiProductVersion("1.3.0-alpha.1")).toBe("1.3.1.0");
+    expect(msiProductVersion("1.3.0-beta.2")).toBe("1.3.32.0");
+    expect(msiProductVersion("2.0.0-rc.1+build.7")).toBe("2.0.61.0");
+    expect(msiProductVersion("1.0.0+build.7")).toBe("1.0.99.0");
+    expect(msiProductVersion("255.255.654")).toBe("255.255.65499.0");
+  });
+
+  it("预发布版到稳定版的顺序体现在 MSI 前三个字段（Windows Installer 忽略第四字段）", () => {
+    const ordered = [
+      "1.2.2",
+      "1.2.3-alpha.0",
+      "1.2.3-alpha.29",
+      "1.2.3-beta.0",
+      "1.2.3-beta.2",
+      "1.2.3-rc.1",
+      "1.2.3-rc.29",
+      "1.2.3",
+      "1.2.4-alpha.0",
+      "1.2.654",
+      "1.3.0-beta.1",
+      "1.3.0",
+      "2.0.0-alpha.0",
+    ].map(msiProductVersion);
+    for (let i = 1; i < ordered.length; i++) {
+      // 后一个严格更高：MajorUpgrade（AllowSameVersionUpgrades=no）可替换前一个
+      expect(compareMsiVersions(ordered[i], ordered[i - 1])).toBeGreaterThan(0);
+      // 反向替换是降级，被 MajorUpgrade 拒绝
+      expect(compareMsiVersions(ordered[i - 1], ordered[i])).toBeLessThan(0);
+    }
+    for (const v of ordered) expect(v.endsWith(".0")).toBe(true);
+    // 比较只看前三个字段
+    expect(compareMsiVersions("1.2.3.0", "1.2.3.9")).toBe(0);
   });
 
   it("非法版本与越界版本直接失败", () => {
     expect(() => msiProductVersion("1.2")).toThrow();
     expect(() => msiProductVersion("v1.2.3")).toThrow();
+    expect(() => msiProductVersion("01.2.3")).toThrow();
     expect(() => msiProductVersion("256.0.0")).toThrow();
-    expect(() => msiProductVersion("1.0.65536")).toThrow();
-    expect(() => msiProductVersion("1.0.0-beta")).toThrow();
+    expect(() => msiProductVersion("1.0.655")).toThrow("654");
+    expect(() => msiProductVersion("1.0.0-beta")).toThrow("alpha.N");
+    expect(() => msiProductVersion("1.0.0-preview.1")).toThrow("alpha.N");
+    expect(() => msiProductVersion("1.0.0-beta.1.2")).toThrow();
+    expect(() => msiProductVersion("1.0.0-rc.30")).toThrow("29");
   });
 
   it("交付物文件名", () => {
@@ -41,7 +75,7 @@ describe("build-msi", () => {
       appDir: "C:/t/release",
       coreDir: "C:/r/dist/agent-core",
       runtimeDir: "C:/r/dist/runtime",
-      productVersion: "1.2.3.0",
+      productVersion: "1.2.399.0",
       out: "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     });
     expect(args).toEqual([
@@ -64,7 +98,7 @@ describe("build-msi", () => {
       "-bindpath",
       "runtime=C:/r/dist/runtime",
       "-d",
-      "ProductVersion=1.2.3.0",
+      "ProductVersion=1.2.399.0",
       "-o",
       "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     ]);
@@ -111,7 +145,7 @@ describe("build-msi", () => {
       encoding: "utf8",
     });
     expect(dry.status).toBe(0);
-    expect(dry.stdout).toContain("ProductVersion 1.3.0.2");
+    expect(dry.stdout).toContain("ProductVersion 1.3.32.0");
     expect(dry.stdout).toContain("-acceptEula wix7");
     expect(dry.stdout).toContain("Primus_1.3.0-beta.2_x64_zh-CN.msi");
     // 覆盖版本同步给 tauri build，Primus.exe 与 MSI 同一版本

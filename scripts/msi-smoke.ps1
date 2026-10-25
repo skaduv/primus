@@ -147,6 +147,7 @@ if ($KeepInstalled) {
 Write-Step '静默卸载'
 Invoke-Msiexec -Action '/x' -LogName 'uninstall.log'
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'Primus.exe'))) '已移除 Primus.exe'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $resources 'runtime'))) '已移除 resources\runtime'
 Assert-True (-not (Test-Path -LiteralPath $coreDir)) '已移除 resources\agent-core'
 Assert-True ($null -eq (Get-UninstallEntry)) '已清除卸载信息'
 

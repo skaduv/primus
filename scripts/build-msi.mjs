@@ -43,24 +43,56 @@ export const CULTURE = "zh-CN";
 export const WIX_EXTENSIONS = ["WixToolset.UI.wixext", "WixToolset.Util.wixext"];
 
 /**
- * SemVer → MSI ProductVersion（第 3.3.3 节）：1.2.3 → 1.2.3.0；预发布 1.3.0-beta.2 → 1.3.0.2
- * （取预发布标识中最后一个数字段）。主、次 ≤ 255，修订 ≤ 65535，构建 ≤ 65535。
+ * 预发布阶段在 MSI 第三字段中的偏移（第 3.3.3 节）。Windows Installer 只比较 ProductVersion 的前三个字段、
+ * 忽略第四个，所以预发布到稳定版的先后必须体现在前三个字段里：第三字段 = 修订号 × 100 + 阶段偏移，
+ * alpha.N → N、beta.N → 30 + N、rc.N → 60 + N（N ≤ 29），稳定版 → 99。
+ * 例：1.3.0-alpha.1 → 1.3.1.0 < 1.3.0-beta.2 → 1.3.32.0 < 1.3.0-rc.1 → 1.3.61.0 < 1.3.0 → 1.3.99.0
+ * < 1.3.1-alpha.0 → 1.3.100.0。稳定版严格高于同版本的所有预发布版，MajorUpgrade 可正常替换；
+ * 反过来用预发布版覆盖同版本稳定版属于降级，仍被拒绝。
+ */
+export const MSI_PRERELEASE_STAGES = { alpha: 0, beta: 30, rc: 60 };
+export const MSI_PRERELEASE_MAX = 29;
+export const MSI_STABLE_OFFSET = 99;
+export const MSI_PATCH_SCALE = 100;
+// 第三字段上限 65535：修订号 ≤ 654（654 × 100 + 99 = 65499）
+export const MSI_MAX_PATCH = Math.floor((65535 - MSI_STABLE_OFFSET) / MSI_PATCH_SCALE);
+
+/**
+ * SemVer → MSI ProductVersion（第 3.3.3 节）：主.次.(修订 × 100 + 阶段偏移).0。
+ * 预发布标识只接受 alpha.N / beta.N / rc.N（N ≤ 29）；构建元数据（+…）不参与。
+ * 主、次 ≤ 255，修订 ≤ 654（第三字段 ≤ 65535）。
  */
 export function msiProductVersion(semver) {
-  const m = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(semver);
+  const m =
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(
+      semver,
+    );
   if (!m) throw new Error(`版本号不是 SemVer：${semver}`);
   const [major, minor, patch] = [m[1], m[2], m[3]].map(Number);
-  let build = 0;
-  if (m[4]) {
-    const numeric = m[4].split(".").filter((p) => /^\d+$/.test(p));
-    if (numeric.length === 0)
-      throw new Error(`预发布版本缺少数字段，无法映射为 MSI 版本：${semver}`);
-    build = Number(numeric.at(-1));
-  }
   if (major > 255 || minor > 255) throw new Error(`MSI 版本的主、次版本不得超过 255：${semver}`);
-  if (patch > 65535 || build > 65535)
-    throw new Error(`MSI 版本的修订、构建号不得超过 65535：${semver}`);
-  return `${major}.${minor}.${patch}.${build}`;
+  if (patch > MSI_MAX_PATCH)
+    throw new Error(`MSI 版本的修订号不得超过 ${MSI_MAX_PATCH}（第三字段 ≤ 65535）：${semver}`);
+  let offset = MSI_STABLE_OFFSET;
+  if (m[4]) {
+    const pre = /^(alpha|beta|rc)\.(0|[1-9]\d*)$/.exec(m[4]);
+    if (!pre)
+      throw new Error(
+        `预发布标识须为 alpha.N、beta.N 或 rc.N，才能映射为有序的 MSI 版本：${semver}`,
+      );
+    const n = Number(pre[2]);
+    if (n > MSI_PRERELEASE_MAX)
+      throw new Error(`预发布序号不得超过 ${MSI_PRERELEASE_MAX}：${semver}`);
+    offset = MSI_PRERELEASE_STAGES[pre[1]] + n;
+  }
+  return `${major}.${minor}.${patch * MSI_PATCH_SCALE + offset}.0`;
+}
+
+/** 按 Windows Installer 的规则比较两个 ProductVersion：只看前三个字段（负数 / 0 / 正数） */
+export function compareMsiVersions(a, b) {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i];
+  return 0;
 }
 
 /** 交付物文件名（第 3.1 节）：Primus_<ver>_x64_zh-CN.msi */
