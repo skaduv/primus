@@ -76,8 +76,9 @@ primus/
 pnpm install --frozen-lockfile   # 安装依赖
 pnpm dev:web                     # 浏览器预览前端（mock 平台 + 假 Core 事件流，无需 Rust/Windows）
 pnpm dev                         # Tauri 开发模式（数据目录为仓库下 .dev-data/）
-pnpm build:core                  # 构建 Agent Core（npm ci + 锁定模型目录 + 离线构建）
+pnpm build:core                  # 构建 Agent Core（npm ci + 锁定模型目录 + 离线构建），组装 dist/agent-core 与 dist/runtime
 pnpm smoke:core                  # Agent Core RPC 冒烟：发送 get_state 应收到 response
+pnpm smoke:core:dist             # 同上，跑组装好的 dist/（先按 manifest 校验；Windows 上用 dist/runtime/node.exe）
 pnpm build:extensions            # 构建第一方扩展 → dist/agent-core/extensions/primus-bundle.js
 pnpm build                       # 完整构建 Primus.exe（不打包）
 pnpm lint                        # Biome
@@ -87,8 +88,31 @@ cargo nextest run                # Rust 单测（在 apps/desktop/src-tauri 下�
 
 ## CI 与依赖升级
 
-- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上编译 `Primus.exe`。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图与导入图中的被禁 SDK（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
+- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，并构建 Core、组装 `dist/` 后用当前 node 冒烟；再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上编译 `Primus.exe`，并用 `dist/runtime/node.exe` 冒烟 `dist/agent-core`、检查 `node.exe` 官方签名。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图与导入图中的被禁 SDK（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
 - Renovate（`renovate.json`）：每月 1 日把纳入 Renovate 的稳定版升级合成一个 PR 提到 `dev`，锁定精确版本；`agent-core/` 不在升级范围内（随上游版本手动同步）；需要在 GitHub 上为本仓库安装 Renovate 应用。
+
+### Core 产物与内置运行时（dist/）
+
+`pnpm build:core` 在构建 Core 之后组装两个目录（不入库，`dist/` 已在 `.gitignore` 中），分别对应 MSI 的 `-bindpath core=dist/agent-core`、`runtime=dist/runtime`：
+
+```
+dist/
+├─ agent-core/                 → <安装目录>\resources\agent-core\
+│  ├─ rpc-entry.js / cli.js    转发入口（薄壳启动 rpc-entry.js）
+│  ├─ package.json             Core 运行时读取的名称、版本与品牌配置（已去掉构建期字段）
+│  ├─ manifest.json            每个文件的大小与 SHA-256、Core 与外部模块上游版本、内置运行时信息
+│  ├─ dist/bundle/             esbuild 打包产物（沿用 Core 包内目录结构，Core 据此定位资源）
+│  ├─ dist/core/export-html/   会话导出模板
+│  ├─ node_modules/            仅运行时必需的外部模块文件：photon-node、jiti、quickjs-wasi
+│  └─ extensions/              pnpm build:extensions 写入（不计入 manifest）
+└─ runtime/                    → <安装目录>\resources\runtime\
+   ├─ node.exe                 Node.js LTS 官方 win-x64 运行时（保留 OpenJS 签名）
+   └─ LICENSE
+```
+
+- 运行时版本与哈希锁定在 `scripts/node-runtime.json`（版本须与基线一致，`check-versions.mjs` 校验）：下载 nodejs.org 官方 zip，先与官方 `SHASUMS256.txt` 交叉核对、再校验仓库里固化的 zip 哈希，只解出 `node.exe` 与 `LICENSE` 并逐个校验哈希；npm、文档、示例不打包。下载缓存在 `node_modules/.cache/primus-runtime/`。
+- `--skip-build` 只用已有构建产物重新组装；`--platform current` 不下载运行时（非 Windows 本地调试用，冒烟改用当前 node）。例：`pnpm build:core --skip-build --platform current`。
+- `node.exe` 的 Authenticode 签名在 Windows CI 上用 `Get-AuthenticodeSignature` 检查；CI 会上传 `dist/` 产物（保留 7 天），可拿到干净的 Windows 上直接 `runtime\node.exe agent-core\rpc-entry.js` 验收。
 
 MSI 打包流程见 `scripts/build-msi.ps1` 与技术方案第 3.3 节。
 

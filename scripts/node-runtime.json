@@ -1,0 +1,15 @@
+{
+  "$comment": "内置 Node.js 运行时（技术方案第 2.4、3.2、6.3 节）。版本必须与 version-baseline.json 的 toolchain.node 一致（check-versions.mjs 校验）。哈希固化在仓库中：sha256 为官方发行包（与 nodejs.org/dist/v<版本>/SHASUMS256.txt 一致），files 为解出文件的 SHA-256。升级时三处哈希一并更新，并用 SHASUMS256.txt 核对。",
+  "version": "24.22.1",
+  "distUrl": "https://nodejs.org/dist",
+  "platforms": {
+    "win-x64": {
+      "archive": "node-v24.22.1-win-x64.zip",
+      "sha256": "d2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5",
+      "files": {
+        "node.exe": "d702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5",
+        "LICENSE": "ed34dd8e3f0a78dbaf00d0444ce8e285b015b765379c2e17880455f70370f8e9"
+      }
+    }
+  }
+}

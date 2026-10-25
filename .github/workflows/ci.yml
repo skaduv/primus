@@ -55,6 +55,13 @@ jobs:
       - name: 检查静态导出（out/index.html 含首页）
         run: grep -q "乾元 Primus" apps/desktop/out/index.html
 
+      # Core 产物组装（技术方案第 3.2、6.3 节）：同样实际下载并校验 win-x64 运行时（node.exe 只解出、不运行）；
+      # Linux 上用当前 node 跑组装好的 dist/agent-core，确认产物自包含、不依赖仓库里的 node_modules
+      - name: 构建 Agent Core 并组装 dist/
+        run: pnpm build:core
+      - name: Agent Core RPC 冒烟（dist/agent-core · 当前 node）
+        run: pnpm smoke:core:dist
+
       - name: Tauri Linux 系统依赖（Rust 单测用）
         run: |
           sudo apt-get update
@@ -168,8 +175,32 @@ jobs:
       - name: 构建 Agent Core
         run: pnpm build:core
 
-      - name: Agent Core RPC 冒烟（get_state）
+      - name: Agent Core RPC 冒烟（构建目录 · get_state）
         run: pnpm smoke:core
+
+      # 第 3.2 节安装布局：dist/runtime/node.exe 运行 dist/agent-core/rpc-entry.js（复制到含中文与空格的临时目录）
+      - name: Agent Core RPC 冒烟（dist/runtime/node.exe + dist/agent-core）
+        run: pnpm smoke:core:dist
+
+      # 内置 node.exe 保留 OpenJS 官方签名、不重签（第 3.3.1 节）；哈希已在构建时校验，这里再验 Authenticode 签名
+      - name: 检查内置 node.exe 的官方签名
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature -FilePath dist/runtime/node.exe
+          $sig | Format-List Status, StatusMessage
+          $sig.SignerCertificate | Format-List Subject, Issuer, NotAfter
+          if ($sig.Status -ne 'Valid') { throw "node.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
+          if ($sig.SignerCertificate.Subject -notmatch 'O="?OpenJS Foundation') { throw "node.exe 签名者不是 OpenJS Foundation：$($sig.SignerCertificate.Subject)" }
+
+      - name: 上传 Core 与运行时产物（dist/，供干净 Windows 机器验收）
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: primus-dist-windows
+          path: |
+            dist/agent-core
+            dist/runtime
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Core 依赖检查（被禁 SDK，第 6.2 节）
         run: pnpm check:forbidden-sdk
