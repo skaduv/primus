@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 版本基线检查（技术方案第 2.4 节）：
-// 1. 工具链版本（.node-version、packageManager、rust-toolchain.toml、CI 中的 WIX_VERSION）与基线一致
+// 1. 工具链版本（.node-version、packageManager、rust-toolchain.toml、CI 中的 WIX / cargo-nextest / tauri-driver 版本）与基线一致
 // 2. 所有 package.json 依赖（含 peerDependencies）锁定精确版本（不允许 ^ ~ * latest 等范围；仅 workspace:* 除外）
 // 3. Cargo.toml 依赖一律 "=x.y.z" 精确锁定
 // 4. 出现在基线中的依赖，版本必须与基线一致（尚未引入的依赖跳过）
@@ -43,6 +43,14 @@ const ci = read(".github/workflows/ci.yml");
 const wix = ci.match(/WIX_VERSION:\s*"([^"]+)"/)?.[1];
 if (wix !== baseline.toolchain.wix)
   fail(`ci.yml WIX_VERSION 为 ${wix}，基线为 ${baseline.toolchain.wix}`);
+for (const [envName, tool] of [
+  ["CARGO_NEXTEST_VERSION", "cargo-nextest"],
+  ["TAURI_DRIVER_VERSION", "tauri-driver"],
+]) {
+  const v = ci.match(new RegExp(`${envName}:\\s*"([^"]+)"`))?.[1];
+  if (v !== baseline.toolchain[tool])
+    fail(`ci.yml ${envName} 为 ${v}，基线为 ${baseline.toolchain[tool]}`);
+}
 
 // ---- npm 依赖 ----
 const skipDirs = new Set(["node_modules", "agent-core", ".git", "dist", "out", ".next", "target"]);

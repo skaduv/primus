@@ -20,6 +20,12 @@ concurrency:
 
 env:
   WIX_VERSION: "7.0.0"
+  # 测试工具（技术方案第 2.4、18 章）：cargo-nextest 跑薄壳单测，tauri-driver 跑 Windows 端到端测试
+  CARGO_NEXTEST_VERSION: "0.9.149"
+  TAURI_DRIVER_VERSION: "2.1.0"
+  # 端到端测试降权运行所需（见 Windows 作业的端到端冒烟步骤）
+  GSUDO_VERSION: "2.6.1"
+  GSUDO_SHA256: "21130bf178d7b9891207f00bff56f05b6b363ce9cec7b2d084e45fb12ee51f44"
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -64,9 +70,29 @@ jobs:
         with:
           workspaces: apps/desktop/src-tauri
 
-      - name: Rust 单测
+      - name: 安装 cargo-nextest ${{ env.CARGO_NEXTEST_VERSION }}
+        uses: taiki-e/install-action@v2.87.31
+        with:
+          tool: cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+
+      - name: Rust 单测（cargo-nextest）
         working-directory: apps/desktop/src-tauri
-        run: cargo test --locked --all-targets
+        run: cargo nextest run --locked --all-targets --profile ci
+
+      - name: Rust 文档测试
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --doc
+
+      - name: 上传 Rust 单测报告（JUnit）
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: nextest-junit-linux
+          path: apps/desktop/src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+
+      - name: e2e 类型检查
+        run: pnpm --filter @primus/e2e typecheck
 
   windows:
     name: Windows 编译（MSVC · Rust · WiX）
@@ -117,9 +143,26 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Rust 单测
+      - name: 安装 cargo-nextest ${{ env.CARGO_NEXTEST_VERSION }}
+        uses: taiki-e/install-action@v2.87.31
+        with:
+          tool: cargo-nextest@${{ env.CARGO_NEXTEST_VERSION }}
+
+      - name: Rust 单测（cargo-nextest）
         working-directory: apps/desktop/src-tauri
-        run: cargo test --locked --all-targets
+        run: cargo nextest run --locked --all-targets --profile ci
+
+      - name: Rust 文档测试
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked --doc
+
+      - name: 上传 Rust 单测报告（JUnit）
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: nextest-junit-windows
+          path: apps/desktop/src-tauri/target/nextest/ci/junit.xml
+          if-no-files-found: ignore
 
       # Agent Core 以 git subtree 引入（第 6.1 节）：用锁文件安装、锁定版本的模型目录，在 Windows 上实际构建
       - name: 构建 Agent Core
@@ -142,3 +185,58 @@ jobs:
           $exe = "apps/desktop/src-tauri/target/release/Primus.exe"
           if (-not (Test-Path $exe)) { throw "未找到 $exe" }
           Get-Item $exe | Select-Object Name, Length
+
+      # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
+      - name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}
+        run: cargo install tauri-driver --locked --version ${{ env.TAURI_DRIVER_VERSION }}
+
+      - name: 安装与 WebView2 运行时匹配的 msedgedriver
+        shell: pwsh
+        run: |
+          $guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' # WebView2 Evergreen 运行时
+          $keys = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$guid",
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$guid",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$guid"
+          )
+          $version = $keys | Where-Object { Test-Path $_ } |
+            ForEach-Object { (Get-ItemProperty -Path $_ -Name pv -ErrorAction SilentlyContinue).pv } |
+            Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -First 1
+          if (-not $version) { throw "未找到 WebView2 运行时版本" }
+          Write-Host "WebView2 运行时 $version"
+          $dir = Join-Path $env:RUNNER_TEMP "msedgedriver"
+          $zip = Join-Path $env:RUNNER_TEMP "edgedriver_win64.zip"
+          Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $driver = Join-Path $dir "msedgedriver.exe"
+          & $driver --version
+          "PRIMUS_NATIVE_DRIVER=$driver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # WebView2 运行时 150 起，宿主进程以管理员（高完整性级别）运行时会忽略
+      # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS，而 msedgedriver 只能经由它注入 --remote-debugging-port；
+      # GitHub 托管运行器以管理员运行，会话因此建不起来（DevToolsActivePort file doesn't exist）。
+      # 微软确认属设计行为，做法是用 gsudo 把整条链（wdio → tauri-driver → msedgedriver → Primus.exe）
+      # 降到中完整性级别运行。参见 https://github.com/tauri-apps/wry/issues/1782
+      - name: 安装 gsudo ${{ env.GSUDO_VERSION }}（降权运行端到端测试）
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "gsudo.portable.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "gsudo"
+          Invoke-WebRequest -Uri "https://github.com/gerardog/gsudo/releases/download/v$env:GSUDO_VERSION/gsudo.portable.zip" -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:GSUDO_SHA256) { throw "gsudo.portable.zip 校验失败：$hash" }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          Join-Path $dir "x64" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # 降权后的进程不再享有管理员组权限：放开工作区与临时目录（msedgedriver 在此）的读写
+          icacls "$env:GITHUB_WORKSPACE" /grant "Everyone:(OI)(CI)F" | Out-Null
+          icacls "$env:RUNNER_TEMP" /grant "Everyone:(OI)(CI)F" | Out-Null
+
+      # 直接调用 wdio，不经 pnpm run 嵌套：pnpm 12 在 Windows 上会等残留的 msedgedriver 进程而挂起
+      - name: 端到端冒烟（WebdriverIO + tauri-driver，中完整性级别）
+        shell: pwsh
+        timeout-minutes: 15
+        working-directory: e2e
+        run: |
+          whoami /groups | Select-String "Mandatory Label"
+          gsudo --integrity Medium pwsh -NoProfile -Command "whoami /groups | Select-String 'Mandatory Label'; ./node_modules/.bin/wdio.cmd run wdio.conf.ts; exit `$LASTEXITCODE"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -65,6 +65,22 @@
       "datasourceTemplate": "nuget"
     },
     {
+      "description": "CI 中固定的 cargo-nextest 版本（crates.io）",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["CARGO_NEXTEST_VERSION:\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "cargo-nextest",
+      "datasourceTemplate": "crate"
+    },
+    {
+      "description": "CI 中固定的 tauri-driver 版本（crates.io）",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": ["TAURI_DRIVER_VERSION:\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "tauri-driver",
+      "datasourceTemplate": "crate"
+    },
+    {
       "description": "版本基线：npm 依赖（与各 package.json 同一 PR 升级，保证 check-versions 通过）",
       "customType": "jsonata",
       "fileFormat": "json",
@@ -93,7 +109,9 @@
         "{ \"depName\": \"node\", \"currentValue\": toolchain.node, \"datasource\": \"node-version\" }",
         "{ \"depName\": \"pnpm\", \"currentValue\": toolchain.pnpm, \"datasource\": \"npm\" }",
         "{ \"depName\": \"rust\", \"packageName\": \"rust-lang/rust\", \"currentValue\": toolchain.rust, \"datasource\": \"github-releases\" }",
-        "{ \"depName\": \"wix\", \"currentValue\": toolchain.wix, \"datasource\": \"nuget\" }"
+        "{ \"depName\": \"wix\", \"currentValue\": toolchain.wix, \"datasource\": \"nuget\" }",
+        "{ \"depName\": \"cargo-nextest\", \"currentValue\": toolchain.`cargo-nextest`, \"datasource\": \"crate\" }",
+        "{ \"depName\": \"tauri-driver\", \"currentValue\": toolchain.`tauri-driver`, \"datasource\": \"crate\" }"
       ]
     }
   ]
