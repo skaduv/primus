@@ -7,6 +7,7 @@ import {
   checkExeStamp,
   compareMsiVersions,
   exeStamp,
+  isTrustedMicrosoftSignature,
   msiFileName,
   msiProductVersion,
   signtoolArgs,
@@ -75,6 +76,8 @@ describe("build-msi", () => {
       appDir: "C:/t/release",
       coreDir: "C:/r/dist/agent-core",
       runtimeDir: "C:/r/dist/runtime",
+      shellDir: "C:/r/apps/desktop/src-tauri",
+      webview2Setup: "C:/r/w/MicrosoftEdgeWebview2Setup.exe",
       productVersion: "1.2.399.0",
       out: "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     });
@@ -99,6 +102,10 @@ describe("build-msi", () => {
       "runtime=C:/r/dist/runtime",
       "-d",
       "ProductVersion=1.2.399.0",
+      "-d",
+      "ShellDir=C:/r/apps/desktop/src-tauri",
+      "-d",
+      "WebView2Setup=C:/r/w/MicrosoftEdgeWebview2Setup.exe",
       "-o",
       "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     ]);
@@ -123,18 +130,59 @@ describe("build-msi", () => {
     ]);
   });
 
-  it("Primus.wxs 引用的 bindpath 都由脚本传入，UpgradeCode 已固定", () => {
+  it("Primus.wxs 引用的 bindpath 与预处理变量都由脚本传入，UpgradeCode 已固定", () => {
     const wxs = readFileSync(WXS, "utf8");
-    const used = new Set([...wxs.matchAll(/!\(bindpath\.(\w+)\)/g)].map((m) => m[1]));
-    const passed = new Set(
-      wixBuildArgs({ appDir: "a", coreDir: "c", runtimeDir: "r", productVersion: "1", out: "o" })
-        .filter((a: string) => /^\w+=/.test(a) && !a.startsWith("ProductVersion="))
-        .map((a: string) => a.split("=")[0]),
+    const args: string[] = wixBuildArgs({
+      appDir: "a",
+      coreDir: "c",
+      runtimeDir: "r",
+      productVersion: "1",
+      out: "o",
+    });
+    const valuesAfter = (flag: string) =>
+      args.flatMap((a, i) => (args[i - 1] === flag ? [a.split("=")[0]] : []));
+    const usedBindpaths = new Set([...wxs.matchAll(/!\(bindpath\.(\w+)\)/g)].map((m) => m[1]));
+    expect([...usedBindpaths].sort()).toEqual(valuesAfter("-bindpath").sort());
+    const usedDefines = new Set([...wxs.matchAll(/\$\((\w+)\)/g)].map((m) => m[1]));
+    expect([...usedDefines].sort()).toEqual(valuesAfter("-d").sort());
+    expect(/UpgradeCode="([^"]+)"/.exec(wxs)?.[1]).toBe("5B4199DD-C352-459A-AEB0-7119A884608F");
+  });
+
+  it("Primus.wxs 的关键安装行为（第 3.3.2 节）", () => {
+    const wxs = readFileSync(WXS, "utf8");
+    expect(wxs).toContain('<ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />');
+    expect(wxs).toMatch(/<Component Id="DataDir" Permanent="yes"/);
+    expect(wxs).toContain('User="[WIX_ACCOUNT_USERS]"');
+    expect(wxs).toContain("<util:QueryWindowsWellKnownSIDs />");
+    // data 授予 icacls 的 (M)：不得含完全控制、更改权限、取得所有权与通用权限
+    const permission = /<util:PermissionEx[^>]*>/.exec(wxs)?.[0] ?? "";
+    for (const right of ["Delete", "CreateFile", "CreateChild", "Traverse", "WriteAttributes"])
+      expect(permission).toContain(`${right}="yes"`);
+    for (const right of ["GenericAll", "GenericWrite", "ChangePermission", "TakeOwnership"])
+      expect(permission).not.toContain(right);
+    expect(wxs).toContain('Value="com.primus.desktop"');
+    const conf = JSON.parse(
+      readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
     );
-    expect([...used].sort()).toEqual([...passed].sort());
-    const upgradeCode = /UpgradeCode="([^"]+)"/.exec(wxs)?.[1];
-    expect(upgradeCode).toBe("5B4199DD-C352-459A-AEB0-7119A884608F");
-    expect(wxs).toContain('Version="$(ProductVersion)"');
+    expect(conf.identifier).toBe("com.primus.desktop");
+    expect(wxs).toContain("{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}");
+    expect(wxs).toMatch(
+      /<Custom Action="InstallWebView2"[^>]*Condition="WEBVIEW2_MISSING AND NOT REMOVE"/,
+    );
+  });
+
+  it("WebView2 引导程序只接受微软签名有效的文件", () => {
+    const subject =
+      "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US";
+    expect(isTrustedMicrosoftSignature({ Status: "Valid", Subject: subject })).toBe(true);
+    expect(isTrustedMicrosoftSignature({ Status: "HashMismatch", Subject: subject })).toBe(false);
+    expect(
+      isTrustedMicrosoftSignature({
+        Status: "Valid",
+        Subject: "CN=Evil, O=Microsoft Corporation Fake",
+      }),
+    ).toBe(false);
+    expect(isTrustedMicrosoftSignature({ Status: "Valid", Subject: "" })).toBe(false);
   });
 
   it.skipIf(process.platform === "win32")("非 Windows 上拒绝真实构建，--dry-run 列出命令", () => {

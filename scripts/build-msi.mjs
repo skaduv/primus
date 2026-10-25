@@ -4,7 +4,8 @@
 //   1. pnpm --filter @primus/desktop tauri build --no-bundle -- --locked   编译 Primus.exe（前端静态导出后嵌入）
 //   2. signtool 签名 Primus.exe（配置了证书时；node.exe 保留 OpenJS 官方签名，不重签）
 //   3. wix build Primus.wxs（WiX 7：-arch x64 -culture zh-CN -acceptEula wix7，
-//      -bindpath app / core / runtime，-d ProductVersion=<主.次.修订.构建>）
+//      -bindpath app / core / runtime，-d ProductVersion=<主.次.修订.构建>，
+//      -d ShellDir=<src-tauri>（图标与许可 RTF），-d WebView2Setup=<WebView2 引导程序>）
 //   4. signtool 签名 MSI（配置了证书时），写 SHA-256 校验文件
 //   5. tauri signer sign 生成 updater 签名 .sig（配置了 TAURI_SIGNING_PRIVATE_KEY 时）
 //
@@ -12,7 +13,7 @@
 // 已安装 WiX 7 .NET 工具与 UI、Util 扩展（版本见 scripts/version-baseline.json，CI 中 `wix extension add -g`）。
 // WiX 只能在 Windows 上运行；其他平台只能用 --dry-run 查看将要执行的命令。
 //
-// 用法：node scripts/build-msi.mjs [--version <SemVer>] [--skip-tauri] [--out-dir <目录>] [--dry-run]
+// 用法：node scripts/build-msi.mjs [--version <SemVer>] [--skip-tauri] [--out-dir <目录>] [--webview2 <文件>] [--dry-run]
 //   --version   默认取 apps/desktop/src-tauri/tauri.conf.json 的 version；与之不同时经
 //               tauri build --config 同步给 Primus.exe，保证 exe、MSI 与文件名同一版本
 //               （与 --skip-tauri 同用且版本不同则拒绝构建：已有的 exe 版本无法保证一致）
@@ -20,6 +21,9 @@
 //               exe 的版本、大小与修改时间写进旁边的 Primus.exe.build.json，跳过时逐项校验，
 //               记录缺失、版本与 MSI 不同或 exe 已被其他方式重新生成都拒绝构建
 //   --out-dir   MSI 输出目录，默认仓库根下 out/（已在 .gitignore 中）
+//   --webview2  WebView2 Evergreen 引导程序（第 3.5 节），默认 apps/desktop/src-tauri/windows/webview2/
+//               MicrosoftEdgeWebview2Setup.exe；不存在时从微软官方地址下载（不入库）。微软会更新该文件，
+//               不固化哈希，改为校验 Authenticode 签名有效且签名者为 Microsoft Corporation
 //
 // 签名所需环境变量（证书与私钥只保存在 CI 密钥库，第 22.3 节）：
 //   PRIMUS_SIGN_CERT_SHA1      代码签名证书指纹（signtool /sha1）
@@ -31,7 +35,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { MANIFEST_FILE, verifyManifest } from "./core-dist.mjs";
@@ -41,6 +45,12 @@ const tauriDir = join(root, "apps/desktop/src-tauri");
 export const WXS = join(tauriDir, "windows/Primus.wxs");
 export const CULTURE = "zh-CN";
 export const WIX_EXTENSIONS = ["WixToolset.UI.wixext", "WixToolset.Util.wixext"];
+// 微软 WebView2 文档给出的 Evergreen 引导程序下载地址
+export const WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
+export const WEBVIEW2_BOOTSTRAPPER = join(
+  tauriDir,
+  "windows/webview2/MicrosoftEdgeWebview2Setup.exe",
+);
 
 /**
  * 预发布阶段在 MSI 第三字段中的偏移（第 3.3.3 节）。Windows Installer 只比较 ProductVersion 的前三个字段、
@@ -101,7 +111,16 @@ export function msiFileName(semver) {
 }
 
 /** wix build 参数（第 3.3.1 节第 3 步） */
-export function wixBuildArgs({ wxs = WXS, appDir, coreDir, runtimeDir, productVersion, out }) {
+export function wixBuildArgs({
+  wxs = WXS,
+  appDir,
+  coreDir,
+  runtimeDir,
+  shellDir = tauriDir,
+  webview2Setup = WEBVIEW2_BOOTSTRAPPER,
+  productVersion,
+  out,
+}) {
   return [
     "build",
     wxs,
@@ -120,6 +139,10 @@ export function wixBuildArgs({ wxs = WXS, appDir, coreDir, runtimeDir, productVe
     `runtime=${runtimeDir}`,
     "-d",
     `ProductVersion=${productVersion}`,
+    "-d",
+    `ShellDir=${shellDir}`,
+    "-d",
+    `WebView2Setup=${webview2Setup}`,
     "-o",
     out,
   ];
@@ -156,12 +179,51 @@ export function signtoolArgs(file, env = process.env) {
   return ["sign", "/fd", "sha256", "/tr", tsa, "/td", "sha256", "/sha1", sha1, file];
 }
 
-function main() {
+/** Authenticode 签名（Windows PowerShell 自带 Get-AuthenticodeSignature；路径经环境变量传入，免转义） */
+function authenticode(file) {
+  const r = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$s = Get-AuthenticodeSignature -LiteralPath $env:PRIMUS_VERIFY_FILE; " +
+        "[pscustomobject]@{ Status = [string]$s.Status; Subject = [string]$s.SignerCertificate.Subject } | ConvertTo-Json -Compress",
+    ],
+    { encoding: "utf8", env: { ...process.env, PRIMUS_VERIFY_FILE: file } },
+  );
+  if (r.status !== 0) fail(`无法读取 ${file} 的签名：${r.stderr || r.error?.message}`);
+  return JSON.parse(r.stdout);
+}
+
+/** 微软签名有效的引导程序才能打进 MSI（它在安装时以 SYSTEM 身份运行） */
+export function isTrustedMicrosoftSignature({ Status, Subject }) {
+  return Status === "Valid" && /(^|,\s*)O="?Microsoft Corporation"?(,|$)/.test(Subject ?? "");
+}
+
+async function prepareWebView2(file, { download }) {
+  if (!existsSync(file)) {
+    if (!download) fail(`未找到 WebView2 引导程序：${file}`);
+    console.log(`\n> 下载 WebView2 引导程序 ${WEBVIEW2_BOOTSTRAPPER_URL}`);
+    const res = await fetch(WEBVIEW2_BOOTSTRAPPER_URL);
+    if (!res.ok) fail(`下载 WebView2 引导程序失败：HTTP ${res.status}`);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, Buffer.from(await res.arrayBuffer()));
+  }
+  const signature = authenticode(file);
+  if (!isTrustedMicrosoftSignature(signature))
+    fail(`WebView2 引导程序签名不可信：${signature.Status} ${signature.Subject}（${file}）`);
+  const size = (readFileSync(file).length / 1024 / 1024).toFixed(1);
+  console.log(`✓ WebView2 引导程序 ${size} MiB，微软签名有效（${signature.Subject}）`);
+}
+
+async function main() {
   const { values: args } = parseArgs({
     options: {
       version: { type: "string" },
       "skip-tauri": { type: "boolean", default: false },
       "out-dir": { type: "string" },
+      webview2: { type: "string" },
       "dry-run": { type: "boolean", default: false },
     },
   });
@@ -225,6 +287,10 @@ function main() {
       fail(`WiX 版本为 ${wixVersion}，基线为 ${baseline.toolchain.wix}（技术方案第 2.4 节）`);
   }
 
+  // WebView2 引导程序：缺失时下载，校验微软签名
+  const webview2Setup = resolve(root, args.webview2 ?? WEBVIEW2_BOOTSTRAPPER);
+  if (!dryRun) await prepareWebView2(webview2Setup, { download: !args.webview2 });
+
   // 1. 编译 Primus.exe（不打包）
   if (!args["skip-tauri"]) {
     const tauriArgs = ["--filter", "@primus/desktop", "tauri", "build", "--no-bundle"];
@@ -261,7 +327,10 @@ function main() {
 
   // 3. WiX 7 构建 MSI
   if (!dryRun) mkdirSync(outDir, { recursive: true });
-  run("wix", wixBuildArgs({ appDir, coreDir, runtimeDir, productVersion, out: msi }));
+  run(
+    "wix",
+    wixBuildArgs({ appDir, coreDir, runtimeDir, webview2Setup, productVersion, out: msi }),
+  );
 
   // 4. 签名 MSI，写 SHA-256 校验文件
   const signMsi = signtoolArgs(msi);
@@ -287,4 +356,4 @@ function fail(message) {
   process.exit(1);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
