@@ -46,7 +46,7 @@ pnpm build:core && pnpm smoke:core   # 构建 + RPC 冒烟
 
 ### 已知遗留
 
-- `packages/coding-agent/src/core/remote-catalog-provider.ts`：源码保留，已无任何引用（P-06）。
+- `packages/coding-agent/src/core/remote-catalog-provider.ts`：源码保留，生产代码已不引用，但仍被测试文件 `packages/coding-agent/test/remote-catalog-provider.test.ts` 导入（P-06）；删除该源码前须同时处理此测试。
 - `packages/ai/src/providers/radius-config.ts`：源码保留，且仍被 `packages/coding-agent/src/core/radius.ts` 引用（导入网关地址常量 `DEFAULT_RADIUS_GATEWAY` 与 `normalizeRadiusGatewayUrl`，供交互界面登录提示与已禁用的 bug report 上传文案使用），升级时不可删除；Radius 供应商本身已不注册，不会发出请求（P-06）。两者保留都是为了减少与上游的合并冲突。
 - `packages/coding-agent/src/extensions/mcp/oauth.ts` 的 CIMD（客户端元数据文档）地址仍指向上游，仅当 MCP 服务器配置 `clientRegistration: "cimd"` 时才会使用。
 - `packages/coding-agent/src/config.ts` 的 `DEFAULT_SHARE_VIEWER_URL` 与 `packages/ai/src/utils/identity.ts` 的 `PI_ATTRIBUTION` 字符串仍在源码中，但不再被调用（P-09、P-11）。
@@ -55,5 +55,5 @@ pnpm build:core && pnpm smoke:core   # 构建 + RPC 冒烟
 
 ## 本仓库侧的构建约定（不改动本目录源码）
 
-- `scripts/build-core.mjs`：`npm ci`（设置 `HUSKY=0`，避免上游 `prepare` 脚本改写本仓库 git hooks）→ 编译前清空各包 `dist/`（tsc 不会删除已删源文件的旧产物，残留的裁剪适配器会进入产物并让被禁 SDK 检查误报）→ 下载并校验锁定的模型目录 → `hydrate-model-catalog.ts` 离线生成模型数据 → `npm run build:offline`。不使用上游默认的 `npm run build`，因为它会在线抓取最新模型数据，结果不可复现。
+- `scripts/build-core.mjs`：`npm ci`（设置 `HUSKY=0`，避免上游 `prepare` 脚本改写本仓库 git hooks）→ 下载并校验锁定的模型目录 → `hydrate-model-catalog.ts` 离线生成模型数据 → 编译前清空各包 `dist/`（tsc 不会删除已删源文件的旧产物，残留的裁剪适配器会进入产物并让被禁 SDK 检查误报）→ `npm run build:offline`。不使用上游默认的 `npm run build`，因为它会在线抓取最新模型数据，结果不可复现。
 - `scripts/smoke-core-rpc.mjs`：以临时目录作为 HOME，`--offline` 启动 `packages/coding-agent/dist/bundle/rpc-entry.js`，发送 `get_state`，校验收到成功的 `response`。
