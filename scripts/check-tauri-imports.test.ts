@@ -18,6 +18,19 @@ function fixture(files: Record<string, string>): string {
   return root;
 }
 
+// Windows 未开启开发者模式、也没有创建符号链接的权限时 symlinkSync 会抛 EPERM：
+// 返回 false 让用例跳过，而不是让整个 pnpm test 失败；其他错误照常抛出。
+function trySymlink(target: string, path: string, type?: "dir" | "file"): boolean {
+  try {
+    symlinkSync(target, path, type);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "EACCES") return false;
+    throw error;
+  }
+}
+
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
@@ -52,12 +65,17 @@ describe("平台边界检查", () => {
     expect(findViolations(code).map((v: { line: number }) => v.line)).toEqual([6]);
   });
 
-  it("跳过符号链接（含悬空链接），不越出根目录", () => {
+  it("跳过符号链接（含悬空链接），不越出根目录", (ctx) => {
     const imp = `import { invoke } from "${TAURI}";\n`;
     const outside = fixture({ "secret/bad.ts": imp });
     const root = fixture({ "packages/ui/src/ok.ts": "export const a = 1;\n" });
-    symlinkSync(join(outside, "secret"), join(root, "packages/ui/src/linked"), "dir");
-    symlinkSync(join(outside, "missing.ts"), join(root, "packages/ui/src/dangling.ts"));
+    const linked =
+      trySymlink(join(outside, "secret"), join(root, "packages/ui/src/linked"), "dir") &&
+      trySymlink(join(outside, "missing.ts"), join(root, "packages/ui/src/dangling.ts"));
+    if (!linked) {
+      ctx.skip("当前环境无权创建符号链接（Windows 未开启开发者模式），跳过");
+      return;
+    }
     const { findings, scanned } = run(root);
     expect(findings).toEqual([]);
     expect(scanned).toBe(1);
