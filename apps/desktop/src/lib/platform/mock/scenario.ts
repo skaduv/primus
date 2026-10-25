@@ -65,7 +65,7 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
   const firstText = "我先查看一下工作区的文件。";
   const toolArgs = { path: "README.md" };
   const toolOutput = "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
-  const answer = `这是来自 **mock 平台**的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
+  const answer = `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
 
   const user: AgentMessage = { role: "user", content: prompt, timestamp: now };
   messages.push(user);

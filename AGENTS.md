@@ -41,6 +41,7 @@
 | 路径 | 内容 | 关键约束 |
 |---|---|---|
 | `apps/desktop/src/` | 前端（Next.js 16 App Router，静态导出） | 见第 4 节 |
+| `apps/desktop/src/components/ui/` | Liquid Glass 基础组件（lore-glass，MIT；Radix 原语） | 第三方文件的改动登记在该目录 README.md；长列表不套玻璃 |
 | `apps/desktop/src-tauri/` | 薄壳（Rust） | 目标 ≤ 约 4000 行；只做 Core 做不了的事 |
 | `apps/desktop/src-tauri/windows/` | `Primus.wxs`（WiX 7）、WebView2 引导、NSIS 备用 | `UpgradeCode` 永不改变 |
 | `packages/extensions/` | 第一方 Core 扩展 → `primus-bundle.js` | 只依赖 Core 公开扩展 API |

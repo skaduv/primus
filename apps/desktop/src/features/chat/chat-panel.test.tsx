@@ -36,6 +36,13 @@ describe("对话区（mock 事件流）", () => {
     expect(screen.queryByRole("article")).toBeNull();
   });
 
+  it("附件按钮在接入前禁用", () => {
+    render(<ChatPanel />);
+    expect((screen.getByRole("button", { name: t.attach }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
   it("运行中可以停止", async () => {
     setPlatformForTesting(createMockPlatform({ intervalMs: 20, batchSize: 2 }));
     render(<ChatPanel />);

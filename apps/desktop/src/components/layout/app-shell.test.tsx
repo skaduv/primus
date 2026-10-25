@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { useRouter } from "next/navigation";
 import { beforeEach, describe, expect, it } from "vitest";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
@@ -33,5 +34,28 @@ describe("主界面外壳", () => {
     render(<AppShell />);
     fireEvent.click(screen.getByRole("button", { name: strings.layout.toggleInspector }));
     expect(screen.queryByRole("complementary", { name: strings.layout.inspector })).toBeNull();
+  });
+
+  it("右栏标签切换变更、文件、计划", () => {
+    render(<AppShell />);
+    const t = strings.inspectorTabs;
+    expect(screen.getByText(t.changesEmpty)).toBeTruthy();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: t.files }));
+    expect(screen.getByText(t.filesEmpty)).toBeTruthy();
+    expect(screen.queryByText(t.changesEmpty)).toBeNull();
+  });
+
+  it("左栏设置按钮打开设置页", () => {
+    render(<AppShell />);
+    fireEvent.click(screen.getByRole("button", { name: strings.layout.settings }));
+    expect(useRouter().push).toHaveBeenCalledWith("/settings/");
+  });
+
+  it("空会话显示欢迎页，点建议填入输入框", () => {
+    render(<AppShell />);
+    const suggestion = strings.chat.suggestions[0];
+    fireEvent.click(screen.getByRole("button", { name: suggestion }));
+    const input = screen.getByRole("textbox", { name: strings.chat.inputLabel });
+    expect((input as HTMLTextAreaElement).value).toBe(suggestion);
   });
 });
