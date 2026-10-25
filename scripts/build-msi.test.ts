@@ -106,5 +106,34 @@ describe("build-msi", () => {
     expect(dry.stdout).toContain("ProductVersion 1.3.0.2");
     expect(dry.stdout).toContain("-acceptEula wix7");
     expect(dry.stdout).toContain("Primus_1.3.0-beta.2_x64_zh-CN.msi");
+    // 覆盖版本同步给 tauri build，Primus.exe 与 MSI 同一版本
+    expect(dry.stdout).toMatch(
+      /tauri build --no-bundle --config \S*tauri\.version\.json -- --locked/,
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "--version 与 tauri.conf.json 一致时不加 --config",
+    () => {
+      const conf = JSON.parse(
+        readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
+      );
+      const dry = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--version", conf.version], {
+        encoding: "utf8",
+      });
+      expect(dry.status).toBe(0);
+      expect(dry.stdout).toContain("tauri build --no-bundle -- --locked");
+      expect(dry.stdout).not.toContain("--config");
+    },
+  );
+
+  it("--version 覆盖与 --skip-tauri 同用时拒绝构建", () => {
+    const r = spawnSync(
+      process.execPath,
+      [SCRIPT, "--dry-run", "--skip-tauri", "--version", "9.9.9"],
+      { encoding: "utf8" },
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("不能与 --skip-tauri 同用");
   });
 });

@@ -13,7 +13,9 @@
 // WiX 只能在 Windows 上运行；其他平台只能用 --dry-run 查看将要执行的命令。
 //
 // 用法：node scripts/build-msi.mjs [--version <SemVer>] [--skip-tauri] [--out-dir <目录>] [--dry-run]
-//   --version   默认取 apps/desktop/src-tauri/tauri.conf.json 的 version
+//   --version   默认取 apps/desktop/src-tauri/tauri.conf.json 的 version；与之不同时经
+//               tauri build --config 同步给 Primus.exe，保证 exe、MSI 与文件名同一版本
+//               （与 --skip-tauri 同用且版本不同则拒绝构建：已有的 exe 版本无法保证一致）
 //   --skip-tauri 已编译好 Primus.exe 时跳过第 1 步
 //   --out-dir   MSI 输出目录，默认仓库根下 out/（已在 .gitignore 中）
 //
@@ -25,7 +27,8 @@
 // 未配置时跳过对应签名并提示（开发与 PR 构建）。
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -130,6 +133,11 @@ function main() {
 
   const tauriConf = JSON.parse(readFileSync(join(tauriDir, "tauri.conf.json"), "utf8"));
   const version = args.version ?? tauriConf.version;
+  const versionOverride = version !== tauriConf.version;
+  if (versionOverride && args["skip-tauri"])
+    fail(
+      `--version ${version} 与 tauri.conf.json 的 ${tauriConf.version} 不同，不能与 --skip-tauri 同用（已构建的 Primus.exe 版本会与 MSI 不一致）`,
+    );
   const productVersion = msiProductVersion(version);
   const outDir = resolve(root, args["out-dir"] ?? "out");
   const msi = join(outDir, msiFileName(version));
@@ -161,8 +169,19 @@ function main() {
   }
 
   // 1. 编译 Primus.exe（不打包）
-  if (!args["skip-tauri"])
-    runPnpm(["--filter", "@primus/desktop", "tauri", "build", "--no-bundle", "--", "--locked"]);
+  if (!args["skip-tauri"]) {
+    const tauriArgs = ["--filter", "@primus/desktop", "tauri", "build", "--no-bundle"];
+    if (versionOverride) {
+      // 覆盖版本写进临时配置文件，经 --config 合并进 tauri.conf.json（避免在 shell 中转义 JSON）
+      const confFile = join(
+        dryRun ? tmpdir() : mkdtempSync(join(tmpdir(), "primus-msi-")),
+        "tauri.version.json",
+      );
+      if (!dryRun) writeFileSync(confFile, `${JSON.stringify({ version })}\n`);
+      tauriArgs.push("--config", quoted(confFile));
+    }
+    runPnpm([...tauriArgs, "--", "--locked"]);
+  }
   const exe = join(appDir, "Primus.exe");
   if (!dryRun && !existsSync(exe)) fail(`未找到 ${exe}`);
 
