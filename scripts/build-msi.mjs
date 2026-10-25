@@ -179,7 +179,20 @@ export function signtoolArgs(file, env = process.env) {
   return ["sign", "/fd", "sha256", "/tr", tsa, "/td", "sha256", "/sha1", sha1, file];
 }
 
-/** Authenticode 签名（Windows PowerShell 自带 Get-AuthenticodeSignature；路径经环境变量传入，免转义） */
+/**
+ * Authenticode 签名（Windows PowerShell 自带 Get-AuthenticodeSignature；路径经环境变量传入，免转义）。
+ * 从 pwsh 7 启动时继承的 PSModulePath 指向 PowerShell 7 的模块，Windows PowerShell 5.1 会加载
+ * Microsoft.PowerShell.Security 失败、取不到签名，所以去掉 PSModulePath 让它用自己的默认模块路径；
+ * 命令出错一律以非零退出，避免把"读不到签名"误报成"签名不可信"。
+ */
+export function authenticodeEnv(env, file) {
+  const out = Object.fromEntries(
+    Object.entries(env).filter(([key]) => key.toLowerCase() !== "psmodulepath"),
+  );
+  out.PRIMUS_VERIFY_FILE = file;
+  return out;
+}
+
 function authenticode(file) {
   const r = spawnSync(
     "powershell.exe",
@@ -187,13 +200,16 @@ function authenticode(file) {
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      "$s = Get-AuthenticodeSignature -LiteralPath $env:PRIMUS_VERIFY_FILE; " +
+      "$ErrorActionPreference = 'Stop'; " +
+        "$s = Get-AuthenticodeSignature -LiteralPath $env:PRIMUS_VERIFY_FILE; " +
         "[pscustomobject]@{ Status = [string]$s.Status; Subject = [string]$s.SignerCertificate.Subject } | ConvertTo-Json -Compress",
     ],
-    { encoding: "utf8", env: { ...process.env, PRIMUS_VERIFY_FILE: file } },
+    { encoding: "utf8", env: authenticodeEnv(process.env, file) },
   );
   if (r.status !== 0) fail(`无法读取 ${file} 的签名：${r.stderr || r.error?.message}`);
-  return JSON.parse(r.stdout);
+  const signature = JSON.parse(r.stdout);
+  if (!signature.Status) fail(`无法读取 ${file} 的签名：${r.stderr || r.stdout}`);
+  return signature;
 }
 
 /** 微软签名有效的引导程序才能打进 MSI（它在安装时以 SYSTEM 身份运行） */

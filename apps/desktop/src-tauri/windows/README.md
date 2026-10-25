@@ -1,7 +1,7 @@
 # windows
 
 - `Primus.wxs`：WiX 7 安装包定义（第 3.3 节）。`UpgradeCode` 固定为 `5B4199DD-C352-459A-AEB0-7119A884608F`，**永不改变**（MajorUpgrade 靠它识别旧版本）；`data` 目录组件的 GUID 同样固定。
-- `webview2/`：WebView2 Evergreen 引导程序 `MicrosoftEdgeWebview2Setup.exe`（约 1.8MB）。不入库：`build-msi.mjs` 缺失时从微软官方地址下载，校验 Authenticode 签名有效且签名者为 Microsoft Corporation 后作为 `Binary` 打进 MSI；安装时注册表中查不到 WebView2（`pv` 为空或 `0.0.0.0`）才以 SYSTEM 身份静默运行，失败则回滚安装。
+- `webview2/`：WebView2 Evergreen 引导程序 `MicrosoftEdgeWebview2Setup.exe`（约 1.8MB）。不入库：`build-msi.mjs` 缺失时从微软官方地址下载，校验 Authenticode 签名有效且签名者为 Microsoft Corporation 后作为 `Binary` 打进 MSI；安装时注册表中查不到按机器安装的 WebView2（HKLM 32 位视图的 `pv` 为空或 `0.0.0.0`；MSI 面向所有用户，安装者 HKCU 下的按用户运行时不算）才以 SYSTEM 身份静默运行，失败则回滚安装。
 - `License.rtf`：安装界面许可页（`WixUILicenseRtf`），中文以 RTF `\uN\'3f` 转义（Unicode 码点 + `?` 回退字符的十六进制形式，各解析器一致）；改文案时保持 RTF 有效（可用写字板打开另存）。
 - `nsis/`：备选 NSIS 安装脚本（第 3.4 节）。
 
@@ -21,4 +21,4 @@
 | 快捷方式 | 公共开始菜单“乾元 Primus”，`System.AppUserModel.ID = com.primus.desktop`（通知归属） |
 | 卸载信息 | `ARPPRODUCTICON`、`ARPURLINFOABOUT`；`ARPNOMODIFY`（安装目录装后不可改，修复 / 卸载可用） |
 
-CI（`.github/workflows/ci.yml` Windows 作业）构建 MSI 后用 `scripts/msi-smoke.ps1` 静默安装，检查布局、`data` 的 ACL（`BUILTIN\Users` 显式 Modify 且继承）、以中完整性级别（去掉管理员权限）实际写入 `data` 且写不进安装目录根、开始菜单快捷方式与 WebView2 处理，再卸载并确认 `data` 与其中文件仍在。
+CI（`.github/workflows/ci.yml` Windows 作业）构建 MSI 后用 `scripts/msi-smoke.ps1` 静默安装，检查布局、`data` 的 ACL（`BUILTIN\Users` 显式 Modify 且继承，显式与继承的 Users 授权都没有更改权限 / 取得所有权）、以中完整性级别（去掉管理员权限）实际写入 `data` 且写不进安装目录根、开始菜单快捷方式与 WebView2 处理，再卸载并确认 `data` 与其中文件仍在。

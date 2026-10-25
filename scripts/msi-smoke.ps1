@@ -101,15 +101,11 @@ function Get-UninstallEntry {
 }
 
 # 与 Primus.wxs 的检测一致：EdgeUpdate\Clients\{F3017226-…}\pv，为空或 0.0.0.0 视为未安装
+# 与 Primus.wxs 一致：只认按机器安装的运行时（HKCU 的按用户运行时对其他用户无效）
 function Get-WebView2Version {
-  $keys = @(
-    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2Guid",
-    "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$WebView2Guid"
-  )
-  foreach ($key in $keys) {
-    $item = Get-ItemProperty -Path $key -Name pv -ErrorAction SilentlyContinue
-    if ($item -and $item.pv -and $item.pv -ne '0.0.0.0') { return $item.pv }
-  }
+  $key = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2Guid"
+  $item = Get-ItemProperty -Path $key -Name pv -ErrorAction SilentlyContinue
+  if ($item -and $item.pv -and $item.pv -ne '0.0.0.0') { return $item.pv }
   return $null
 }
 
@@ -187,18 +183,23 @@ $usersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
 $fsr = [Security.AccessControl.FileSystemRights]
 $inherit = [Security.AccessControl.InheritanceFlags]
 $acl = Get-Acl -LiteralPath $DataDir
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
-    $_.IdentityReference -eq $usersSid -and -not $_.IsInherited -and
+$usersRules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+    $_.IdentityReference -eq $usersSid -and
     $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow
   })
-$modifyRule = $rules | Where-Object {
+$modifyRule = $usersRules | Where-Object {
+  -not $_.IsInherited -and
   (($_.FileSystemRights -band $fsr::Modify) -eq $fsr::Modify) -and
   (($_.InheritanceFlags -band $inherit::ContainerInherit) -ne 0) -and
   (($_.InheritanceFlags -band $inherit::ObjectInherit) -ne 0)
 } | Select-Object -First 1
 Assert-True ($null -ne $modifyRule) 'ACL 含 BUILTIN\Users 显式“修改”(M)，并继承到子目录与文件 (OI)(CI)'
-Assert-True ((($modifyRule.FileSystemRights -band $fsr::ChangePermissions) -eq 0) -and
-  (($modifyRule.FileSystemRights -band $fsr::TakeOwnership) -eq 0)) 'Users 组没有更改权限 / 取得所有权（不是完全控制）'
+# 显式与继承的 Users 授权都要看：任一条带更改权限 / 取得所有权（如从自定义安装目录继承的完全控制）都不合格
+$tooBroad = @($usersRules | Where-Object {
+    (($_.FileSystemRights -band $fsr::ChangePermissions) -ne 0) -or
+    (($_.FileSystemRights -band $fsr::TakeOwnership) -ne 0)
+  })
+Assert-True ($tooBroad.Count -eq 0) "Users 组的显式与继承授权都没有更改权限 / 取得所有权（不是完全控制；违规 $($tooBroad.Count) 条）"
 
 if (-not $Gsudo) { $Gsudo = (Get-Command gsudo -ErrorAction SilentlyContinue)?.Source }
 if ($Gsudo) {
@@ -220,19 +221,16 @@ exit 0
 "@
   Assert-True ((Invoke-AsMediumIntegrity $writeData) -eq 0) '中完整性级别可在 data 中创建、写入、删除文件与子目录'
 
+  # 退出码：0 = 写入被拒（预期）；1 = 写入成功；3 = 写入成功但删除失败（测试文件残留）
   $writeRoot = @"
-try {
-  `$file = Join-Path $installLiteral 'medium-integrity-write.txt'
-  Set-Content -LiteralPath `$file -Value 'x' -ErrorAction Stop
-  Remove-Item -LiteralPath `$file
-  exit 1
-} catch { exit 0 }
+`$file = Join-Path $installLiteral 'medium-integrity-write.txt'
+try { Set-Content -LiteralPath `$file -Value 'x' -ErrorAction Stop } catch { exit 0 }
+try { Remove-Item -LiteralPath `$file -ErrorAction Stop } catch { exit 3 }
+exit 1
 "@
-  if ((Invoke-AsMediumIntegrity $writeRoot) -eq 0) {
-    Write-Host '  ✓ 对照：中完整性级别写不进安装目录根（降权有效，上面的写入确实来自 Users 组权限）'
-  } else {
-    Write-Warning '中完整性级别竟能写入安装目录根：降权未生效，写入测试不能证明 Users 组权限，结论以上面的 ACL 检查为准'
-  }
+  $rootResult = Invoke-AsMediumIntegrity $writeRoot
+  if ($rootResult -eq 3) { Remove-Item -LiteralPath (Join-Path $InstallDir 'medium-integrity-write.txt') -ErrorAction SilentlyContinue }
+  Assert-True ($rootResult -eq 0) "中完整性级别写不进安装目录根（普通用户不能改程序文件；退出码 $rootResult）"
 } else {
   Write-Host '  · 未找到 gsudo，跳过中完整性级别写入测试（ACL 检查已通过）'
 }

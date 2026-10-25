@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
 import {
+  authenticodeEnv,
   checkExeStamp,
   compareMsiVersions,
   exeStamp,
@@ -183,6 +184,12 @@ describe("build-msi", () => {
       }),
     ).toBe(false);
     expect(isTrustedMicrosoftSignature({ Status: "Valid", Subject: "" })).toBe(false);
+  });
+
+  it("读取签名时去掉继承自 pwsh 7 的 PSModulePath", () => {
+    const env = authenticodeEnv({ PSModulePath: "C:\\pwsh7", PATH: "/bin" }, "C:\\a.exe");
+    expect(env).toEqual({ PATH: "/bin", PRIMUS_VERIFY_FILE: "C:\\a.exe" });
+    expect(authenticodeEnv({ PSMODULEPATH: "x" }, "f")).toEqual({ PRIMUS_VERIFY_FILE: "f" });
   });
 
   it.skipIf(process.platform === "win32")("非 Windows 上拒绝真实构建，--dry-run 列出命令", () => {

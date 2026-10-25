@@ -85,19 +85,16 @@
     </Feature>
 
     <!-- WebView2（第 3.5 节）：Evergreen 运行时在注册表 EdgeUpdate\Clients\{F3017226-…}\pv 记录版本，
-         按机器安装在 32 位视图（WOW6432Node），按用户安装在 HKCU；pv 为空或 0.0.0.0 视为未安装。
+         按机器安装在 32 位视图（WOW6432Node）；pv 为空或 0.0.0.0 视为未安装。本 MSI 按机器安装、面向所有用户，
+         只认按机器安装的运行时：安装者 HKCU 下的按用户运行时对其他用户无效，不能用来跳过引导。
          缺失时在安装末尾以 SYSTEM 身份静默运行内嵌的引导程序（约 1.8MB，需联网下载运行时）；
          引导失败则安装回滚，避免装出无法启动的程序。Windows 11 自带 WebView2，通常不会触发。 -->
     <Property Id="WEBVIEW2_MACHINE">
       <RegistrySearch Id="WebView2MachineSearch" Root="HKLM" Bitness="always32" Type="raw" Name="pv"
                       Key="SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" />
     </Property>
-    <Property Id="WEBVIEW2_USER">
-      <RegistrySearch Id="WebView2UserSearch" Root="HKCU" Type="raw" Name="pv"
-                      Key="Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" />
-    </Property>
     <SetProperty Id="WEBVIEW2_MISSING" Value="1" After="AppSearch" Sequence="both"
-                 Condition="(NOT WEBVIEW2_MACHINE OR WEBVIEW2_MACHINE = &quot;0.0.0.0&quot;) AND (NOT WEBVIEW2_USER OR WEBVIEW2_USER = &quot;0.0.0.0&quot;)" />
+                 Condition="NOT WEBVIEW2_MACHINE OR WEBVIEW2_MACHINE = &quot;0.0.0.0&quot;" />
     <Binary Id="WebView2Setup" SourceFile="$(WebView2Setup)" />
     <CustomAction Id="InstallWebView2" BinaryRef="WebView2Setup" ExeCommand="/silent /install"
                   Execute="deferred" Impersonate="no" Return="check" />
