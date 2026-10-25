@@ -3,7 +3,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
-import { msiFileName, msiProductVersion, signtoolArgs, WXS, wixBuildArgs } from "./build-msi.mjs";
+import {
+  checkExeStamp,
+  exeStamp,
+  msiFileName,
+  msiProductVersion,
+  signtoolArgs,
+  WXS,
+  wixBuildArgs,
+} from "./build-msi.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./build-msi.mjs", import.meta.url));
 
@@ -135,5 +143,23 @@ describe("build-msi", () => {
     );
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("不能与 --skip-tauri 同用");
+  });
+
+  it("--skip-tauri 校验已有 Primus.exe 的构建记录", () => {
+    const stat = { size: 1234, mtimeMs: 1700000000123.7 };
+    const stamp = exeStamp("1.2.3", stat);
+    expect(stamp).toEqual({ version: "1.2.3", size: 1234, mtimeMs: 1700000000123 });
+    expect(checkExeStamp(stamp, "1.2.3", stat)).toBeNull();
+    // 记录缺失
+    expect(checkExeStamp(null, "1.2.3", stat)).toContain("未找到构建记录");
+    // 上次以 --version 9.9.9 构建，这次不带 --version 跳过编译
+    expect(checkExeStamp(exeStamp("9.9.9", stat), "1.2.3", stat)).toContain("9.9.9");
+    // exe 被其他方式重新生成
+    expect(checkExeStamp(stamp, "1.2.3", { size: 1234, mtimeMs: 1700000009999 })).toContain(
+      "重新生成",
+    );
+    expect(checkExeStamp(stamp, "1.2.3", { size: 4321, mtimeMs: 1700000000123 })).toContain(
+      "重新生成",
+    );
   });
 });

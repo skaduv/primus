@@ -16,7 +16,9 @@
 //   --version   默认取 apps/desktop/src-tauri/tauri.conf.json 的 version；与之不同时经
 //               tauri build --config 同步给 Primus.exe，保证 exe、MSI 与文件名同一版本
 //               （与 --skip-tauri 同用且版本不同则拒绝构建：已有的 exe 版本无法保证一致）
-//   --skip-tauri 已编译好 Primus.exe 时跳过第 1 步
+//   --skip-tauri 已编译好 Primus.exe 时跳过第 1 步；须是本脚本上次构建的产物：脚本在签名后把
+//               exe 的版本、大小与修改时间写进旁边的 Primus.exe.build.json，跳过时逐项校验，
+//               记录缺失、版本与 MSI 不同或 exe 已被其他方式重新生成都拒绝构建
 //   --out-dir   MSI 输出目录，默认仓库根下 out/（已在 .gitignore 中）
 //
 // 签名所需环境变量（证书与私钥只保存在 CI 密钥库，第 22.3 节）：
@@ -27,7 +29,7 @@
 // 未配置时跳过对应签名并提示（开发与 PR 构建）。
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -89,6 +91,29 @@ export function wixBuildArgs({ wxs = WXS, appDir, coreDir, runtimeDir, productVe
     "-o",
     out,
   ];
+}
+
+/** 构建记录文件名（写在 Primus.exe 旁边，供 --skip-tauri 校验 exe 版本） */
+export const EXE_STAMP = "Primus.exe.build.json";
+
+/** 由 exe 的文件信息生成构建记录 */
+export function exeStamp(version, stat) {
+  return { version, size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs) };
+}
+
+/**
+ * --skip-tauri 时校验已有 Primus.exe 是本脚本以 version 构建的产物（第 3.3.3 节：exe 与 MSI 同一版本）。
+ * stamp 为上次写下的构建记录（缺失为 null），stat 为 exe 当前文件信息；一致返回 null，否则返回原因。
+ */
+export function checkExeStamp(stamp, version, stat) {
+  if (!stamp)
+    return `未找到构建记录 ${EXE_STAMP}，无法确认 Primus.exe 的版本，请去掉 --skip-tauri 重新编译`;
+  if (stamp.version !== version)
+    return `已有 Primus.exe 的版本为 ${stamp.version}，与 MSI 目标版本 ${version} 不一致，请去掉 --skip-tauri 重新编译`;
+  const now = exeStamp(version, stat);
+  if (stamp.size !== now.size || stamp.mtimeMs !== now.mtimeMs)
+    return `Primus.exe 在上次构建后被其他方式重新生成（大小或修改时间与 ${EXE_STAMP} 不符），版本无法确认，请去掉 --skip-tauri 重新编译`;
+  return null;
 }
 
 /** signtool 签名参数（第 3.3.1 节第 2、4 步）；未配置证书时返回 null */
@@ -183,7 +208,13 @@ function main() {
     runPnpm([...tauriArgs, "--", "--locked"]);
   }
   const exe = join(appDir, "Primus.exe");
+  const stampFile = join(appDir, EXE_STAMP);
   if (!dryRun && !existsSync(exe)) fail(`未找到 ${exe}`);
+  if (args["skip-tauri"] && !dryRun) {
+    const stamp = existsSync(stampFile) ? JSON.parse(readFileSync(stampFile, "utf8")) : null;
+    const problem = checkExeStamp(stamp, version, statSync(exe));
+    if (problem) fail(problem);
+  }
 
   // 2. 签名 Primus.exe
   const signtool = process.env.PRIMUS_SIGNTOOL ?? "signtool";
@@ -193,6 +224,8 @@ function main() {
     console.log(
       "\n· 未配置 PRIMUS_SIGN_CERT_SHA1 / PRIMUS_SIGN_TIMESTAMP_URL，跳过 Primus.exe 签名",
     );
+  // 签名会改写 exe，签名之后再记录（供下次 --skip-tauri 校验）
+  if (!dryRun) writeFileSync(stampFile, `${JSON.stringify(exeStamp(version, statSync(exe)))}\n`);
 
   // 3. WiX 7 构建 MSI
   if (!dryRun) mkdirSync(outDir, { recursive: true });
