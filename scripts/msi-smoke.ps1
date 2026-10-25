@@ -109,9 +109,40 @@ function Get-WebView2Version {
   return $null
 }
 
+# 解析快捷方式目标。WScript.Shell 对 Windows Installer 创建的快捷方式可能读不到 TargetPath
+# （广告快捷方式只存 Darwin 描述符），依次退到 Shell.Application 与 msi.dll 解析，并打印用的是哪种方式。
+Add-Type -Namespace PrimusSmoke -Name Msi -MemberDefinition @'
+[DllImport("msi.dll", CharSet = CharSet.Unicode)]
+public static extern uint MsiGetShortcutTargetW(string shortcut, System.Text.StringBuilder product, System.Text.StringBuilder feature, System.Text.StringBuilder component);
+[DllImport("msi.dll", CharSet = CharSet.Unicode)]
+public static extern int MsiGetComponentPathW(string product, string component, System.Text.StringBuilder path, ref uint size);
+'@
+
 function Get-ShortcutTarget([string] $Path) {
-  $shell = New-Object -ComObject WScript.Shell
-  return $shell.CreateShortcut($Path).TargetPath
+  $target = (New-Object -ComObject WScript.Shell).CreateShortcut($Path).TargetPath
+  if ($target) { Write-Host "  · 快捷方式目标（WScript.Shell）：$target"; return $target }
+
+  $folder = (New-Object -ComObject Shell.Application).Namespace((Split-Path -Parent $Path))
+  $item = if ($folder) { $folder.ParseName((Split-Path -Leaf $Path)) } else { $null }
+  if ($item -and $item.IsLink) {
+    $target = $item.GetLink.Path
+    if ($target) { Write-Host "  · 快捷方式目标（Shell.Application）：$target"; return $target }
+  }
+
+  $product = [Text.StringBuilder]::new(39)
+  $feature = [Text.StringBuilder]::new(39)
+  $component = [Text.StringBuilder]::new(39)
+  $rc = [PrimusSmoke.Msi]::MsiGetShortcutTargetW($Path, $product, $feature, $component)
+  if ($rc -eq 0 -and $component.Length -gt 0) {
+    $size = [uint32]1024
+    $buffer = [Text.StringBuilder]::new([int]$size)
+    $state = [PrimusSmoke.Msi]::MsiGetComponentPathW($product.ToString(), $component.ToString(), $buffer, [ref]$size)
+    Write-Host "  · 广告快捷方式：产品 $product，组件 $component，组件状态 $state"
+    if ($buffer.Length -gt 0) { return $buffer.ToString() }
+  } else {
+    Write-Host "  · MsiGetShortcutTarget 返回 $rc（不是广告快捷方式）"
+  }
+  return ''
 }
 
 # 以中完整性级别运行一段 PowerShell（gsudo 降权：管理员组变为仅拒绝），返回退出码
