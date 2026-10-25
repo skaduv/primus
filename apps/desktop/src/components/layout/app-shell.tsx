@@ -2,6 +2,7 @@
 
 import { PanelLeft, PanelRight } from "lucide-react";
 import { Separator, Toggle } from "radix-ui";
+import { ChatPanel } from "@/features/chat/chat-panel";
 import { strings } from "@/lib/strings";
 import { useAppStore } from "@/stores/app-store";
 
@@ -44,11 +45,8 @@ export function AppShell() {
             <Separator.Root orientation="vertical" className="w-px bg-border" />
           </>
         )}
-        <main
-          aria-label={strings.layout.timeline}
-          className="flex min-w-0 flex-1 items-center justify-center p-6"
-        >
-          <p className="text-sm text-muted">{strings.layout.emptyTimeline}</p>
+        <main aria-label={strings.layout.timeline} className="flex min-w-0 flex-1 flex-col">
+          <ChatPanel />
         </main>
         {inspectorOpen && (
           <>
