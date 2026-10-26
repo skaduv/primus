@@ -10,8 +10,10 @@ import {
   CORE_LICENSE_FILE,
   copyCoreLicense,
   globToRegExp,
+  isCompleteMitLicense,
   listFiles,
   listZipEntries,
+  MIT_LICENSE_BODY,
   parseShasums,
   pickFiles,
   readZipEntry,
@@ -233,8 +235,7 @@ describe("manifest", () => {
 });
 
 describe("Core 许可文件", () => {
-  const MIT =
-    "MIT License\n\nCopyright (c) 2025 Someone\n\nPermission is hereby granted, free of charge, to any person\n";
+  const MIT = `MIT License\n\nCopyright (c) 2025 Someone\n\n${MIT_LICENSE_BODY}\n`;
 
   it("原样复制到 dist/agent-core/LICENSE，并被 manifest 收录", () => {
     const core = fixture({ LICENSE: MIT });
@@ -254,6 +255,25 @@ describe("Core 许可文件", () => {
       copyCoreLicense(fixture({ LICENSE: "Apache License\nVersion 2.0" }), dist),
     ).toThrow(/不是预期的 MIT/);
     expect(existsSync(join(dist, "LICENSE"))).toBe(false);
+  });
+
+  it("截断、缺版权行或正文被改动的 MIT 文本都判为不合格", () => {
+    const dist = fixture({});
+    const truncated =
+      "MIT License\n\nCopyright (c) 2025 Someone\n\nPermission is hereby granted, free of charge, to any person\n";
+    const noCopyright = `MIT License\n\n${MIT_LICENSE_BODY}\n`;
+    const altered = MIT.replace("NONINFRINGEMENT", "INFRINGEMENT");
+    for (const text of [truncated, noCopyright, altered, `${MIT}\nExtra clause.\n`]) {
+      expect(isCompleteMitLicense(text)).toBe(false);
+      expect(() => copyCoreLicense(fixture({ LICENSE: text }), dist)).toThrow(/不是预期的 MIT/);
+    }
+    expect(existsSync(join(dist, "LICENSE"))).toBe(false);
+  });
+
+  it("换行风格、缩进与多行版权声明不影响判定", () => {
+    expect(isCompleteMitLicense(MIT.replace(/\n/g, "\r\n"))).toBe(true);
+    const twoHolders = `MIT License\n\nCopyright (c) 2024 A\nCopyright (c) 2025 B\n\n${MIT_LICENSE_BODY.replace(/\n/g, "\n  ")}\n`;
+    expect(isCompleteMitLicense(twoHolders)).toBe(true);
   });
 
   it("仓库内 agent-core/LICENSE 是 MIT，可直接分发", () => {

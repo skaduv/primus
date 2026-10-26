@@ -7,7 +7,7 @@
 | 脚本 | 作用 |
 | --- | --- |
 | `New-PrimusTestCheckpoint.ps1` | 检查集成服务（可选启用来宾服务接口）→ 正常关机 → 建立检查点（默认 `clean`，同名已存在须加 `-Force`） |
-| `Reset-PrimusTestVM.ps1` | 断电并还原检查点 → 启动、等待检测信号与 PowerShell Direct → 复制 MSI、`msi-smoke.ps1`、`smoke-core-rpc.mjs` 到来宾 `C:\PrimusTest` → 可选执行冒烟 → 拉回日志到宿主机 `.\vm-logs\<VM>-<时间>\` |
+| `Reset-PrimusTestVM.ps1` | 断电并还原检查点 → 启动、等待检测信号与 PowerShell Direct → 复制 MSI、`msi-smoke.ps1`、`smoke-core-rpc.mjs`、`core-dist.mjs` 到来宾 `C:\PrimusTest` → 可选执行冒烟 → 拉回日志到宿主机 `.\vm-logs\<VM>-<时间>\` |
 
 两个脚本都要求宿主机**管理员**身份、已启用 Hyper-V 功能（`Hyper-V` PowerShell 模块），Windows PowerShell 5.1 与
 PowerShell 7 均可运行。虚拟机名、检查点名、来宾工作目录都是参数；来宾凭据只通过 `-Credential` 或运行时
@@ -58,8 +58,8 @@ PowerShell 7 均可运行。虚拟机名、检查点名、来宾工作目录都�
 
 - `msi-smoke.ps1` 需要 PowerShell 7.2+：来宾内没有 `pwsh` 时用 `-PwshZip` 传入官方便携包
   （GitHub PowerShell Releases 的 `PowerShell-7.x.y-win-x64.zip`），只解压到 `C:\PrimusTest\tools\pwsh`，不安装。
-- 来宾内没有 Node.js 时，`msi-smoke.ps1` 会跳过 Core RPC 冒烟；没有 gsudo 时只做 data 的 ACL 检查，
-  不做中完整性级别写入（这两项在 CI 的 Windows 作业中覆盖）。
+- Core RPC 冒烟用安装目录中的 `node.exe` 驱动，来宾无需另装 Node.js；没有 gsudo 时只做 data 的 ACL 检查，
+  不做中完整性级别写入（该项在 CI 的 Windows 作业中覆盖）。
 - 拉回的日志：`guest-logs\msi-smoke\`（`install.log` / `uninstall.log` 等 msiexec 详细日志、`console.log`），
   以及 `app-logs\`（`<安装目录>\data\shared\logs`，存在时）。
 - 冒烟失败时脚本退出码非 0，日志照样拉回；虚拟机保持运行，便于登录排查。下次运行会直接断电还原。

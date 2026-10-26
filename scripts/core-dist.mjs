@@ -229,8 +229,53 @@ export function verifyManifest(dir, manifest, { skip = [], strict = true } = {})
 export const CORE_LICENSE_FILE = "LICENSE";
 
 /**
+ * MIT 许可正文（版权行之后的全部内容，按 SPDX MIT 标准文本审核）。上游 LICENSE 须为
+ * 「MIT License」标题 + 一或多行 Copyright + 本正文；比较时只归一化空白（换行与缩进差异不影响）。
+ */
+export const MIT_LICENSE_BODY = `Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.`;
+
+const normalizeSpace = (s) => s.replace(/\s+/g, " ").trim();
+
+/** 判断许可文本是否为完整的 MIT 许可：标题、至少一行版权声明、与 MIT_LICENSE_BODY 一致的完整正文 */
+export function isCompleteMitLicense(text) {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  let i = 0;
+  const skipBlank = () => {
+    while (i < lines.length && lines[i].trim() === "") i++;
+  };
+  skipBlank();
+  if (lines[i]?.trim() !== "MIT License") return false;
+  i++;
+  skipBlank();
+  let copyrights = 0;
+  while (i < lines.length && /^\s*Copyright\b/i.test(lines[i])) {
+    copyrights++;
+    i++;
+    skipBlank();
+  }
+  if (copyrights === 0) return false;
+  return normalizeSpace(lines.slice(i).join("\n")) === normalizeSpace(MIT_LICENSE_BODY);
+}
+
+/**
  * 把 Core 的上游 MIT 许可文件原样复制到 destDir/LICENSE（MIT 要求随软件副本附带版权与许可声明）。
- * 上游许可若不再是 MIT（文件缺失或内容变化），构建直接失败，需人工复核再调整分发方式。
+ * 上游许可若不再是完整的 MIT 文本（文件缺失、截断或内容变化），构建直接失败，需人工复核再调整分发方式。
  * 文件在组装阶段写入，之后生成的 manifest 自然收录它，安装后由 msi-smoke.ps1 检查。
  */
 export function copyCoreLicense(coreDir, destDir) {
@@ -241,11 +286,7 @@ export function copyCoreLicense(coreDir, destDir) {
   } catch {
     throw new Error(`未找到 Core 许可文件 ${from}`);
   }
-  const text = bytes.toString("utf8");
-  if (
-    !/^\s*MIT License\b/.test(text) ||
-    !text.includes("Permission is hereby granted, free of charge")
-  )
+  if (!isCompleteMitLicense(bytes.toString("utf8")))
     throw new Error(`${from} 不是预期的 MIT 许可文本，请复核上游许可后再调整分发方式`);
   writeFileSync(join(destDir, CORE_LICENSE_FILE), bytes);
   return CORE_LICENSE_FILE;

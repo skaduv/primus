@@ -47,7 +47,11 @@ describe("安装测试虚拟机脚本", () => {
 
   it("New：关机后才建立检查点，不强制断电", () => {
     const text = read("New-PrimusTestCheckpoint.ps1").toString("utf8");
-    expect(text.indexOf("Stop-VM")).toBeLessThan(text.indexOf("Checkpoint-VM"));
+    // 用只出现在代码里的完整调用片段定位（帮助注释里也提到 Stop-VM）
+    const stop = text.indexOf("Stop-VM -VM");
+    const checkpoint = text.indexOf("Checkpoint-VM -VM");
+    expect(stop).toBeGreaterThan(-1);
+    expect(checkpoint).toBeGreaterThan(stop);
     expect(text).not.toMatch(/Stop-VM[^\n]*-TurnOff/);
   });
 });
