@@ -1,0 +1,224 @@
+# 乾元 Primus 发布（技术方案第 3.1、22 章）：按标签构建 Windows x64 MSI，连同 SHA-256 与 CycloneDX SBOM 发布到 GitHub Releases
+# - 推送 v* 标签时自动运行；Release 不存在则创建（版本 < 1.0 或含预发布标识时标为 prerelease）
+# - workflow_dispatch 输入已有标签（例如 v0.0.1），用于给已有 Release 补传或覆盖附件（gh release upload --clobber，失败时回滚到旧附件）
+# - 工作流本身来自触发它的提交（手动触发时为 main），构建的源码一律 checkout 该标签；
+#   共用的 composite action 从工作流自身的提交另行取出，因为较早的标签里可能还没有它
+# - 未配置代码签名证书时 MSI 不签名（build-msi.mjs 自动跳过），Release 正文的「已知限制」写明 SmartScreen 拦截
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已有标签（例如 v0.0.1），构建该标签并补传附件到对应 Release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: 构建 MSI 与 SBOM（Windows x64）
+    runs-on: windows-2025
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: 校验标签名
+        shell: pwsh
+        run: |
+          if ($env:RELEASE_TAG -cnotmatch '^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
+            throw "标签须为 v<SemVer>（例如 v0.0.1、v1.2.0-beta.1），实际：$env:RELEASE_TAG"
+          }
+
+      - name: 检出标签 ${{ env.RELEASE_TAG }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: 取出工作流提交中的共用 action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-ci
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: 校验标签版本与 tauri.conf.json 一致
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw apps/desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if ("v$version" -cne $env:RELEASE_TAG) {
+            throw "标签 $env:RELEASE_TAG 与 tauri.conf.json 的版本 $version 不一致"
+          }
+          # 版本 < 1.0 或带预发布标识（含 '-'）时标为 prerelease
+          $prerelease = ($version.Contains('-') -or [int]$version.Split('.')[0] -lt 1).ToString().ToLowerInvariant()
+          $wix = (Get-Content -Raw scripts/version-baseline.json | ConvertFrom-Json).toolchain.wix
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "prerelease=$prerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "wix=$wix" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "版本 $version · prerelease=$prerelease · WiX $wix"
+
+      # 发布构建不启用 pnpm / Rust 缓存，产物只取决于标签内容与锁文件
+      - name: 准备 Windows 构建环境（WiX ${{ steps.version.outputs.wix }}）
+        uses: ./.release-ci/.github/actions/setup-windows-build
+        with:
+          wix-version: ${{ steps.version.outputs.wix }}
+          cache: "false"
+
+      - name: 构建 Agent Core 并组装 dist/
+        run: pnpm build:core
+      - name: 构建第一方扩展（primus-bundle.js）
+        run: pnpm build:extensions
+      - name: 生成 SBOM（CycloneDX：pnpm 工作区 + agent-core）
+        run: pnpm build:sbom
+      - name: 被禁 SDK 检查（导入图 + SBOM，严格模式）
+        run: node scripts/check-forbidden-sdk.mjs --strict
+
+      - name: 构建 MSI（tauri build --no-bundle → wix build）
+        run: pnpm build:msi
+
+      - name: 检查并汇集发布附件
+        shell: pwsh
+        env:
+          PRIMUS_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $name = "Primus_$($env:PRIMUS_VERSION)_x64_zh-CN.msi"
+          $msi = Join-Path out $name
+          if (-not (Test-Path $msi)) { throw "未找到 $msi" }
+          $msis = @(Get-ChildItem -Path out -Filter "Primus_*_x64_zh-CN.msi")
+          if ($msis.Count -ne 1) { throw "out/ 中应恰有一个 MSI，实际 $($msis.Count) 个" }
+          # 第 16.5 节：MSI 安装包 < 120MB
+          if ((Get-Item $msi).Length -ge 120MB) { throw "MSI 超过 120MB：$((Get-Item $msi).Length)" }
+          $hash = (Get-FileHash -Path $msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          $line = (Get-Content -Raw "$msi.sha256").Trim()
+          if ($line -cne "$hash  $name") { throw ".sha256 内容与 MSI 不符：$line" }
+          $dir = Join-Path $env:RUNNER_TEMP "release-assets"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item $msi, "$msi.sha256", dist/sbom/primus-workspace.cdx.json, dist/sbom/agent-core.cdx.json -Destination $dir
+          Get-ChildItem $dir | Select-Object Name, Length
+          Write-Host "SHA-256：$hash"
+          "RELEASE_ASSETS=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 上传发布附件（供发布作业使用）
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: ${{ env.RELEASE_ASSETS }}
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: 发布到 GitHub Releases
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # 仅发布作业持有写权限；构建作业只读
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: assets
+
+      - name: 校验 SHA-256
+        working-directory: assets
+        run: sha256sum --check --strict Primus_*_x64_zh-CN.msi.sha256
+
+      - name: 创建 Release 或补传附件
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          msi="Primus_${VERSION}_x64_zh-CN.msi"
+          files=(
+            "assets/${msi}"
+            "assets/${msi}.sha256"
+            "assets/primus-workspace.cdx.json"
+            "assets/agent-core.cdx.json"
+          )
+          for f in "${files[@]}"; do [[ -f "$f" ]] || { echo "::error::缺少附件 $f"; exit 1; }; done
+          hash="$(cut -d' ' -f1 "assets/${msi}.sha256")"
+          row="| \`${msi}\` | \`${hash}\` |"
+
+          if gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} 已存在：覆盖上传附件"
+            # --clobber 先删旧附件再上传：先备份同名旧附件，上传失败时整组回滚到旧附件，避免 Release 缺 MSI 或校验文件
+            existing="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+            mkdir -p backup
+            for f in "${files[@]}"; do
+              n="$(basename "$f")"
+              if grep -Fxq -- "$n" <<<"$existing"; then
+                gh release download "$RELEASE_TAG" --pattern "$n" --dir backup
+              fi
+            done
+            if ! gh release upload "$RELEASE_TAG" "${files[@]}" --clobber; then
+              echo "::error::附件上传失败，回滚到上传前的附件"
+              for f in "${files[@]}"; do
+                n="$(basename "$f")"
+                if [[ -f "backup/$n" ]]; then
+                  gh release upload "$RELEASE_TAG" "backup/$n" --clobber || echo "::error::恢复旧附件 $n 失败"
+                elif gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fxq -- "$n"; then
+                  # 上传前不存在的附件：删掉本次留下的新版本，保持整组一致
+                  gh release delete-asset "$RELEASE_TAG" "$n" --yes || echo "::error::删除新附件 $n 失败"
+                fi
+              done
+              exit 1
+            fi
+            # 正文校验表与新附件的 SHA-256 保持一致（其余正文不动）
+            gh release view "$RELEASE_TAG" --json body --jq .body > body.md
+            MSI="$msi" ROW="$row" perl -0pi -e '
+              # 1) 替换已有行（容忍并保留 CRLF 行尾）；2) 有「## 校验」表但缺该行时插到表头分隔行之后；3) 没有校验段时追加
+              my $row = $ENV{ROW};
+              if (!s/^\|[ \t]*`\Q$ENV{MSI}\E`[ \t]*\|[ \t]*`[0-9a-f]{64}`[ \t]*\|[ \t]*(\r?)$/$row$1/m) {
+                if (!s/^(##[ \t]*校验[ \t]*\r?\n(?:[ \t]*\r?\n)*\|[^\r\n]*\r?\n\|[ \t:|-]*-[ \t:|-]*(\r?)\n)/$1$row$2\n/m) {
+                  s/\s*\z/\n\n## 校验\n\n| 文件 | SHA-256 |\n| --- | --- |\n$row\n/;
+                }
+              }
+            ' body.md
+            if ! gh release view "$RELEASE_TAG" --json body --jq .body | cmp -s - body.md; then
+              gh release edit "$RELEASE_TAG" --notes-file body.md
+              echo "已更新正文中的 SHA-256：${hash}"
+            fi
+          else
+            echo "Release ${RELEASE_TAG} 不存在：创建（prerelease=${PRERELEASE}）"
+            flags=()
+            [[ "$PRERELEASE" == "true" ]] && flags+=(--prerelease)
+            cat > notes.md <<NOTES
+          ## 已知限制
+
+          - **未做代码签名**：首次运行安装包时 Windows SmartScreen 会拦截，需要点「更多信息」→「仍要运行」。
+          - **仅提供 x64**：暂无 ARM64 安装包。
+
+          ## 校验
+
+          | 文件 | SHA-256 |
+          | --- | --- |
+          ${row}
+
+          NOTES
+            gh release create "$RELEASE_TAG" "${files[@]}" \
+              --verify-tag \
+              --title "乾元 Primus ${VERSION}" \
+              --notes-file notes.md \
+              --generate-notes \
+              "${flags[@]}"
+          fi
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | "\(.name)\t\(.size)"'

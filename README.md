@@ -89,6 +89,7 @@ cargo nextest run                # Rust 单测（在 apps/desktop/src-tauri 下�
 ## CI 与依赖升级
 
 - GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，并构建 Core、组装 `dist/` 后用当前 node 冒烟；再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上用 `pnpm build:msi` 编译 `Primus.exe` 并构建 MSI（上传为制品 `primus-msi-windows`），用 `scripts/msi-smoke.ps1` 静默安装、检查布局并卸载，并用 `dist/runtime/node.exe` 冒烟 `dist/agent-core`、检查 `node.exe` 官方签名。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图、导入图（从前端、扩展与 Core 入口实际遍历）与 CycloneDX SBOM（`pnpm build:sbom`）中的被禁 SDK，构建后以 `--strict` 再查一遍并做负向自检（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
+- 发布（`.github/workflows/release.yml`）：推送 `v*` 标签时在 Windows 上构建该标签的 MSI（先校验标签与 `tauri.conf.json` 版本一致），连同 `.sha256` 与两份 CycloneDX SBOM（`primus-workspace.cdx.json`、`agent-core.cdx.json`）发布到 GitHub Releases：Release 不存在则创建（版本 < 1.0 或含预发布标识时标为预发布，正文为自动生成的变更说明加已知限制与校验表），已存在则 `gh release upload --clobber` 覆盖附件并同步正文校验表中的 SHA-256；也可手动触发（`workflow_dispatch`，输入已有标签，例如 `v0.0.1`）给已有 Release 补传附件。Node/pnpm、Rust、WiX 与依赖安装与 CI 的 Windows 作业共用 composite action `.github/actions/setup-windows-build`；发布构建不使用缓存，第三方 action 固定到提交 SHA。
 - Renovate（`renovate.json`）：每月 1 日把纳入 Renovate 的稳定版升级合成一个 PR 提到 `dev`，锁定精确版本；`agent-core/` 不在升级范围内（随上游版本手动同步）；需要在 GitHub 上为本仓库安装 Renovate 应用。
 
 ### Core 产物与内置运行时（dist/）

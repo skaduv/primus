@@ -128,35 +128,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - uses: pnpm/action-setup@v6.1.0
-
-      - uses: actions/setup-node@v7.1.0
+      # Node/pnpm、Rust（含缓存）、WiX 与 pnpm install：与 release.yml 共用同一个 composite action
+      - name: 准备 Windows 构建环境（WiX ${{ env.WIX_VERSION }}）
+        uses: ./.github/actions/setup-windows-build
         with:
-          node-version-file: .node-version
-          cache: pnpm
-
-      - name: Rust 工具链（按 rust-toolchain.toml 安装）
-        shell: pwsh
-        run: |
-          rustup show active-toolchain || rustup toolchain install
-          rustc --version
-          cargo --version
-
-      - uses: Swatinem/rust-cache@v2.9.3
-        with:
-          workspaces: apps/desktop/src-tauri
-
-      - name: 安装 WiX ${{ env.WIX_VERSION }}（.NET 工具，固定版本）
-        shell: pwsh
-        run: |
-          dotnet tool install --global wix --version $env:WIX_VERSION
-          # WiX 7 每条命令都要求先接受 OSMF EULA v1.1（年收入超 1 万美元需缴维护费，见技术方案第 3.3、25 章）
-          wix eula accept wix7
-          wix --version
-          wix extension add -g WixToolset.UI.wixext/$env:WIX_VERSION
-          wix extension add -g WixToolset.Util.wixext/$env:WIX_VERSION
-
-      - run: pnpm install --frozen-lockfile
+          wix-version: ${{ env.WIX_VERSION }}
 
       - name: rustfmt
         working-directory: apps/desktop/src-tauri

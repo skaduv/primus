@@ -1,0 +1,55 @@
+# Windows 构建环境（ci.yml 的 Windows 作业与 release.yml 共用）：Node/pnpm、Rust、WiX 7，并按锁文件安装依赖。
+# 版本全部来自仓库内的锁定文件：.node-version、package.json 的 packageManager、rust-toolchain.toml；
+# WiX 版本由调用方传入（ci.yml 用 env.WIX_VERSION，release.yml 读 scripts/version-baseline.json）。
+# 调用前须已 checkout 待构建的源码到工作区根目录。第三方 action 固定到提交 SHA（注释为对应版本）。
+name: 准备 Windows 构建环境
+description: 安装 pnpm、Node.js、Rust 工具链与 WiX，并执行 pnpm install --frozen-lockfile
+
+inputs:
+  wix-version:
+    description: WiX .NET 工具版本（须与 scripts/version-baseline.json 一致，build-msi.mjs 会再校验）
+    required: true
+  cache:
+    description: 是否启用 pnpm 与 Rust 缓存（发布构建传 "false"，避免复用缓存内容）
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    # pnpm 版本取自 package.json 的 packageManager
+    - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: .node-version
+        cache: ${{ inputs.cache == 'true' && 'pnpm' || '' }}
+
+    - name: Rust 工具链（按 rust-toolchain.toml 安装）
+      shell: pwsh
+      run: |
+        rustup show active-toolchain || rustup toolchain install
+        rustc --version
+        cargo --version
+
+    - if: ${{ inputs.cache == 'true' }}
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        workspaces: apps/desktop/src-tauri
+
+    - name: 安装 WiX（.NET 工具，固定版本）
+      shell: pwsh
+      env:
+        WIX_VERSION: ${{ inputs.wix-version }}
+      run: |
+        if ($env:WIX_VERSION -notmatch '^\d+\.\d+\.\d+$') { throw "wix-version 不是 x.y.z：$env:WIX_VERSION" }
+        dotnet tool install --global wix --version $env:WIX_VERSION
+        # WiX 7 每条命令都要求先接受 OSMF EULA v1.1（年收入超 1 万美元需缴维护费，见技术方案第 3.3、25 章）
+        wix eula accept wix7
+        wix --version
+        wix extension add -g WixToolset.UI.wixext/$env:WIX_VERSION
+        wix extension add -g WixToolset.Util.wixext/$env:WIX_VERSION
+
+    - name: 安装依赖（按锁文件）
+      shell: pwsh
+      run: pnpm install --frozen-lockfile
