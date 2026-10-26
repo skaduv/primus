@@ -2,11 +2,17 @@
 <!--
   乾元 Primus 安装包（WiX 7，技术方案第 3.2、3.3、3.5 节）。由 scripts/build-msi.mjs 构建：
 
-    wix build Primus.wxs -arch x64 -culture zh-CN -acceptEula wix7
+    wix build Primus.wxs -arch x64|arm64 -culture zh-CN -acceptEula wix7
       -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
-      -bindpath app=<target/release> -bindpath core=dist/agent-core -bindpath runtime=dist/runtime
+      -bindpath app=<target/release 或 target/<三元组>/release> -bindpath core=dist/agent-core -bindpath runtime=dist/runtime
       -d ProductVersion=<主.次.修订.构建> -d ShellDir=<apps/desktop/src-tauri>
       -d WebView2Setup=<MicrosoftEdgeWebview2Setup.exe>
+
+  同一份定义构建 x64 与 arm64 两个 MSI（第 3.1 节），平台只由 -arch 决定（Package 的 Platform 随之为 x64 / arm64）：
+    ProgramFiles64Folder 在两种架构上都是 C:\Program Files；Bitness="always64" 的注册表项在 ARM64 上同样写入 64 位视图；
+    WebView2 的 EdgeUpdate 注册表在 ARM64 上也位于 32 位视图（WOW6432Node），检测条件不变；
+    内嵌的 WebView2 引导程序是 x86 程序，ARM64 上经仿真运行并安装 ARM64 运行时。
+    内置运行时须与 -arch 一致（build-msi.mjs 按 dist/agent-core/manifest.json 的 runtime.platform 校验）。
 
   安装布局：
     <INSTALLFOLDER>\Primus.exe

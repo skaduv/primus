@@ -1,25 +1,30 @@
 #!/usr/bin/env node
 // 构建 MSI（技术方案第 3.3.1、3.3.3、3.3.4 节，第 22.1 节第 6 步）：
 //
-//   1. pnpm --filter @primus/desktop tauri build --no-bundle -- --locked   编译 Primus.exe（前端静态导出后嵌入）
+//   1. pnpm --filter @primus/desktop tauri build --no-bundle [--target <三元组>] -- --locked
+//      编译 Primus.exe（前端静态导出后嵌入）；目标架构与 rustc 主机不同时才加 --target（交叉编译）
 //   2. signtool 签名 Primus.exe（配置了证书时；node.exe 保留 OpenJS 官方签名，不重签）
-//   3. wix build Primus.wxs（WiX 7：-arch x64 -culture zh-CN -acceptEula wix7，
+//   3. wix build Primus.wxs（WiX 7：-arch x64|arm64 -culture zh-CN -acceptEula wix7，
 //      -bindpath app / core / runtime，-d ProductVersion=<主.次.修订.构建>，
 //      -d ShellDir=<src-tauri>（图标与许可 RTF），-d WebView2Setup=<WebView2 引导程序>）
 //   4. signtool 签名 MSI（配置了证书时），写 SHA-256 校验文件
 //   5. tauri signer sign 生成 updater 签名 .sig（配置了 TAURI_SIGNING_PRIVATE_KEY 时）
 //
-// 前提：pnpm build:core（dist/agent-core 与 dist/runtime）与 pnpm build:extensions（primus-bundle.js）已完成；
+// 前提：pnpm build:core --platform win-<架构>（dist/agent-core 与 dist/runtime，运行时平台须与 --arch 一致）
+// 与 pnpm build:extensions（primus-bundle.js）已完成；
 // 已安装 WiX 7 .NET 工具与 UI、Util 扩展（版本见 scripts/version-baseline.json，CI 中 `wix extension add -g`）。
 // WiX 只能在 Windows 上运行；其他平台只能用 --dry-run 查看将要执行的命令。
 //
-// 用法：node scripts/build-msi.mjs [--version <SemVer>] [--skip-tauri] [--out-dir <目录>] [--webview2 <文件>] [--dry-run]
+// 用法：node scripts/build-msi.mjs [--arch x64|arm64] [--version <SemVer>] [--skip-tauri] [--out-dir <目录>]
+//                                  [--webview2 <文件>] [--dry-run]
+//   --arch      目标架构（第 3.1 节交付物），默认 x64：决定 Rust 目标三元组、WiX -arch、内置 Node 运行时平台
+//               与 MSI 文件名 Primus_<ver>_<arch>_zh-CN.msi
 //   --version   默认取 apps/desktop/src-tauri/tauri.conf.json 的 version；与之不同时经
 //               tauri build --config 同步给 Primus.exe，保证 exe、MSI 与文件名同一版本
 //               （与 --skip-tauri 同用且版本不同则拒绝构建：已有的 exe 版本无法保证一致）
 //   --skip-tauri 已编译好 Primus.exe 时跳过第 1 步；须是本脚本上次构建的产物：脚本在签名后把
-//               exe 的版本、大小与修改时间写进旁边的 Primus.exe.build.json，跳过时逐项校验，
-//               记录缺失、版本与 MSI 不同或 exe 已被其他方式重新生成都拒绝构建
+//               exe 的版本、架构、大小与修改时间写进旁边的 Primus.exe.build.json，跳过时逐项校验，
+//               记录缺失、版本或架构与 MSI 不同、exe 已被其他方式重新生成都拒绝构建
 //   --out-dir   MSI 输出目录，默认仓库根下 out/（已在 .gitignore 中）
 //   --webview2  WebView2 Evergreen 引导程序（第 3.5 节），默认 apps/desktop/src-tauri/windows/webview2/
 //               MicrosoftEdgeWebview2Setup.exe；不存在时从微软官方地址下载（不入库）。微软会更新该文件，
@@ -105,14 +110,63 @@ export function compareMsiVersions(a, b) {
   return 0;
 }
 
-/** 交付物文件名（第 3.1 节）：Primus_<ver>_x64_zh-CN.msi */
-export function msiFileName(semver) {
-  return `Primus_${semver}_x64_${CULTURE}.msi`;
+/**
+ * 支持的 Windows 架构（第 3.1 节交付物）：Rust 目标三元组、内置 Node 运行时平台（scripts/node-runtime.json）。
+ * WiX 的 -arch 与 Tauri NSIS 文件名中的架构名都直接用键名（x64、arm64）。
+ */
+export const ARCHES = {
+  x64: { rustTarget: "x86_64-pc-windows-msvc", nodePlatform: "win-x64" },
+  arm64: { rustTarget: "aarch64-pc-windows-msvc", nodePlatform: "win-arm64" },
+};
+
+/** 校验并返回架构信息；不支持的架构直接抛错 */
+export function archInfo(arch) {
+  if (!Object.hasOwn(ARCHES, arch))
+    throw new Error(`不支持的架构 ${arch}（可选：${Object.keys(ARCHES).join("、")}）`);
+  return ARCHES[arch];
+}
+
+/**
+ * Rust 编译目标：目标三元组与 rustc 主机相同就不加 --target，产物在 target/release（e2e 与现有脚本沿用）；
+ * 不同（如在 x64 上交叉编译 arm64）才加 --target，产物在 target/<三元组>/release。
+ * tauri build 与 tauri bundle 用同一结果，保证 NSIS 打包的正是刚编译的 exe。
+ */
+export function cargoTarget(arch, hostTriple) {
+  const { rustTarget } = archInfo(arch);
+  return rustTarget === hostTriple
+    ? { args: [], releaseDir: "release" }
+    : { args: ["--target", rustTarget], releaseDir: `${rustTarget}/release` };
+}
+
+/**
+ * rustc 主机三元组（rustc -vV 的 host 行，按仓库 rust-toolchain.toml 选用工具链）。
+ * 非 Windows 上只做 --dry-run 演练，假定是同 CPU 架构的 Windows 主机。
+ */
+export function rustHostTriple(cwd) {
+  if (process.platform !== "win32")
+    return ARCHES[process.arch === "arm64" ? "arm64" : "x64"].rustTarget;
+  const r = spawnSync("rustc", ["-vV"], { cwd, encoding: "utf8" });
+  const host = /^host:\s*(\S+)/m.exec(r.stdout ?? "")?.[1];
+  if (r.status !== 0 || !host)
+    fail(`无法从 rustc -vV 读取主机三元组：${r.stderr || r.error?.message}`);
+  return host;
+}
+
+/** Cargo 产物根目录（CARGO_TARGET_DIR 优先） */
+export function cargoTargetRoot(env = process.env) {
+  return env.CARGO_TARGET_DIR ? resolve(tauriDir, env.CARGO_TARGET_DIR) : join(tauriDir, "target");
+}
+
+/** 交付物文件名（第 3.1 节）：Primus_<ver>_<arch>_zh-CN.msi */
+export function msiFileName(semver, arch = "x64") {
+  archInfo(arch);
+  return `Primus_${semver}_${arch}_${CULTURE}.msi`;
 }
 
 /** wix build 参数（第 3.3.1 节第 3 步） */
 export function wixBuildArgs({
   wxs = WXS,
+  arch = "x64",
   appDir,
   coreDir,
   runtimeDir,
@@ -121,11 +175,12 @@ export function wixBuildArgs({
   productVersion,
   out,
 }) {
+  archInfo(arch);
   return [
     "build",
     wxs,
     "-arch",
-    "x64",
+    arch,
     "-culture",
     CULTURE,
     "-acceptEula",
@@ -148,26 +203,45 @@ export function wixBuildArgs({
   ];
 }
 
-/** 构建记录文件名（写在 Primus.exe 旁边，供 --skip-tauri 校验 exe 版本） */
+/**
+ * dist/agent-core/manifest.json 记录的内置运行时平台须与目标架构一致（build-core.mjs --platform 写入）。
+ * 一致返回 null，否则返回原因。
+ */
+export function checkRuntimePlatform(manifest, arch) {
+  const { nodePlatform } = archInfo(arch);
+  const actual = manifest?.runtime?.platform;
+  if (actual === nodePlatform) return null;
+  return `dist/runtime 的内置 Node 运行时平台为 ${actual ?? "未知"}，与目标架构 ${arch} 不符，请先运行 pnpm build:core --platform ${nodePlatform}`;
+}
+
+/** 构建记录文件名（写在 Primus.exe 旁边，供 --skip-tauri 与 build-nsis.mjs 校验 exe 的版本与架构） */
 export const EXE_STAMP = "Primus.exe.build.json";
 
 /** 由 exe 的文件信息生成构建记录 */
-export function exeStamp(version, stat) {
-  return { version, size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs) };
+export function exeStamp(version, stat, arch = "x64") {
+  return { version, arch, size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs) };
 }
 
 /**
- * --skip-tauri 时校验已有 Primus.exe 是本脚本以 version 构建的产物（第 3.3.3 节：exe 与 MSI 同一版本）。
- * stamp 为上次写下的构建记录（缺失为 null），stat 为 exe 当前文件信息；一致返回 null，否则返回原因。
+ * 校验已有 Primus.exe 是本脚本以 version、arch 构建的产物（第 3.3.3 节：exe 与安装包同一版本、同一架构）。
+ * stamp 为上次写下的构建记录（缺失为 null；早期记录没有 arch 字段，视为 x64），stat 为 exe 当前文件信息；
+ * 一致返回 null，否则返回原因（remedy 为附在原因后的处理建议）。
  */
-export function checkExeStamp(stamp, version, stat) {
-  if (!stamp)
-    return `未找到构建记录 ${EXE_STAMP}，无法确认 Primus.exe 的版本，请去掉 --skip-tauri 重新编译`;
+export function checkExeStamp(
+  stamp,
+  version,
+  stat,
+  { arch = "x64", remedy = "请去掉 --skip-tauri 重新编译" } = {},
+) {
+  if (!stamp) return `未找到构建记录 ${EXE_STAMP}，无法确认 Primus.exe 的版本，${remedy}`;
   if (stamp.version !== version)
-    return `已有 Primus.exe 的版本为 ${stamp.version}，与 MSI 目标版本 ${version} 不一致，请去掉 --skip-tauri 重新编译`;
-  const now = exeStamp(version, stat);
+    return `已有 Primus.exe 的版本为 ${stamp.version}，与目标版本 ${version} 不一致，${remedy}`;
+  const stampArch = stamp.arch ?? "x64";
+  if (stampArch !== arch)
+    return `已有 Primus.exe 为 ${stampArch} 架构的构建，与目标架构 ${arch} 不一致，${remedy}`;
+  const now = exeStamp(version, stat, arch);
   if (stamp.size !== now.size || stamp.mtimeMs !== now.mtimeMs)
-    return `Primus.exe 在上次构建后被其他方式重新生成（大小或修改时间与 ${EXE_STAMP} 不符），版本无法确认，请去掉 --skip-tauri 重新编译`;
+    return `Primus.exe 在上次构建后被其他方式重新生成（大小或修改时间与 ${EXE_STAMP} 不符），版本无法确认，${remedy}`;
   return null;
 }
 
@@ -236,6 +310,7 @@ async function prepareWebView2(file, { download }) {
 async function main() {
   const { values: args } = parseArgs({
     options: {
+      arch: { type: "string", default: "x64" },
       version: { type: "string" },
       "skip-tauri": { type: "boolean", default: false },
       "out-dir": { type: "string" },
@@ -274,29 +349,36 @@ async function main() {
       `--version ${version} 与 tauri.conf.json 的 ${tauriConf.version} 不同，不能与 --skip-tauri 同用（已构建的 Primus.exe 版本会与 MSI 不一致）`,
     );
   const productVersion = msiProductVersion(version);
+  const arch = args.arch;
+  let nodePlatform;
+  try {
+    ({ nodePlatform } = archInfo(arch));
+  } catch (e) {
+    fail(e.message);
+  }
+  const target = cargoTarget(arch, rustHostTriple(root));
   const outDir = resolve(root, args["out-dir"] ?? "out");
-  const msi = join(outDir, msiFileName(version));
-  const targetDir = process.env.CARGO_TARGET_DIR
-    ? resolve(tauriDir, process.env.CARGO_TARGET_DIR)
-    : join(tauriDir, "target");
-  const appDir = join(targetDir, "release");
+  const msi = join(outDir, msiFileName(version, arch));
+  const appDir = join(cargoTargetRoot(), target.releaseDir);
   const coreDir = join(root, "dist/agent-core");
   const runtimeDir = join(root, "dist/runtime");
-  console.log(`乾元 Primus MSI：版本 ${version} → ProductVersion ${productVersion}`);
+  console.log(`乾元 Primus MSI：版本 ${version} → ProductVersion ${productVersion}，架构 ${arch}`);
 
   // 0. 前提：Core 产物与 manifest 一致、第一方扩展已打包、内置运行时就位、WiX 版本与基线一致
   if (!dryRun) {
     const manifestPath = join(coreDir, MANIFEST_FILE);
     if (!existsSync(manifestPath))
       fail("未找到 dist/agent-core/manifest.json，请先运行 pnpm build:core");
-    const problems = verifyManifest(coreDir, JSON.parse(readFileSync(manifestPath, "utf8")), {
-      skip: ["extensions"],
-    });
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const problems = verifyManifest(coreDir, manifest, { skip: ["extensions"] });
     if (problems.length) fail(`dist/agent-core 与 manifest 不符：\n  ${problems.join("\n  ")}`);
     if (!existsSync(join(coreDir, "extensions/primus-bundle.js")))
       fail("未找到 dist/agent-core/extensions/primus-bundle.js，请先运行 pnpm build:extensions");
     if (!existsSync(join(runtimeDir, "node.exe")))
-      fail("未找到 dist/runtime/node.exe，请先运行 pnpm build:core（--platform win-x64）");
+      fail(`未找到 dist/runtime/node.exe，请先运行 pnpm build:core --platform ${nodePlatform}`);
+    // 内置运行时须与目标架构一致：x64 的 node.exe 打进 arm64 包（或反之）会在仿真下运行甚至无法启动
+    const problem = checkRuntimePlatform(manifest, arch);
+    if (problem) fail(problem);
     const baseline = JSON.parse(readFileSync(join(root, "scripts/version-baseline.json"), "utf8"));
     const wixVersion = run("wix", ["--version"], { capture: true }).trim();
     if (!wixVersion.startsWith(`${baseline.toolchain.wix}`))
@@ -309,7 +391,14 @@ async function main() {
 
   // 1. 编译 Primus.exe（不打包）
   if (!args["skip-tauri"]) {
-    const tauriArgs = ["--filter", "@primus/desktop", "tauri", "build", "--no-bundle"];
+    const tauriArgs = [
+      "--filter",
+      "@primus/desktop",
+      "tauri",
+      "build",
+      "--no-bundle",
+      ...target.args,
+    ];
     if (versionOverride) {
       // 覆盖版本写进临时配置文件，经 --config 合并进 tauri.conf.json（避免在 shell 中转义 JSON）
       const confFile = join(
@@ -326,7 +415,7 @@ async function main() {
   if (!dryRun && !existsSync(exe)) fail(`未找到 ${exe}`);
   if (args["skip-tauri"] && !dryRun) {
     const stamp = existsSync(stampFile) ? JSON.parse(readFileSync(stampFile, "utf8")) : null;
-    const problem = checkExeStamp(stamp, version, statSync(exe));
+    const problem = checkExeStamp(stamp, version, statSync(exe), { arch });
     if (problem) fail(problem);
   }
 
@@ -339,13 +428,14 @@ async function main() {
       "\n· 未配置 PRIMUS_SIGN_CERT_SHA1 / PRIMUS_SIGN_TIMESTAMP_URL，跳过 Primus.exe 签名",
     );
   // 签名会改写 exe，签名之后再记录（供下次 --skip-tauri 校验）
-  if (!dryRun) writeFileSync(stampFile, `${JSON.stringify(exeStamp(version, statSync(exe)))}\n`);
+  if (!dryRun)
+    writeFileSync(stampFile, `${JSON.stringify(exeStamp(version, statSync(exe), arch))}\n`);
 
   // 3. WiX 7 构建 MSI
   if (!dryRun) mkdirSync(outDir, { recursive: true });
   run(
     "wix",
-    wixBuildArgs({ appDir, coreDir, runtimeDir, webview2Setup, productVersion, out: msi }),
+    wixBuildArgs({ arch, appDir, coreDir, runtimeDir, webview2Setup, productVersion, out: msi }),
   );
 
   // 4. 签名 MSI，写 SHA-256 校验文件

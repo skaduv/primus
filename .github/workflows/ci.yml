@@ -1,5 +1,6 @@
 # 乾元 Primus CI（技术方案第 22 章）
-# - 每次推送 dev / main 与每个指向 main 的 PR 都在 Windows 上完整编译
+# - 每次推送 dev / main 与每个指向 main 的 PR 都在 Windows 上完整编译：x64（windows-2025）与 ARM64（windows-11-arm）
+#   两个架构都构建 MSI 与 NSIS 安装程序并做静默安装 / 卸载冒烟，arm64 的问题在 PR 阶段暴露，而不是发布时
 # - 工具链版本全部来自仓库内的锁定文件：.node-version、packageManager（pnpm）、rust-toolchain.toml、
 #   以及下方 env 中的 WIX_VERSION；scripts/check-versions.mjs 保证它们与技术方案第 2.4 节一致
 name: CI
@@ -55,7 +56,7 @@ jobs:
       - name: 检查静态导出（out/index.html 含首页）
         run: grep -q "乾元 Primus" apps/desktop/out/index.html
 
-      # Core 产物组装（技术方案第 3.2、6.3 节）：同样实际下载并校验 win-x64 运行时（node.exe 只解出、不运行）；
+      # Core 产物组装（技术方案第 3.2、6.3 节）：同样实际下载并校验默认的 win-x64 运行时（node.exe 只解出、不运行）；
       # Linux 上用当前 node 跑组装好的 dist/agent-core，确认产物自包含、不依赖仓库里的 node_modules
       - name: 构建 Agent Core 并组装 dist/
         run: pnpm build:core
@@ -121,7 +122,7 @@ jobs:
         run: pnpm --filter @primus/e2e typecheck
 
   windows:
-    name: Windows 编译（MSVC · Rust · WiX）
+    name: Windows 编译（MSVC · Rust · WiX · x64）
     # 先过 Linux 检查再占用 Windows runner（README「CI 与依赖升级」）
     needs: checks
     runs-on: windows-2025
@@ -208,29 +209,27 @@ jobs:
 
       # 第 3.3.1 节：tauri build --no-bundle 编译 Primus.exe → wix build（WiX 7，-culture zh-CN，
       # bindpath app/core/runtime）生成 MSI；证书与 updater 私钥未配置时跳过签名
-      - name: 构建 MSI（tauri build --no-bundle → wix build）
-        run: pnpm build:msi
+      - name: 构建 MSI（tauri build --no-bundle → wix build -arch x64）
+        run: node scripts/build-msi.mjs --arch x64
 
-      - name: 检查产物
+      # 第 3.4 节：打包上一步编译的 Primus.exe（tauri bundle，不重新编译），简体中文、按机器安装
+      - name: 构建 NSIS 安装程序（tauri bundle --bundles nsis）
+        run: node scripts/build-nsis.mjs --arch x64
+
+      # 文件名与版本、< 120MB（第 16.5 节）、.sha256、MSI 平台（x64;2052）、Primus.exe 的 PE 架构；写入 PRIMUS_MSI / PRIMUS_NSIS
+      - name: 检查安装包
         shell: pwsh
-        run: |
-          $exe = "apps/desktop/src-tauri/target/release/Primus.exe"
-          if (-not (Test-Path $exe)) { throw "未找到 $exe" }
-          Get-Item $exe | Select-Object Name, Length
-          $msi = @(Get-ChildItem -Path out -Filter "Primus_*_x64_zh-CN.msi")
-          if ($msi.Count -ne 1) { throw "out/ 中应恰有一个 MSI，实际 $($msi.Count) 个" }
-          $msi | Select-Object Name, Length
-          # 第 16.5 节：MSI 安装包 < 120MB
-          if ($msi[0].Length -ge 120MB) { throw "MSI 超过 120MB：$($msi[0].Length)" }
-          "PRIMUS_MSI=$($msi[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        run: ./scripts/check-installers.ps1 -Arch x64
 
-      - name: 上传 MSI
+      - name: 上传安装包
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: primus-msi-windows
+          name: primus-installers-windows-x64
           path: |
             out/Primus_*_x64_zh-CN.msi
             out/Primus_*_x64_zh-CN.msi.sha256
+            out/Primus_*_x64-setup.exe
+            out/Primus_*_x64-setup.exe.sha256
           retention-days: 7
           if-no-files-found: error
 
@@ -260,6 +259,12 @@ jobs:
       - name: MSI 静默安装 / 卸载冒烟
         shell: pwsh
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
+
+      # NSIS 安装程序同样验收：/S 静默安装 → 布局与 Core 文件哈希、卸载信息、快捷方式 → data 的 ACL（hooks.nsh）
+      # 与中完整性级别写入 → 安装后的 node.exe 跑 RPC 冒烟 → uninstall.exe /S 卸载，data 保留
+      - name: NSIS 静默安装 / 卸载冒烟
+        shell: pwsh
+        run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
 
       # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
       - name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}
@@ -296,3 +301,90 @@ jobs:
           whoami /groups | Select-String "Mandatory Label"
           gsudo --integrity Medium pwsh -NoProfile -Command "whoami /groups | Select-String 'Mandatory Label'; ./node_modules/.bin/wdio.cmd run wdio.conf.ts; exit `$LASTEXITCODE"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  windows-arm64:
+    name: Windows ARM64 编译与安装冒烟（windows-11-arm）
+    # 与 x64 作业并行；Linux 检查通过后才占用 ARM64 运行器
+    needs: checks
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: 准备 Windows 构建环境（WiX ${{ env.WIX_VERSION }}）
+        uses: ./.github/actions/setup-windows-build
+        with:
+          wix-version: ${{ env.WIX_VERSION }}
+
+      - name: Rust 主机与目标
+        shell: pwsh
+        run: |
+          rustc -vV
+          rustup target list --installed
+
+      # 内置运行时按架构下载 win-arm64 的 node.exe（哈希锁定在 scripts/node-runtime.json），并在本机原生运行冒烟
+      - name: 构建 Agent Core 并组装 dist/（运行时 win-arm64）
+        run: node scripts/build-core.mjs --platform win-arm64
+
+      - name: Agent Core RPC 冒烟（dist/runtime/node.exe + dist/agent-core）
+        run: pnpm smoke:core:dist
+
+      - name: 检查内置 node.exe 的官方签名与架构
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature -FilePath dist/runtime/node.exe
+          $sig | Format-List Status, StatusMessage
+          if ($sig.Status -ne 'Valid') { throw "node.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
+          if ($sig.SignerCertificate.Subject -notmatch 'O="?OpenJS Foundation') { throw "node.exe 签名者不是 OpenJS Foundation：$($sig.SignerCertificate.Subject)" }
+          $arch = & dist/runtime/node.exe -p process.arch
+          if ($arch -ne 'arm64') { throw "dist/runtime/node.exe 的架构为 $arch，应为 arm64" }
+          Write-Host "node.exe：$(& dist/runtime/node.exe --version)（$arch）"
+
+      - name: 构建第一方扩展（primus-bundle.js）
+        run: pnpm build:extensions
+
+      - name: 构建 MSI（tauri build --no-bundle → wix build -arch arm64）
+        run: node scripts/build-msi.mjs --arch arm64
+
+      - name: 构建 NSIS 安装程序（tauri bundle --bundles nsis）
+        run: node scripts/build-nsis.mjs --arch arm64
+
+      - name: 检查安装包（MSI 平台 Arm64;2052、Primus.exe 为 ARM64）
+        shell: pwsh
+        run: ./scripts/check-installers.ps1 -Arch arm64
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: primus-installers-windows-arm64
+          path: |
+            out/Primus_*_arm64_zh-CN.msi
+            out/Primus_*_arm64_zh-CN.msi.sha256
+            out/Primus_*_arm64-setup.exe
+            out/Primus_*_arm64-setup.exe.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+      # gsudo 便携包含 arm64 版本时用它做中完整性级别写入测试；没有则冒烟脚本只检查 ACL
+      - name: 安装 gsudo ${{ env.GSUDO_VERSION }}（中完整性级别写入测试）
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "gsudo.portable.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "gsudo"
+          Invoke-WebRequest -Uri "https://github.com/gerardog/gsudo/releases/download/v$env:GSUDO_VERSION/gsudo.portable.zip" -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:GSUDO_SHA256) { throw "gsudo.portable.zip 校验失败：$hash" }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $bin = Join-Path $dir "arm64"
+          if (Test-Path (Join-Path $bin "gsudo.exe")) {
+            $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          } else {
+            Write-Host "::warning::gsudo 便携包中没有 arm64 版本（$((Get-ChildItem $dir -Directory).Name -join '、')），跳过中完整性级别写入测试"
+          }
+
+      - name: MSI 静默安装 / 卸载冒烟
+        shell: pwsh
+        run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
+
+      - name: NSIS 静默安装 / 卸载冒烟
+        shell: pwsh
+        run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
