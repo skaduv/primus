@@ -90,6 +90,20 @@ function Invoke-AsMediumIntegrity([string] $Script) {
   return $LASTEXITCODE
 }
 
+# 解析快捷方式目标：NSIS 创建的快捷方式 WScript.Shell 可能读不出 TargetPath（实测为空），退到 Shell.Application，
+# 打印用的是哪种方式
+function Get-ShortcutTarget([string] $Path) {
+  $target = (New-Object -ComObject WScript.Shell).CreateShortcut($Path).TargetPath
+  if ($target) { Write-Host "  · 快捷方式目标（WScript.Shell）：$target"; return $target }
+  $folder = (New-Object -ComObject Shell.Application).Namespace((Split-Path -Parent $Path))
+  $item = if ($folder) { $folder.ParseName((Split-Path -Leaf $Path)) } else { $null }
+  if ($item -and $item.IsLink) {
+    $target = $item.GetLink.Path
+    if ($target) { Write-Host "  · 快捷方式目标（Shell.Application）：$target"; return $target }
+  }
+  return ''
+}
+
 function ConvertTo-PsLiteral([string] $Value) { return "'" + ($Value -replace "'", "''") + "'" }
 
 if (-not (Test-Administrator)) { throw '✗ 需要以管理员身份运行（按机器安装）' }
@@ -146,7 +160,7 @@ Assert-True ($entry[0].DisplayVersion -eq $Version) "卸载信息中的版本为
 Assert-True ($entry[0].Publisher -eq $ProductName) "卸载信息中的发布者为 $ProductName"
 
 Assert-True (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) "开始菜单快捷方式 $ShortcutPath"
-$target = (New-Object -ComObject WScript.Shell).CreateShortcut($ShortcutPath).TargetPath
+$target = Get-ShortcutTarget $ShortcutPath
 Assert-True ($target -ieq $mainExe) "快捷方式指向 $mainExe（实际 $target）"
 
 # ---- 3. data 目录可写（与 MSI 一致，第 3.3.2 节）----

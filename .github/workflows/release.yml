@@ -251,16 +251,20 @@ jobs:
               done
               exit 1
             fi
-            # 新附件齐全后，删除不在本次清单中的旧附件（例如早期发布的 SBOM 与 .sha256）
-            while IFS= read -r old; do
-              [[ -z "$old" ]] && continue
-              if ! printf '%s\n' "${names[@]}" | grep -Fxq -- "$old"; then
-                echo "删除不在清单中的旧附件：$old"
-                gh release delete-asset "$RELEASE_TAG" "$old" --yes
-              fi
-            done <<<"$existing"
+            # 新附件齐全后先更新正文与发布状态（有限重试，仍失败则步骤失败），全部成功后才删除不在本次清单中的旧附件
+            # （例如早期发布的 SBOM 与 .sha256）：中途失败时旧附件仍在，重新运行工作流即可恢复
+            retry() {
+              local i
+              for i in 1 2 3; do
+                "$@" && return 0
+                echo "::warning::第 ${i} 次失败：$*" >&2
+                sleep $((i * 10))
+              done
+              return 1
+            }
             # 正文：替换「## 校验」段（到下一个二级标题或结尾为止），没有则追加；其余正文不动
-            gh release view "$RELEASE_TAG" --json body --jq .body > body.md
+            retry gh release view "$RELEASE_TAG" --json body --jq .body > body.md \
+              || { echo "::error::读取 Release 正文失败"; exit 1; }
             CHECKSUMS="$(cat checksums.md)" perl -0pi -e '
               my $section = "$ENV{CHECKSUMS}\n\n";
               if (!s/^##[ \t]*校验[ \t]*\r?\n.*?(?=^##[ \t]|\z)/$section/ms) {
@@ -268,7 +272,16 @@ jobs:
               }
               s/\s*\z/\n/;
             ' body.md
-            gh release edit "$RELEASE_TAG" --draft=false "${channel[@]}" --notes-file body.md
+            retry gh release edit "$RELEASE_TAG" --draft=false "${channel[@]}" --notes-file body.md \
+              || { echo "::error::更新 Release 正文与发布状态失败，旧附件保留"; exit 1; }
+            while IFS= read -r old; do
+              [[ -z "$old" ]] && continue
+              if ! printf '%s\n' "${names[@]}" | grep -Fxq -- "$old"; then
+                echo "删除不在清单中的旧附件：$old"
+                retry gh release delete-asset "$RELEASE_TAG" "$old" --yes \
+                  || { echo "::error::删除旧附件 $old 失败"; exit 1; }
+              fi
+            done <<<"$existing"
           else
             echo "Release ${RELEASE_TAG} 不存在：创建（prerelease=${PRERELEASE}）"
             {
