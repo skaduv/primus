@@ -148,6 +148,33 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
 
 /** 距底部小于该值视为"停在底部" */
 const STICK_THRESHOLD_PX = 48;
+/** 时间线底部在悬浮输入框之上再留出的间距 */
+const COMPOSER_GAP_PX = 16;
+/** 首帧（尚未量到输入框高度）时的底部留白，约等于两行输入框的静止高度 */
+const COMPOSER_FALLBACK_PX = 128;
+
+/**
+ * 量取悬浮输入框的实际高度（含其下边距），随输入行数增减实时更新。
+ * 时间线据此留出底部空间：欢迎页与最后一条消息永远不会被玻璃输入框盖住，放不下时可滚动。
+ */
+function useElementHeight<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  const [height, setHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // 高度为 0（尚未布局或被隐藏）时视为未量到，沿用首帧留白
+    const read = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      setHeight(h > 0 ? h : null);
+    };
+    read();
+    const observer = new ResizeObserver(read);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+  return [ref, height] as const;
+}
 
 export function ChatPanel() {
   const { state, error, send, abort } = useChatSession();
@@ -156,6 +183,7 @@ export function ChatPanel() {
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [composerRef, composerHeight] = useElementHeight<HTMLDivElement>();
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
   // 只在客户端判断运行环境，避免水合不一致
@@ -196,7 +224,8 @@ export function ChatPanel() {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 pb-44 text-sm"
+        className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 text-sm"
+        style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
       >
         <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4">
           {preview && (
@@ -224,7 +253,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
+      <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
         <GlassSurface
           blur={20}
           radius={24}

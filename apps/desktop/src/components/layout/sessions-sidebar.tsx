@@ -19,14 +19,14 @@ import { GlassPanel, glassButtonClass, toolbarButtonClass, useGlassStyle } from 
 
 const t = strings.layout;
 
-// 左栏（232px，第 16.2 节）：工作区切换 · 搜索 · 会话列表 · 设置入口。
-// 低保真阶段只有空状态，会话索引在后续任务接入。
-export function SessionsSidebar() {
+// 左栏（默认 232px，可拖动、可收起，第 16.2 节）：工作区切换 · 搜索 · 会话列表 · 设置入口。
+// 低保真阶段只有空状态，会话索引在后续任务接入。宽度由 AppShell 按视口计算后传入。
+export function SessionsSidebar({ width }: { width: number }) {
   const router = useRouter();
   const glass = useGlassStyle();
 
   return (
-    <GlassPanel className="w-[232px] shrink-0">
+    <GlassPanel className="shrink-0" style={{ width }}>
       <nav aria-label={t.sessions} className="flex h-full flex-col gap-3 p-3">
         <GlassPopover>
           <GlassPopoverTrigger asChild>
