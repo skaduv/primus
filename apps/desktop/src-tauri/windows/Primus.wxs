@@ -1,37 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  乾元 Primus 安装包（WiX 7，技术方案第 3.2、3.3、3.5 节）。由 scripts/build-msi.mjs 构建：
+
+    wix build Primus.wxs -arch x64 -culture zh-CN -acceptEula wix7
+      -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
+      -bindpath app=<target/release> -bindpath core=dist/agent-core -bindpath runtime=dist/runtime
+      -d ProductVersion=<主.次.修订.构建> -d ShellDir=<apps/desktop/src-tauri>
+      -d WebView2Setup=<MicrosoftEdgeWebview2Setup.exe>
+
+  安装布局：
+    <INSTALLFOLDER>\Primus.exe
+    <INSTALLFOLDER>\resources\runtime\      node.exe + LICENSE（保留 OpenJS 官方签名）
+    <INSTALLFOLDER>\resources\agent-core\   dist/agent-core 整目录（含 extensions\primus-bundle.js）
+    <INSTALLFOLDER>\data\                   Users 组可修改，卸载与升级时保留
+-->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <!-- UpgradeCode 一经发布永不改变（技术方案第 3.3.2 节）：MajorUpgrade 靠它识别旧版本。
-       ProductVersion 由 scripts/build-msi.mjs 按第 3.3.3 节从 SemVer 映射后经 -d 传入。 -->
+  <!-- UpgradeCode 一经发布永不改变：MajorUpgrade 靠它识别旧版本（第 3.3.2 节）。 -->
   <Package Name="乾元 Primus" Manufacturer="乾元 Primus" Version="$(ProductVersion)"
-           UpgradeCode="5B4199DD-C352-459A-AEB0-7119A884608F" Scope="perMachine">
-    <MajorUpgrade DowngradeErrorMessage="已安装更新的版本。" />
+           UpgradeCode="5B4199DD-C352-459A-AEB0-7119A884608F" Language="2052" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="已安装更新版本的 [ProductName]。如需安装此版本，请先在“设置 → 应用”中卸载。" />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- 开始菜单、控制面板“程序和功能”中的图标与信息（第 3.3.2 节） -->
+    <Icon Id="PrimusIcon.ico" SourceFile="$(ShellDir)\icons\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="PrimusIcon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/skaduv/primus" />
+    <!-- 安装目录在安装时选定，之后不能“更改”；修复与卸载照常可用。ARPNOMODIFY=1 由下方 WixUI_InstallDir
+         自带（WixUI_InstallDir.wxs 已定义该属性），这里不能重复定义，否则 WIX0091 -->
+
+    <!-- 查询本地化的内置账户名（WIX_ACCOUNT_USERS 等）：中文系统上 Users 组名不是 “Users”，
+         data 目录授权按查询结果写入，而不是硬编码英文名 -->
+    <util:QueryWindowsWellKnownSIDs />
+
+    <!-- 记住安装目录（约束 C2：可装到其他盘）：重大升级时旧版本在 RemoveExistingProducts 才移除，
+         AppSearch 先读出旧版本写在 HKLM 的安装目录；用户（命令行或界面传入）没有指定 INSTALLFOLDER 时沿用它，
+         新版本装回原目录、继续使用原来的 data。SetProperty 排在 AppSearch 之后、CostFinalize 解析目录之前，
+         此时 INSTALLFOLDER 只有用户显式传入才非空；SetDirectory 排在 CostFinalize 之后，无法区分，不能用。 -->
+    <Property Id="PREVIOUS_INSTALLFOLDER" Secure="yes">
+      <RegistrySearch Id="PreviousInstallFolderSearch" Root="HKLM" Key="Software\Primus" Name="InstallDir"
+                      Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="INSTALLFOLDER" Value="[PREVIOUS_INSTALLFOLDER]" After="AppSearch" Sequence="both"
+                 Condition="PREVIOUS_INSTALLFOLDER AND NOT INSTALLFOLDER" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Primus">
         <Component Id="MainExe">
-          <File Source="!(bindpath.app)\Primus.exe" KeyPath="yes" />
+          <File Id="MainExeFile" Source="!(bindpath.app)\Primus.exe" KeyPath="yes" />
+        </Component>
+        <!-- 供下一次重大升级读取的安装目录（见上方 PREVIOUS_INSTALLFOLDER），卸载时随产品移除 -->
+        <Component Id="InstallDirRegistry" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="Software\Primus" Name="InstallDir" Type="string"
+                         Value="[INSTALLFOLDER]" KeyPath="yes" />
         </Component>
         <Directory Id="RESOURCES" Name="resources">
-          <Directory Id="RUNTIMEDIR" Name="runtime">
-            <Files Include="!(bindpath.runtime)\**" />
-          </Directory>
-          <Directory Id="COREDIR" Name="agent-core">
-            <Files Include="!(bindpath.core)\**" />
-          </Directory>
+          <Directory Id="RUNTIMEDIR" Name="runtime" />
+          <Directory Id="COREDIR" Name="agent-core" />
         </Directory>
+        <!-- App 数据目录（第 4 章）：装在 Program Files 时普通用户默认无写权限，这里给 Users 组授予“修改”。
+             用具体权限位而不是 GenericWrite 等通用权限：通用权限写进目录自身的 ACE 后不会被映射，
+             对目录本身不生效。下面的组合等于 icacls 的 (M)：读取与执行、写入、删除（不含“删除子项”与完全控制）。
+             util:PermissionEx 在现有 ACL 上追加（SYSTEM、Administrators 与继承项保留），Inheritable 默认 yes，
+             即 (OI)(CI) 继承到子目录与文件；每个 Windows 用户的子目录由薄壳另行收紧到仅本人与 SYSTEM（第 4.3 节）。
+             Permanent：卸载、升级都不删除 data（第 3.3.2 节）。 -->
         <Directory Id="DATADIR" Name="data">
           <Component Id="DataDir" Permanent="yes" Guid="6B4A531E-43AD-4B78-ADA7-24A955768EB5">
             <CreateFolder>
-              <util:PermissionEx User="Users" GenericAll="yes" />
+              <util:PermissionEx User="[WIX_ACCOUNT_USERS]"
+                                 Read="yes" ReadAttributes="yes" ReadExtendedAttributes="yes" ReadPermission="yes"
+                                 CreateFile="yes" CreateChild="yes" WriteAttributes="yes" WriteExtendedAttributes="yes"
+                                 Traverse="yes" Delete="yes" Synchronize="yes" />
             </CreateFolder>
           </Component>
         </Directory>
       </Directory>
     </StandardDirectory>
 
-    <!-- TODO: WebView2 检查与引导、开始菜单快捷方式、ARPPRODUCTICON -->
+    <!-- 开始菜单快捷方式。按机器安装时快捷方式进公共开始菜单；键路径放在 HKCU 以满足 ICE38/ICE43。
+         AppUserModelID 与 tauri.conf.json 的 identifier 一致，系统通知（第 16.3 节）才能归属到本应用。 -->
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="StartMenuShortcut" Name="乾元 Primus" Description="乾元 Primus 桌面 Agent"
+                  Target="[#MainExeFile]" WorkingDirectory="INSTALLFOLDER">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="com.primus.desktop" />
+        </Shortcut>
+        <RegistryValue Root="HKCU" Key="Software\Primus\Installer" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="乾元 Primus" AllowAbsent="no">
+      <ComponentRef Id="MainExe" />
+      <ComponentRef Id="InstallDirRegistry" />
+      <ComponentRef Id="DataDir" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <!-- 整目录收集（第 3.3.2 节）：不逐个列文件，Core 升级后自动包含新文件 -->
+      <Files Directory="RUNTIMEDIR" Include="!(bindpath.runtime)\**" />
+      <Files Directory="COREDIR" Include="!(bindpath.core)\**" />
+    </Feature>
+
+    <!-- WebView2（第 3.5 节）：Evergreen 运行时在注册表 EdgeUpdate\Clients\{F3017226-…}\pv 记录版本，
+         按机器安装在 32 位视图（WOW6432Node）；pv 为空或 0.0.0.0 视为未安装。本 MSI 按机器安装、面向所有用户，
+         只认按机器安装的运行时：安装者 HKCU 下的按用户运行时对其他用户无效，不能用来跳过引导。
+         缺失时在安装末尾以 SYSTEM 身份静默运行内嵌的引导程序（约 1.8MB，需联网下载运行时）；
+         引导失败则安装回滚，避免装出无法启动的程序。Windows 11 自带 WebView2，通常不会触发。 -->
+    <Property Id="WEBVIEW2_MACHINE">
+      <RegistrySearch Id="WebView2MachineSearch" Root="HKLM" Bitness="always32" Type="raw" Name="pv"
+                      Key="SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" />
+    </Property>
+    <SetProperty Id="WEBVIEW2_MISSING" Value="1" After="AppSearch" Sequence="both"
+                 Condition="NOT WEBVIEW2_MACHINE OR WEBVIEW2_MACHINE = &quot;0.0.0.0&quot;" />
+    <Binary Id="WebView2Setup" SourceFile="$(WebView2Setup)" />
+    <CustomAction Id="InstallWebView2" BinaryRef="WebView2Setup" ExeCommand="/silent /install"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <InstallExecuteSequence>
+      <Custom Action="InstallWebView2" Before="InstallFinalize" Condition="WEBVIEW2_MISSING AND NOT REMOVE" />
+    </InstallExecuteSequence>
+
+    <!-- 允许选择安装目录（约束 C2：可把整个应用连同数据装到其他盘），中文界面由 -culture zh-CN 提供 -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(ShellDir)\windows\License.rtf" />
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
   </Package>
 </Wix>

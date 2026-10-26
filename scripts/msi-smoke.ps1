@@ -1,29 +1,40 @@
 ﻿#requires -Version 7.2
 <#
 .SYNOPSIS
-  MSI 静默安装 / 卸载冒烟（技术方案第 3.2、3.3、23 章）。CI 的 Windows 作业与安装测试虚拟机共用。
+  MSI 静默安装 / 卸载冒烟（技术方案第 3.2、3.3、3.5、23 章）。CI 的 Windows 作业与安装测试虚拟机共用。
 
 .DESCRIPTION
   1. msiexec /i 静默安装到指定目录（默认 C:\Program Files\Primus），失败时输出安装日志末尾
-  2. 检查安装布局：Primus.exe、resources\runtime\node.exe、resources\agent-core（按 manifest.json 逐个校验
-     SHA-256，确认 WiX 的 Files 收集完整）、第一方扩展 primus-bundle.js、data 目录，以及卸载信息
-  3. 用安装目录里的 node.exe 跑 Core RPC 冒烟（scripts/smoke-core-rpc.mjs --entry/--node）
-  4. msiexec /x 静默卸载，检查程序文件已移除、卸载信息已清除
+  2. 检查安装布局：Primus.exe、resources\runtime\node.exe（官方签名）、resources\agent-core（按 manifest.json
+     逐个校验 SHA-256，确认 WiX 的 Files 收集完整）、primus-bundle.js、卸载信息、HKLM 中的安装目录记录（重大升级
+     沿用原目录）、开始菜单快捷方式
+  3. data 目录：ACL 含 BUILTIN\Users（S-1-5-32-545）显式“修改”且继承到子项；有 gsudo 时再以中完整性级别
+     （管理员组降为仅拒绝，相当于普通用户）实际写入 data，并确认写不进安装目录根
+  4. WebView2：安装前已有运行时则引导程序应被跳过；没有则应运行，装完后注册表中有版本
+  5. 用安装目录里的 node.exe 跑 Core RPC 冒烟（scripts/smoke-core-rpc.mjs --entry/--node）
+  6. 在 data 中留一个文件后 msiexec /x 静默卸载：程序文件、快捷方式、卸载信息、安装目录记录被移除，data 与其中文件保留
+  7. 清理保留的 data（-KeepData 时不清理），便于重复运行
 
-  需要管理员权限（按机器安装）。退出码非 0 即失败。
+  需要管理员权限（按机器安装）。任何一步不符合预期即抛错，退出码非 0。
 
 .PARAMETER Msi
   MSI 路径。
 
 .PARAMETER InstallDir
-  安装目录（传给 INSTALLFOLDER 属性），默认 "$env:ProgramFiles\Primus"。
+  安装目录（传给 INSTALLFOLDER 属性），默认 "$env:ProgramFiles\Primus"。可传含中文与空格的路径。
 
 .PARAMETER Node
   运行 smoke-core-rpc.mjs 的 Node.js（只用来驱动冒烟脚本；Core 本身由安装目录里的 node.exe 运行）。
   默认取 PATH 中的 node；找不到时跳过 RPC 冒烟。
 
+.PARAMETER Gsudo
+  gsudo.exe 路径，用于中完整性级别写入测试。默认取 PATH 中的 gsudo；找不到时只做 ACL 检查。
+
 .PARAMETER KeepInstalled
   只安装与检查，不卸载（虚拟机手工测试时使用）。
+
+.PARAMETER KeepData
+  卸载后不删除保留下来的 data 目录。
 
 .EXAMPLE
   pwsh -File scripts/msi-smoke.ps1 -Msi out/Primus_0.0.0_x64_zh-CN.msi
@@ -33,23 +44,37 @@ param(
   [Parameter(Mandatory)] [string] $Msi,
   [string] $InstallDir = (Join-Path $env:ProgramFiles 'Primus'),
   [string] $Node,
+  [string] $Gsudo,
   [string] $LogDir = (Join-Path ([IO.Path]::GetTempPath()) 'primus-msi-smoke'),
-  [switch] $KeepInstalled
+  [switch] $KeepInstalled,
+  [switch] $KeepData
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $ProductName = '乾元 Primus'
+$AppUserModelId = 'com.primus.desktop'
+$WebView2Guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Msi = (Resolve-Path -LiteralPath $Msi).Path
 $InstallDir = [IO.Path]::GetFullPath($InstallDir.TrimEnd('\'))
+$DataDir = Join-Path $InstallDir 'data'
+$ShortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) "$ProductName.lnk"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 function Write-Step([string] $Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
 function Assert-True([bool] $Condition, [string] $Message) {
   if (-not $Condition) { throw "✗ $Message" }
   Write-Host "  ✓ $Message"
+}
+
+# Primus.wxs 写入的安装目录记录（64 位注册表视图）；没有时返回 $null
+$InstallDirKey = 'HKLM:\SOFTWARE\Primus'
+function Get-RecordedInstallDir {
+  $item = Get-ItemProperty -LiteralPath $InstallDirKey -Name 'InstallDir' -ErrorAction SilentlyContinue
+  if ($null -eq $item) { return $null }
+  return [string] $item.InstallDir
 }
 
 function Test-Administrator {
@@ -72,6 +97,7 @@ function Invoke-Msiexec([string] $Action, [string] $LogName, [string[]] $Propert
     throw "✗ msiexec $Action 失败，退出码 $($process.ExitCode)（日志 $log）"
   }
   Write-Host "  ✓ msiexec $Action 完成（退出码 $($process.ExitCode)）"
+  return $log
 }
 
 function Get-UninstallEntry {
@@ -83,18 +109,77 @@ function Get-UninstallEntry {
     Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -eq $ProductName }
 }
 
+# 与 Primus.wxs 的检测一致：EdgeUpdate\Clients\{F3017226-…}\pv，为空或 0.0.0.0 视为未安装
+# 与 Primus.wxs 一致：只认按机器安装的运行时（HKCU 的按用户运行时对其他用户无效）
+function Get-WebView2Version {
+  $key = "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2Guid"
+  $item = Get-ItemProperty -Path $key -Name pv -ErrorAction SilentlyContinue
+  if ($item -and $item.pv -and $item.pv -ne '0.0.0.0') { return $item.pv }
+  return $null
+}
+
+# 解析快捷方式目标。WScript.Shell 对 Windows Installer 创建的快捷方式可能读不到 TargetPath
+# （广告快捷方式只存 Darwin 描述符），依次退到 Shell.Application 与 msi.dll 解析，并打印用的是哪种方式。
+Add-Type -Namespace PrimusSmoke -Name Msi -MemberDefinition @'
+[DllImport("msi.dll", CharSet = CharSet.Unicode)]
+public static extern uint MsiGetShortcutTargetW(string shortcut, System.Text.StringBuilder product, System.Text.StringBuilder feature, System.Text.StringBuilder component);
+[DllImport("msi.dll", CharSet = CharSet.Unicode)]
+public static extern int MsiGetComponentPathW(string product, string component, System.Text.StringBuilder path, ref uint size);
+'@
+
+function Get-ShortcutTarget([string] $Path) {
+  $target = (New-Object -ComObject WScript.Shell).CreateShortcut($Path).TargetPath
+  if ($target) { Write-Host "  · 快捷方式目标（WScript.Shell）：$target"; return $target }
+
+  $folder = (New-Object -ComObject Shell.Application).Namespace((Split-Path -Parent $Path))
+  $item = if ($folder) { $folder.ParseName((Split-Path -Leaf $Path)) } else { $null }
+  if ($item -and $item.IsLink) {
+    $target = $item.GetLink.Path
+    if ($target) { Write-Host "  · 快捷方式目标（Shell.Application）：$target"; return $target }
+  }
+
+  $product = [Text.StringBuilder]::new(39)
+  $feature = [Text.StringBuilder]::new(39)
+  $component = [Text.StringBuilder]::new(39)
+  $rc = [PrimusSmoke.Msi]::MsiGetShortcutTargetW($Path, $product, $feature, $component)
+  if ($rc -eq 0 -and $component.Length -gt 0) {
+    $size = [uint32]1024
+    $buffer = [Text.StringBuilder]::new([int]$size)
+    $state = [PrimusSmoke.Msi]::MsiGetComponentPathW($product.ToString(), $component.ToString(), $buffer, [ref]$size)
+    Write-Host "  · 广告快捷方式：产品 $product，组件 $component，组件状态 $state"
+    if ($buffer.Length -gt 0) { return $buffer.ToString() }
+  } else {
+    Write-Host "  · MsiGetShortcutTarget 返回 $rc（不是广告快捷方式）"
+  }
+  return ''
+}
+
+# 以中完整性级别运行一段 PowerShell（gsudo 降权：管理员组变为仅拒绝），返回退出码
+function Invoke-AsMediumIntegrity([string] $Script) {
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+  # 交给 gsudo 的是命令名（由它在 PATH 中查找），避免 "C:\Program Files\…" 路径在转交时再被拆开
+  & $Gsudo --integrity Medium pwsh.exe -NoProfile -NonInteractive -EncodedCommand $encoded | ForEach-Object { Write-Host "    $_" }
+  return $LASTEXITCODE
+}
+
+function ConvertTo-PsLiteral([string] $Value) { return "'" + ($Value -replace "'", "''") + "'" }
+
 if (-not (Test-Administrator)) { throw '✗ 需要以管理员身份运行（MSI 按机器安装）' }
 if (Get-UninstallEntry) { throw "✗ 本机已安装 $ProductName，请先卸载或在干净环境中运行" }
+if (Test-Path -LiteralPath $InstallDir) { throw "✗ 安装目录已存在：$InstallDir（上次运行的残留？请先删除）" }
+
+$webView2Before = Get-WebView2Version
+Write-Host "WebView2 运行时（安装前）：$(if ($webView2Before) { $webView2Before } else { '未安装' })"
 
 # ---- 1. 安装 ----
 Write-Step "静默安装 $Msi → $InstallDir"
-Invoke-Msiexec -Action '/i' -LogName 'install.log' -Properties @("INSTALLFOLDER=`"$InstallDir`"")
+$installLog = Invoke-Msiexec -Action '/i' -LogName 'install.log' -Properties @("INSTALLFOLDER=`"$InstallDir`"")
 
 # ---- 2. 检查安装布局 ----
 Write-Step '检查安装布局（技术方案第 3.2 节）'
-$resources = Join-Path $InstallDir 'resources'
-$coreDir = Join-Path $resources 'agent-core'
-$nodeExe = Join-Path $resources 'runtime\node.exe'
+$coreDir = Join-Path $InstallDir 'resources\agent-core'
+$nodeExe = Join-Path $InstallDir 'resources\runtime\node.exe'
+$mainExe = Join-Path $InstallDir 'Primus.exe'
 foreach ($relative in @(
     'Primus.exe',
     'resources\runtime\node.exe',
@@ -107,7 +192,6 @@ foreach ($relative in @(
   )) {
   Assert-True (Test-Path -LiteralPath (Join-Path $InstallDir $relative) -PathType Leaf) "存在 $relative"
 }
-Assert-True (Test-Path -LiteralPath (Join-Path $InstallDir 'data') -PathType Container) '存在 data 目录'
 
 $manifest = Get-Content -LiteralPath (Join-Path $coreDir 'manifest.json') -Raw | ConvertFrom-Json
 $mismatched = @()
@@ -127,7 +211,86 @@ $entry = Get-UninstallEntry
 Assert-True ($null -ne $entry) "已写入卸载信息（$ProductName）"
 Write-Host "  · 版本 $($entry.DisplayVersion)，发布者 $($entry.Publisher)"
 
-# ---- 3. 用安装目录中的运行时跑 Core RPC 冒烟 ----
+# 重大升级靠这条记录沿用原安装目录（Primus.wxs 的 PREVIOUS_INSTALLFOLDER）
+$recordedDir = Get-RecordedInstallDir
+Assert-True ($null -ne $recordedDir -and $recordedDir.TrimEnd('\') -ieq $InstallDir) "已在 $InstallDirKey 记录安装目录（实际 $recordedDir）"
+
+Assert-True (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) "开始菜单快捷方式 $ShortcutPath"
+$target = Get-ShortcutTarget $ShortcutPath
+Assert-True ($target -ieq $mainExe) "快捷方式指向 $mainExe（实际 $target）"
+
+# ---- 3. data 目录可写（第 3.3.2 节、第 3.7 节第 3 步）----
+Write-Step 'data 目录权限'
+Assert-True (Test-Path -LiteralPath $DataDir -PathType Container) "存在 $DataDir"
+& icacls.exe $DataDir | ForEach-Object { Write-Host "    $_" }
+$usersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+$fsr = [Security.AccessControl.FileSystemRights]
+$inherit = [Security.AccessControl.InheritanceFlags]
+$acl = Get-Acl -LiteralPath $DataDir
+$usersRules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+    $_.IdentityReference -eq $usersSid -and
+    $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow
+  })
+$modifyRule = $usersRules | Where-Object {
+  -not $_.IsInherited -and
+  (($_.FileSystemRights -band $fsr::Modify) -eq $fsr::Modify) -and
+  (($_.InheritanceFlags -band $inherit::ContainerInherit) -ne 0) -and
+  (($_.InheritanceFlags -band $inherit::ObjectInherit) -ne 0)
+} | Select-Object -First 1
+Assert-True ($null -ne $modifyRule) 'ACL 含 BUILTIN\Users 显式“修改”(M)，并继承到子目录与文件 (OI)(CI)'
+# 显式与继承的 Users 授权都要看：任一条带更改权限 / 取得所有权（如从自定义安装目录继承的完全控制）都不合格
+$tooBroad = @($usersRules | Where-Object {
+    (($_.FileSystemRights -band $fsr::ChangePermissions) -ne 0) -or
+    (($_.FileSystemRights -band $fsr::TakeOwnership) -ne 0)
+  })
+Assert-True ($tooBroad.Count -eq 0) "Users 组的显式与继承授权都没有更改权限 / 取得所有权（不是完全控制；违规 $($tooBroad.Count) 条）"
+
+if (-not $Gsudo) { $Gsudo = (Get-Command gsudo -ErrorAction SilentlyContinue)?.Source }
+if ($Gsudo) {
+  Write-Host '  · 以中完整性级别（去掉管理员权限）实际写入'
+  $dataLiteral = ConvertTo-PsLiteral $DataDir
+  $installLiteral = ConvertTo-PsLiteral $InstallDir
+  $writeData = @"
+`$ErrorActionPreference = 'Stop'
+whoami /groups | Select-String 'Mandatory Label|S-1-5-32-544' | ForEach-Object { `$_.Line.Trim() }
+`$file = Join-Path $dataLiteral 'medium-integrity-write.txt'
+Set-Content -LiteralPath `$file -Value 'ok'
+if ((Get-Content -LiteralPath `$file) -ne 'ok') { exit 2 }
+`$sub = Join-Path $dataLiteral 'medium-integrity-dir'
+New-Item -ItemType Directory -Path `$sub | Out-Null
+Set-Content -LiteralPath (Join-Path `$sub 'nested.txt') -Value 'ok'
+Remove-Item -LiteralPath `$sub -Recurse
+Remove-Item -LiteralPath `$file
+exit 0
+"@
+  Assert-True ((Invoke-AsMediumIntegrity $writeData) -eq 0) '中完整性级别可在 data 中创建、写入、删除文件与子目录'
+
+  # 退出码：0 = 写入被拒（预期）；1 = 写入成功；3 = 写入成功但删除失败（测试文件残留）
+  $writeRoot = @"
+`$file = Join-Path $installLiteral 'medium-integrity-write.txt'
+try { Set-Content -LiteralPath `$file -Value 'x' -ErrorAction Stop } catch { exit 0 }
+try { Remove-Item -LiteralPath `$file -ErrorAction Stop } catch { exit 3 }
+exit 1
+"@
+  $rootResult = Invoke-AsMediumIntegrity $writeRoot
+  if ($rootResult -eq 3) { Remove-Item -LiteralPath (Join-Path $InstallDir 'medium-integrity-write.txt') -ErrorAction SilentlyContinue }
+  Assert-True ($rootResult -eq 0) "中完整性级别写不进安装目录根（普通用户不能改程序文件；退出码 $rootResult）"
+} else {
+  Write-Host '  · 未找到 gsudo，跳过中完整性级别写入测试（ACL 检查已通过）'
+}
+
+# ---- 4. WebView2（第 3.5 节）----
+Write-Step 'WebView2 检测与引导'
+$logText = Get-Content -LiteralPath $installLog -Raw
+if ($webView2Before) {
+  Assert-True ($logText -match 'Skipping action: InstallWebView2 \(condition is false\)') '已有 WebView2 运行时，引导程序被跳过'
+} else {
+  Assert-True ($logText -match 'Doing action: InstallWebView2') '缺少 WebView2 运行时，安装时运行了引导程序'
+  $after = Get-WebView2Version
+  Assert-True ($null -ne $after) "引导后 WebView2 运行时已安装（$after）"
+}
+
+# ---- 5. 用安装目录中的运行时跑 Core RPC 冒烟 ----
 if (-not $Node) { $Node = (Get-Command node -ErrorAction SilentlyContinue)?.Source }
 $smokeScript = Join-Path $RepoRoot 'scripts\smoke-core-rpc.mjs'
 if ($Node -and (Test-Path -LiteralPath $smokeScript)) {
@@ -143,12 +306,27 @@ if ($KeepInstalled) {
   exit 0
 }
 
-# ---- 4. 卸载 ----
-Write-Step '静默卸载'
-Invoke-Msiexec -Action '/x' -LogName 'uninstall.log'
-Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'Primus.exe'))) '已移除 Primus.exe'
-Assert-True (-not (Test-Path -LiteralPath (Join-Path $resources 'runtime'))) '已移除 resources\runtime'
+# ---- 6. 卸载：程序移除，data 保留 ----
+Write-Step '静默卸载（data 应保留）'
+$marker = Join-Path $DataDir 'users\msi-smoke\keep.txt'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
+Set-Content -LiteralPath $marker -Value 'keep'
+Invoke-Msiexec -Action '/x' -LogName 'uninstall.log' | Out-Null
+Assert-True (-not (Test-Path -LiteralPath $mainExe)) '已移除 Primus.exe'
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'resources\runtime'))) '已移除 resources\runtime'
 Assert-True (-not (Test-Path -LiteralPath $coreDir)) '已移除 resources\agent-core'
+Assert-True (-not (Test-Path -LiteralPath $ShortcutPath)) '已移除开始菜单快捷方式'
 Assert-True ($null -eq (Get-UninstallEntry)) '已清除卸载信息'
+Assert-True ($null -eq (Get-RecordedInstallDir)) "已清除 $InstallDirKey 中的安装目录记录"
+Assert-True (Test-Path -LiteralPath $DataDir -PathType Container) "卸载后 data 目录保留（$DataDir）"
+Assert-True ((Get-Content -LiteralPath $marker) -eq 'keep') '卸载后 data 中的文件保留'
 
-Write-Host "`n✓ MSI 安装 / 卸载冒烟通过" -ForegroundColor Green
+# ---- 7. 清理 ----
+if ($KeepData) {
+  Write-Host "`n· 按 -KeepData 保留 $DataDir"
+} else {
+  Remove-Item -LiteralPath $InstallDir -Recurse -Force
+  Write-Host "`n· 已清理保留的 $InstallDir"
+}
+
+Write-Host "`n✓ MSI 安装 / 卸载冒烟通过（AppUserModelID $AppUserModelId）" -ForegroundColor Green

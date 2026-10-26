@@ -258,7 +258,29 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      # 静默安装 → 检查布局与 Core 文件哈希 → 用安装后的 node.exe 跑 RPC 冒烟 → 静默卸载（GitHub 托管运行器以管理员运行）
+      # gsudo 同时用于 MSI 冒烟：以中完整性级别实际写入 data，验证普通用户（Users 组）可写。
+      # WebView2 运行时 150 起，宿主进程以管理员（高完整性级别）运行时会忽略
+      # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS，而 msedgedriver 只能经由它注入 --remote-debugging-port；
+      # GitHub 托管运行器以管理员运行，会话因此建不起来（DevToolsActivePort file doesn't exist）。
+      # 微软确认属设计行为，做法是用 gsudo 把整条链（wdio → tauri-driver → msedgedriver → Primus.exe）
+      # 降到中完整性级别运行。参见 https://github.com/tauri-apps/wry/issues/1782
+      - name: 安装 gsudo ${{ env.GSUDO_VERSION }}（降权运行端到端测试）
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "gsudo.portable.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "gsudo"
+          Invoke-WebRequest -Uri "https://github.com/gerardog/gsudo/releases/download/v$env:GSUDO_VERSION/gsudo.portable.zip" -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:GSUDO_SHA256) { throw "gsudo.portable.zip 校验失败：$hash" }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          Join-Path $dir "x64" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # 降权后的进程不再享有管理员组权限：放开工作区与临时目录（msedgedriver 在此）的读写
+          icacls "$env:GITHUB_WORKSPACE" /grant "Everyone:(OI)(CI)F" | Out-Null
+          icacls "$env:RUNNER_TEMP" /grant "Everyone:(OI)(CI)F" | Out-Null
+
+      # 第 3.3.2 节验收：静默安装到 Program Files → 布局与 Core 文件哈希、开始菜单快捷方式、WebView2 处理 →
+      # data 的 ACL 含 BUILTIN\Users 显式 Modify 且继承，并以中完整性级别（gsudo 降权）实际写入 data、写不进安装目录根 →
+      # 用安装后的 node.exe 跑 RPC 冒烟 → 静默卸载，data 及其中文件保留（GitHub 托管运行器以管理员运行）
       - name: MSI 静默安装 / 卸载冒烟
         shell: pwsh
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
@@ -288,25 +310,6 @@ jobs:
           $driver = Join-Path $dir "msedgedriver.exe"
           & $driver --version
           "PRIMUS_NATIVE_DRIVER=$driver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      # WebView2 运行时 150 起，宿主进程以管理员（高完整性级别）运行时会忽略
-      # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS，而 msedgedriver 只能经由它注入 --remote-debugging-port；
-      # GitHub 托管运行器以管理员运行，会话因此建不起来（DevToolsActivePort file doesn't exist）。
-      # 微软确认属设计行为，做法是用 gsudo 把整条链（wdio → tauri-driver → msedgedriver → Primus.exe）
-      # 降到中完整性级别运行。参见 https://github.com/tauri-apps/wry/issues/1782
-      - name: 安装 gsudo ${{ env.GSUDO_VERSION }}（降权运行端到端测试）
-        shell: pwsh
-        run: |
-          $zip = Join-Path $env:RUNNER_TEMP "gsudo.portable.zip"
-          $dir = Join-Path $env:RUNNER_TEMP "gsudo"
-          Invoke-WebRequest -Uri "https://github.com/gerardog/gsudo/releases/download/v$env:GSUDO_VERSION/gsudo.portable.zip" -OutFile $zip
-          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($hash -ne $env:GSUDO_SHA256) { throw "gsudo.portable.zip 校验失败：$hash" }
-          Expand-Archive -Path $zip -DestinationPath $dir -Force
-          Join-Path $dir "x64" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          # 降权后的进程不再享有管理员组权限：放开工作区与临时目录（msedgedriver 在此）的读写
-          icacls "$env:GITHUB_WORKSPACE" /grant "Everyone:(OI)(CI)F" | Out-Null
-          icacls "$env:RUNNER_TEMP" /grant "Everyone:(OI)(CI)F" | Out-Null
 
       # 直接调用 wdio，不经 pnpm run 嵌套：pnpm 12 在 Windows 上会等残留的 msedgedriver 进程而挂起
       - name: 端到端冒烟（WebdriverIO + tauri-driver，中完整性级别）
