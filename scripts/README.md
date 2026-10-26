@@ -2,7 +2,7 @@
 
 | 脚本 | 作用 |
 |---|---|
-| `build-core.mjs` | `agent-core` 里 `npm ci`，下载并校验锁定的模型目录后离线构建（`build:offline`）；组装 `dist/agent-core/`（最小运行产物 + `manifest.json`），下载并校验 Node.js LTS 官方 zip、只解出 `node.exe` 与 `LICENSE` 到 `dist/runtime/`。参数：`--skip-install`、`--skip-build`、`--platform win-x64\|current` |
+| `build-core.mjs` | `agent-core` 里 `npm ci`，下载并校验锁定的模型目录后离线构建（`build:offline`）；组装 `dist/agent-core/`（最小运行产物 + Core 上游 MIT `LICENSE` + `manifest.json`），下载并校验 Node.js LTS 官方 zip、只解出 `node.exe` 与 `LICENSE` 到 `dist/runtime/`。参数：`--skip-install`、`--skip-build`、`--platform win-x64\|current` |
 | `core-dist.mjs` | 上面两步共用的纯函数：SHA-256、`SHASUMS256.txt` 解析、最小 zip 读取与文件过滤、manifest 生成与校验（单测 `core-dist.test.ts`） |
 | `node-runtime.json` | 内置 Node.js 运行时的锁定版本与固化哈希（发行包与解出文件） |
 | `smoke-core-rpc.mjs` | 启动 `rpc-entry.js`（临时 HOME、离线），发送 `get_state`，校验收到成功 `response`；`--dist` 跑组装好的 `dist/agent-core`（先按 manifest 校验，复制到含中文与空格的临时安装目录，Windows 上用 `dist/runtime/node.exe`），`--entry` / `--node` 可指定入口与运行时 |
@@ -16,3 +16,5 @@
 | `version-baseline.json` | 版本基线（含 CI 安装的 cargo-nextest、tauri-driver 版本，`check-versions.mjs` 校验 ci.yml 与之一致）；Renovate 月度 PR 会同步更新它 |
 | `build-msi.mjs` | `pnpm build:msi`（仅 Windows；其他平台 `--dry-run` 查看命令）：校验 `dist/agent-core` 与 manifest、扩展与 `node.exe` 就位、WiX 版本与基线一致 → `tauri build --no-bundle` → 签名 `Primus.exe` → 准备 WebView2 引导程序（缺失时从微软下载，校验微软 Authenticode 签名）→ `wix build`（WiX 7，`-culture zh-CN -acceptEula wix7`，`-bindpath app/core/runtime`，SemVer 按第 3.3.3 节映射为 `ProductVersion`：第三字段 = 修订 × 100 + 阶段偏移，alpha/beta/rc.N → N/30+N/60+N，稳定版 → 99，保证稳定版高于同版本预发布版）→ 签名 MSI → `.sha256` → `tauri signer` 生成 `.sig`。签名只在配置了 `PRIMUS_SIGN_CERT_SHA1`、`PRIMUS_SIGN_TIMESTAMP_URL`、`TAURI_SIGNING_PRIVATE_KEY` 时执行。参数：`--version`（与 `tauri.conf.json` 不同时经 `tauri build --config` 同步给 `Primus.exe`；与 `--skip-tauri` 同用且版本不同则拒绝）、`--skip-tauri`（校验签名后写在 exe 旁的 `Primus.exe.build.json`：版本、大小、修改时间须与本次一致，否则拒绝）、`--out-dir`、`--webview2`、`--dry-run`（单测 `build-msi.test.ts`） |
 | `msi-smoke.ps1` | MSI 静默安装 → 检查安装布局（按 manifest 逐个校验 Core 文件哈希、`node.exe` 签名、卸载信息、开始菜单快捷方式）→ `data` 的 ACL 含 `BUILTIN\Users` 显式修改 (M) 且继承；有 gsudo 时以中完整性级别实际写入 `data`、并确认写不进安装目录根 → WebView2 检测 / 引导是否按预期 → 用安装目录的 `node.exe` 跑 Core RPC 冒烟 → 静默卸载，程序与快捷方式移除、`data` 及其中文件保留 → 清理。需管理员；参数 `-InstallDir`、`-KeepInstalled`、`-KeepData`；CI 与安装测试虚拟机共用 |
+| `vm/New-PrimusTestCheckpoint.ps1` | Hyper-V 宿主机上把安装测试虚拟机正常关机后建立 `clean` 检查点（可选启用来宾服务接口；同名已存在须 `-Force`），见 `vm/README.md` |
+| `vm/Reset-PrimusTestVM.ps1` | 一键还原检查点 → 启动并等待检测信号与 PowerShell Direct → 复制 MSI 与 `msi-smoke.ps1` 进来宾（PowerShell Direct 或 Copy-VMFile）→ 可选执行冒烟 → 拉回日志；凭据用 `Get-Credential`，不硬编码。手工测试项见 `docs/安装测试清单.md` |

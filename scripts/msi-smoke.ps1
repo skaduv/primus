@@ -6,8 +6,8 @@
 .DESCRIPTION
   1. msiexec /i 静默安装到指定目录（默认 C:\Program Files\Primus），失败时输出安装日志末尾
   2. 检查安装布局：Primus.exe、resources\runtime\node.exe（官方签名）、resources\agent-core（按 manifest.json
-     逐个校验 SHA-256，确认 WiX 的 Files 收集完整）、primus-bundle.js、卸载信息、HKLM 中的安装目录记录（重大升级
-     沿用原目录）、开始菜单快捷方式
+     逐个校验 SHA-256，确认 WiX 的 Files 收集完整）、Core 的 MIT 许可文件 LICENSE、primus-bundle.js、
+     卸载信息、HKLM 中的安装目录记录（重大升级沿用原目录）、开始菜单快捷方式
   3. data 目录：ACL 含 BUILTIN\Users（S-1-5-32-545）显式“修改”且继承到子项；有 gsudo 时再以中完整性级别
      （管理员组降为仅拒绝，相当于普通用户）实际写入 data，并确认写不进安装目录根
   4. WebView2：安装前已有运行时则引导程序应被跳过；没有则应运行，装完后注册表中有版本
@@ -25,7 +25,7 @@
 
 .PARAMETER Node
   运行 smoke-core-rpc.mjs 的 Node.js（只用来驱动冒烟脚本；Core 本身由安装目录里的 node.exe 运行）。
-  默认取 PATH 中的 node；找不到时跳过 RPC 冒烟。
+  默认用安装目录中的 resources\runtime\node.exe（不依赖 PATH）；找不到 smoke-core-rpc.mjs 时冒烟失败。
 
 .PARAMETER Gsudo
   gsudo.exe 路径，用于中完整性级别写入测试。默认取 PATH 中的 gsudo；找不到时只做 ACL 检查。
@@ -188,6 +188,7 @@ foreach ($relative in @(
     'resources\agent-core\cli.js',
     'resources\agent-core\package.json',
     'resources\agent-core\manifest.json',
+    'resources\agent-core\LICENSE',
     'resources\agent-core\extensions\primus-bundle.js'
   )) {
   Assert-True (Test-Path -LiteralPath (Join-Path $InstallDir $relative) -PathType Leaf) "存在 $relative"
@@ -203,6 +204,9 @@ foreach ($file in $manifest.files) {
 }
 if ($mismatched.Count -gt 0) { $mismatched | ForEach-Object { Write-Host "  - $_" } }
 Assert-True ($mismatched.Count -eq 0) "resources\agent-core 与 manifest.json 一致（$(@($manifest.files).Count) 个文件）"
+Assert-True (@($manifest.files | Where-Object { $_.path -eq 'LICENSE' }).Count -eq 1) 'manifest.json 收录 Core 的 MIT 许可文件 LICENSE'
+$coreLicense = Get-Content -LiteralPath (Join-Path $coreDir 'LICENSE') -Raw
+Assert-True ($coreLicense -match '^\s*MIT License') 'resources\agent-core\LICENSE 为 Core 上游 MIT 许可'
 
 $signature = Get-AuthenticodeSignature -FilePath $nodeExe
 Assert-True ($signature.Status -eq 'Valid') "安装后的 node.exe 官方签名有效（$($signature.Status)）"
@@ -291,15 +295,13 @@ if ($webView2Before) {
 }
 
 # ---- 5. 用安装目录中的运行时跑 Core RPC 冒烟 ----
-if (-not $Node) { $Node = (Get-Command node -ErrorAction SilentlyContinue)?.Source }
+# 驱动冒烟脚本的 Node.js：显式传入 -Node 时用它，否则直接用安装目录中的 node.exe（不依赖 PATH）
+$smokeNode = if ($Node) { $Node } else { $nodeExe }
 $smokeScript = Join-Path $RepoRoot 'scripts\smoke-core-rpc.mjs'
-if ($Node -and (Test-Path -LiteralPath $smokeScript)) {
-  Write-Step 'Core RPC 冒烟（安装目录中的 node.exe + agent-core）'
-  & $Node $smokeScript --entry (Join-Path $coreDir 'rpc-entry.js') --node $nodeExe
-  Assert-True ($LASTEXITCODE -eq 0) '安装后的 Core 响应 get_state'
-} else {
-  Write-Host "`n· 未找到 node 或 smoke-core-rpc.mjs，跳过 Core RPC 冒烟"
-}
+if (-not (Test-Path -LiteralPath $smokeScript)) { throw "✗ 未找到 $smokeScript，无法执行 Core RPC 冒烟" }
+Write-Step "Core RPC 冒烟（安装目录中的 node.exe + agent-core；驱动：$smokeNode）"
+& $smokeNode $smokeScript --entry (Join-Path $coreDir 'rpc-entry.js') --node $nodeExe
+Assert-True ($LASTEXITCODE -eq 0) '安装后的 Core 响应 get_state'
 
 if ($KeepInstalled) {
   Write-Step "按 -KeepInstalled 保留安装（$InstallDir）"
