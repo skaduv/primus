@@ -161,9 +161,17 @@ jobs:
           if gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG} 已存在：覆盖上传附件"
             gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
-            # 正文校验表中该 MSI 的 SHA-256 与新附件不同时同步更新（其余正文不动）
+            # 正文校验表与新附件的 SHA-256 保持一致（其余正文不动）
             gh release view "$RELEASE_TAG" --json body --jq .body > body.md
-            MSI="$msi" ROW="$row" perl -0pi -e 's/^\|\s*`\Q$ENV{MSI}\E`\s*\|\s*`[0-9a-f]{64}`\s*\|[ \t]*$/$ENV{ROW}/m' body.md
+            MSI="$msi" ROW="$row" perl -0pi -e '
+              # 1) 替换已有行（容忍并保留 CRLF 行尾）；2) 有「## 校验」表但缺该行时插到表头分隔行之后；3) 没有校验段时追加
+              my $row = $ENV{ROW};
+              if (!s/^\|[ \t]*`\Q$ENV{MSI}\E`[ \t]*\|[ \t]*`[0-9a-f]{64}`[ \t]*\|[ \t]*(\r?)$/$row$1/m) {
+                if (!s/^(##[ \t]*校验[ \t]*\r?\n(?:[ \t]*\r?\n)*\|[^\r\n]*\r?\n\|[ \t:|-]*-[ \t:|-]*(\r?)\n)/$1$row$2\n/m) {
+                  s/\s*\z/\n\n## 校验\n\n| 文件 | SHA-256 |\n| --- | --- |\n$row\n/;
+                }
+              }
+            ' body.md
             if ! gh release view "$RELEASE_TAG" --json body --jq .body | cmp -s - body.md; then
               gh release edit "$RELEASE_TAG" --notes-file body.md
               echo "已更新正文中的 SHA-256：${hash}"
