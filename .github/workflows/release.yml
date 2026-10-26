@@ -1,6 +1,6 @@
 # 乾元 Primus 发布（技术方案第 3.1、22 章）：按标签构建 Windows x64 MSI，连同 SHA-256 与 CycloneDX SBOM 发布到 GitHub Releases
 # - 推送 v* 标签时自动运行；Release 不存在则创建（版本 < 1.0 或含预发布标识时标为 prerelease）
-# - workflow_dispatch 输入已有标签（例如 v0.0.1），用于给已有 Release 补传或覆盖附件（gh release upload --clobber）
+# - workflow_dispatch 输入已有标签（例如 v0.0.1），用于给已有 Release 补传或覆盖附件（gh release upload --clobber，失败时回滚到旧附件）
 # - 工作流本身来自触发它的提交（手动触发时为 main），构建的源码一律 checkout 该标签；
 #   共用的 composite action 从工作流自身的提交另行取出，因为较早的标签里可能还没有它
 # - 未配置代码签名证书时 MSI 不签名（build-msi.mjs 自动跳过），Release 正文的「已知限制」写明 SmartScreen 拦截
@@ -160,7 +160,28 @@ jobs:
 
           if gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG} 已存在：覆盖上传附件"
-            gh release upload "$RELEASE_TAG" "${files[@]}" --clobber
+            # --clobber 先删旧附件再上传：先备份同名旧附件，上传失败时整组回滚到旧附件，避免 Release 缺 MSI 或校验文件
+            existing="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+            mkdir -p backup
+            for f in "${files[@]}"; do
+              n="$(basename "$f")"
+              if grep -Fxq -- "$n" <<<"$existing"; then
+                gh release download "$RELEASE_TAG" --pattern "$n" --dir backup
+              fi
+            done
+            if ! gh release upload "$RELEASE_TAG" "${files[@]}" --clobber; then
+              echo "::error::附件上传失败，回滚到上传前的附件"
+              for f in "${files[@]}"; do
+                n="$(basename "$f")"
+                if [[ -f "backup/$n" ]]; then
+                  gh release upload "$RELEASE_TAG" "backup/$n" --clobber || echo "::error::恢复旧附件 $n 失败"
+                elif gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fxq -- "$n"; then
+                  # 上传前不存在的附件：删掉本次留下的新版本，保持整组一致
+                  gh release delete-asset "$RELEASE_TAG" "$n" --yes || echo "::error::删除新附件 $n 失败"
+                fi
+              done
+              exit 1
+            fi
             # 正文校验表与新附件的 SHA-256 保持一致（其余正文不动）
             gh release view "$RELEASE_TAG" --json body --jq .body > body.md
             MSI="$msi" ROW="$row" perl -0pi -e '
