@@ -8,7 +8,10 @@
 //                                                  current 表示不下载（Linux/macOS 本地或 CI 冒烟时用当前 node）
 //
 // 可复现性：
-// - 依赖：只用 agent-core/package-lock.json（npm ci），HUSKY=0 防止 Core 的 prepare 脚本改动本仓库的 git hooks。
+// - 依赖：只用 agent-core/package-lock.json（npm ci --ignore-scripts），HUSKY=0 防止 Core 的 prepare 脚本改动本仓库的 git hooks。
+//   锁文件中带安装脚本的包只有 esbuild 是构建所需（另行 npm rebuild esbuild）；其余是 Core 自身测试与评测用的开发依赖
+//   （canvas、workerd、autoevals）或可选的原生加速（ssh2、cpu-features、fsevents）。不跳过的话，canvas 在 Windows ARM64
+//   上没有预编译包、会改为本地编译并因缺少 cairo 失败；两个架构用同一套安装方式，产物与架构无关。
 // - 产物：编译前清空各包的 dist/。tsc 不会删除已删源文件的旧产物（如裁剪掉的供应商适配器），
 //   不清空会让旧文件残留在产物里，被禁 SDK 检查也会误报。
 // - 模型数据：Core 构建需要内置模型目录。上游默认构建会在线抓取最新数据（每次结果不同），
@@ -293,7 +296,10 @@ function dirSize(dir) {
 // ---- 主流程 ----
 
 if (!args["skip-build"]) {
-  if (!args["skip-install"]) run("npm", ["ci", "--no-audit", "--no-fund"]);
+  if (!args["skip-install"]) {
+    run("npm", ["ci", "--no-audit", "--no-fund", "--ignore-scripts"]);
+    run("npm", ["rebuild", "esbuild"]);
+  }
   const catalog = await fetchPinnedCatalog();
   run("node", ["packages/ai/scripts/hydrate-model-catalog.ts", catalog]);
   cleanPackageDist();

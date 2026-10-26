@@ -4,8 +4,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
 import {
+  ARCHES,
+  archInfo,
   authenticodeEnv,
+  cargoTarget,
   checkExeStamp,
+  checkRuntimePlatform,
   compareMsiVersions,
   exeStamp,
   isTrustedMicrosoftSignature,
@@ -17,6 +21,8 @@ import {
 } from "./build-msi.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./build-msi.mjs", import.meta.url));
+// --dry-run 在非 Windows 上假定同 CPU 架构的 Windows 主机：传同架构的 --arch，命令中不出现 --target
+const HOST_ARCH = process.arch === "arm64" ? "arm64" : "x64";
 
 describe("build-msi", () => {
   it("SemVer 按第 3.3.3 节映射为 MSI ProductVersion", () => {
@@ -70,6 +76,61 @@ describe("build-msi", () => {
 
   it("交付物文件名", () => {
     expect(msiFileName("1.2.3")).toBe("Primus_1.2.3_x64_zh-CN.msi");
+    expect(msiFileName("1.2.3", "x64")).toBe("Primus_1.2.3_x64_zh-CN.msi");
+    expect(msiFileName("0.0.1", "arm64")).toBe("Primus_0.0.1_arm64_zh-CN.msi");
+    expect(() => msiFileName("1.2.3", "x86")).toThrow("不支持的架构");
+  });
+
+  it("架构对应的 Rust 目标与内置 Node 运行时平台", () => {
+    expect(Object.keys(ARCHES)).toEqual(["x64", "arm64"]);
+    expect(archInfo("x64")).toEqual({
+      rustTarget: "x86_64-pc-windows-msvc",
+      nodePlatform: "win-x64",
+    });
+    expect(archInfo("arm64")).toEqual({
+      rustTarget: "aarch64-pc-windows-msvc",
+      nodePlatform: "win-arm64",
+    });
+    expect(() => archInfo("toString")).toThrow("不支持的架构");
+    // rust-toolchain.toml 须装好两个目标；node-runtime.json 须锁定两个平台的运行时
+    const toolchain = readFileSync(new URL("../rust-toolchain.toml", import.meta.url), "utf8");
+    const runtime = JSON.parse(
+      readFileSync(new URL("./node-runtime.json", import.meta.url), "utf8"),
+    );
+    for (const { rustTarget, nodePlatform } of Object.values(ARCHES)) {
+      expect(toolchain).toContain(`"${rustTarget}"`);
+      expect(runtime.platforms[nodePlatform].archive).toBe(
+        `node-v${runtime.version}-${nodePlatform}.zip`,
+      );
+    }
+  });
+
+  it("目标与 rustc 主机相同时不加 --target，不同则交叉编译到 target/<三元组>/release", () => {
+    expect(cargoTarget("x64", "x86_64-pc-windows-msvc")).toEqual({
+      args: [],
+      releaseDir: "release",
+    });
+    expect(cargoTarget("arm64", "aarch64-pc-windows-msvc")).toEqual({
+      args: [],
+      releaseDir: "release",
+    });
+    expect(cargoTarget("arm64", "x86_64-pc-windows-msvc")).toEqual({
+      args: ["--target", "aarch64-pc-windows-msvc"],
+      releaseDir: "aarch64-pc-windows-msvc/release",
+    });
+    expect(cargoTarget("x64", "aarch64-pc-windows-msvc")).toEqual({
+      args: ["--target", "x86_64-pc-windows-msvc"],
+      releaseDir: "x86_64-pc-windows-msvc/release",
+    });
+  });
+
+  it("内置运行时平台须与目标架构一致", () => {
+    expect(checkRuntimePlatform({ runtime: { platform: "win-x64" } }, "x64")).toBeNull();
+    expect(checkRuntimePlatform({ runtime: { platform: "win-arm64" } }, "arm64")).toBeNull();
+    expect(checkRuntimePlatform({ runtime: { platform: "win-x64" } }, "arm64")).toContain(
+      "--platform win-arm64",
+    );
+    expect(checkRuntimePlatform({ runtime: null }, "x64")).toContain("未知");
   });
 
   it("wix build 参数与技术方案第 3.3.1 节一致", () => {
@@ -207,13 +268,16 @@ describe("build-msi", () => {
     const real = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });
     expect(real.status).toBe(1);
     expect(real.stderr).toContain("WiX 只能在 Windows 上运行");
-    const dry = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--version", "1.3.0-beta.2"], {
-      encoding: "utf8",
-    });
+    const dry = spawnSync(
+      process.execPath,
+      [SCRIPT, "--dry-run", "--arch", HOST_ARCH, "--version", "1.3.0-beta.2"],
+      { encoding: "utf8" },
+    );
     expect(dry.status).toBe(0);
     expect(dry.stdout).toContain("ProductVersion 1.3.32.0");
     expect(dry.stdout).toContain("-acceptEula wix7");
-    expect(dry.stdout).toContain("Primus_1.3.0-beta.2_x64_zh-CN.msi");
+    expect(dry.stdout).toContain(`-arch ${HOST_ARCH} `);
+    expect(dry.stdout).toContain(`Primus_1.3.0-beta.2_${HOST_ARCH}_zh-CN.msi`);
     // 覆盖版本同步给 tauri build，Primus.exe 与 MSI 同一版本
     expect(dry.stdout).toMatch(
       /tauri build --no-bundle --config \S*tauri\.version\.json -- --locked/,
@@ -226,14 +290,40 @@ describe("build-msi", () => {
       const conf = JSON.parse(
         readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
       );
-      const dry = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--version", conf.version], {
-        encoding: "utf8",
-      });
+      const dry = spawnSync(
+        process.execPath,
+        [SCRIPT, "--dry-run", "--arch", HOST_ARCH, "--version", conf.version],
+        { encoding: "utf8" },
+      );
       expect(dry.status).toBe(0);
       expect(dry.stdout).toContain("tauri build --no-bundle -- --locked");
       expect(dry.stdout).not.toContain("--config");
     },
   );
+
+  it.skipIf(process.platform === "win32")(
+    "--arch 与主机不同时交叉编译（--target），exe 取自 target/<三元组>/release",
+    () => {
+      const other = HOST_ARCH === "x64" ? "arm64" : "x64";
+      const triple = archInfo(other).rustTarget;
+      const dry = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", other], {
+        encoding: "utf8",
+      });
+      expect(dry.status).toBe(0);
+      expect(dry.stdout).toContain(`tauri build --no-bundle --target ${triple} -- --locked`);
+      expect(dry.stdout).toMatch(new RegExp(`app=\\S*target[/\\\\]${triple}[/\\\\]release `));
+      expect(dry.stdout).toContain(`-arch ${other} `);
+      expect(dry.stdout).toMatch(new RegExp(`Primus_\\S+_${other}_zh-CN\\.msi`));
+    },
+  );
+
+  it("不支持的架构直接失败", () => {
+    const r = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", "x86"], {
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("不支持的架构 x86");
+  });
 
   it("--version 覆盖与 --skip-tauri 同用时拒绝构建", () => {
     const r = spawnSync(
@@ -248,7 +338,7 @@ describe("build-msi", () => {
   it("--skip-tauri 校验已有 Primus.exe 的构建记录", () => {
     const stat = { size: 1234, mtimeMs: 1700000000123.7 };
     const stamp = exeStamp("1.2.3", stat);
-    expect(stamp).toEqual({ version: "1.2.3", size: 1234, mtimeMs: 1700000000123 });
+    expect(stamp).toEqual({ version: "1.2.3", arch: "x64", size: 1234, mtimeMs: 1700000000123 });
     expect(checkExeStamp(stamp, "1.2.3", stat)).toBeNull();
     // 记录缺失
     expect(checkExeStamp(null, "1.2.3", stat)).toContain("未找到构建记录");
@@ -261,5 +351,14 @@ describe("build-msi", () => {
     expect(checkExeStamp(stamp, "1.2.3", { size: 4321, mtimeMs: 1700000000123 })).toContain(
       "重新生成",
     );
+    // 架构：x64 的 exe 不能用于 arm64 安装包；早期记录没有 arch 字段，按 x64 处理
+    expect(checkExeStamp(stamp, "1.2.3", stat, { arch: "arm64" })).toContain("x64 架构");
+    const armStamp = exeStamp("1.2.3", stat, "arm64");
+    expect(checkExeStamp(armStamp, "1.2.3", stat, { arch: "arm64" })).toBeNull();
+    const { arch: _legacy, ...legacy } = stamp;
+    expect(checkExeStamp(legacy, "1.2.3", stat)).toBeNull();
+    expect(
+      checkExeStamp(null, "1.2.3", stat, { arch: "arm64", remedy: "请先运行 pnpm build:msi" }),
+    ).toContain("请先运行 pnpm build:msi");
   });
 });
