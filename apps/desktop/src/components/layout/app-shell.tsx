@@ -166,7 +166,8 @@ export function AppShell() {
         >
           <PanelRight aria-hidden size={16} />
         </ToolbarToggle>
-        <WindowControls className="ml-1" />
+        {/* 抵消外层 px-2 与顶栏 px-1、pt-2，贴到窗口右上角 */}
+        <WindowControls className="-mt-2 -mr-3 ml-1" />
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
