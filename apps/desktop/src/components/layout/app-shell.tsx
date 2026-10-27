@@ -32,9 +32,10 @@ export function AppShell() {
   const s = useAppStore();
   const viewport = useViewportSize();
   const layout = resolvePanelLayout(viewport, {
-    leftOpen: s.sessionsPanelOpen,
+    // 中央纸面宽度不随左右栏开关变化：始终按两栏都展开来分配，收起只是把侧栏缩回接缝
+    leftOpen: true,
     leftWidth: s.sessionsPanelWidth,
-    rightOpen: s.inspectorPanelOpen,
+    rightOpen: true,
     rightWidth: s.inspectorPanelWidth,
     drawerOpen: s.bottomDrawerOpen,
     drawerHeight: s.bottomDrawerHeight,
@@ -50,10 +51,10 @@ export function AppShell() {
 
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1" style={{ minHeight: CENTER_MIN_HEIGHT }}>
-          <SnapSlot side="left" open={layout.left.open} size={layout.left.size}>
+          <SnapSlot side="left" open={s.sessionsPanelOpen} size={layout.left.size}>
             {(w) => <SessionsSidebar width={w} />}
           </SnapSlot>
-          {layout.left.open && (
+          {s.sessionsPanelOpen && (
             <ResizeHandle
               orientation="vertical"
               label={t.resizeSessions}
@@ -68,8 +69,11 @@ export function AppShell() {
           )}
           <main
             aria-label={t.timeline}
-            className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[16px] bg-[var(--paper)] shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)] ring-1 ring-border"
-            style={{ minWidth: CENTER_MIN_WIDTH }}
+            className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)] ring-1 ring-border transition-[border-radius] duration-200"
+            style={{
+              minWidth: CENTER_MIN_WIDTH,
+              borderRadius: seamRadius(s.sessionsPanelOpen, s.inspectorPanelOpen),
+            }}
           >
             {/* 左右栏开关：对称贴在纸面左上角、右上角（圆角与纸面同心） */}
             <PanelToggle
@@ -86,7 +90,7 @@ export function AppShell() {
             />
             <ChatPanel />
           </main>
-          {layout.right.open && (
+          {s.inspectorPanelOpen && (
             <ResizeHandle
               orientation="vertical"
               label={t.resizeInspector}
@@ -99,7 +103,7 @@ export function AppShell() {
               className={seamHandleClass}
             />
           )}
-          <SnapSlot side="right" open={layout.right.open} size={layout.right.size}>
+          <SnapSlot side="right" open={s.inspectorPanelOpen} size={layout.right.size}>
             {(w) => <InspectorPanel width={w} />}
           </SnapSlot>
         </div>
@@ -126,9 +130,18 @@ export function AppShell() {
 /** 接缝上的拖动条：8px 命中区域用负边距叠在两块面板之间，不占宽度 */
 const seamHandleClass = "-mx-1 z-20";
 
-/** 吸附动画：略带回弹的缓动，像磁吸一样贴到中央纸面上 */
+/** 外侧圆角与接缝处的小圆角：两块面板贴合处只留一点圆角，读起来是融在一起的一整块 */
+export const OUTER_RADIUS = 16;
+export const SEAM_RADIUS = 6;
+function seamRadius(leftOpen: boolean, rightOpen: boolean): string {
+  const l = leftOpen ? SEAM_RADIUS : OUTER_RADIUS;
+  const r = rightOpen ? SEAM_RADIUS : OUTER_RADIUS;
+  return `${l}px ${r}px ${r}px ${l}px`;
+}
+
+/** 吸附动画：快起慢停，像磁吸一样贴到中央纸面上 */
 export const SNAP_MS = 320;
-const SNAP_EASE = "cubic-bezier(0.34, 1.3, 0.64, 1)";
+const SNAP_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 
 /**
  * 侧栏插槽：展开时宽度从 0 弹到目标宽度，面板内容贴着接缝一侧，看起来是从中央纸面背后滑出并吸附；
@@ -177,21 +190,28 @@ function SnapSlot({
     };
   }, [open]);
 
-  if (!mounted) return null;
   const width = last.current;
+  // 外层始终占住侧栏宽度（中央不变宽），内层贴着接缝从 0 向外展开到目标宽度
   return (
     <div
-      className={cn(
-        "flex min-h-0 shrink-0",
-        side === "left" ? "justify-end" : "justify-start",
-        animating && "overflow-hidden",
-      )}
-      style={{
-        width: shown ? width : 0,
-        transition: animating ? `width ${SNAP_MS}ms ${SNAP_EASE}` : undefined,
-      }}
+      className={cn("flex min-h-0 shrink-0", side === "left" ? "justify-end" : "justify-start")}
+      style={{ width: size || width }}
     >
-      {children(width)}
+      {mounted && (
+        <div
+          className={cn(
+            "flex min-h-0 shrink-0",
+            side === "left" ? "justify-end" : "justify-start",
+            animating && "overflow-hidden",
+          )}
+          style={{
+            width: shown ? width : 0,
+            transition: animating ? `width ${SNAP_MS}ms ${SNAP_EASE}` : undefined,
+          }}
+        >
+          {children(width)}
+        </div>
+      )}
     </div>
   );
 }

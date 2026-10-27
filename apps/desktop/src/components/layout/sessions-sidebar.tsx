@@ -26,7 +26,7 @@ export function SessionsSidebar({ width }: { width: number }) {
   const glass = useGlassStyle();
 
   return (
-    <GlassPanel className="shrink-0" style={{ width }}>
+    <GlassPanel className="shrink-0" style={{ width, borderRadius: "16px 6px 6px 16px" }}>
       <nav aria-label={t.sessions} className="flex h-full flex-col gap-3 p-3">
         <GlassPopover>
           <GlassPopoverTrigger asChild>

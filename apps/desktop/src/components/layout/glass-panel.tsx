@@ -34,7 +34,7 @@ export function GlassPanel({
       blur={28}
       radius={radius}
       {...glass}
-      className={cn("shadow-[0_8px_30px_-12px_rgb(0_0_0/0.25)]", className)}
+      className={cn("shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)]", className)}
       {...props}
     />
   );
