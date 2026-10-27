@@ -40,4 +40,4 @@ export function seamBleedStyle(side: "left" | "right", width: number): CSSProper
 
 /** 侧栏外层：裁剪 + 凹口 + 投影（玻璃自身投影被裁掉，改由这里画） */
 export const sideShellClass =
-  "seam-mask flex shrink-0 overflow-hidden shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)]";
+  "seam-mask flex shrink-0 overflow-hidden shadow-[0_14px_24px_-18px_rgb(0_0_0/0.35)]";

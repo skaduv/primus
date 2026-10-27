@@ -27,9 +27,9 @@
 
 :root {
   /* 浏览器预览用的纯色底（不用渐变） */
-  --wallpaper: #f4f3f8;
+  --wallpaper: #e6e6ee;
   /* Tauri 窗口内：半透明着色叠在系统亚克力磨砂效果上 */
-  --window-tint: rgb(244 243 248 / 0.3);
+  --window-tint: rgb(222 222 232 / 0.42);
   /* 时间线所在的"纸面"：几乎不透明，只透出一点壁纸色 */
   --paper: rgb(255 255 255 / 0.82);
   color-scheme: light;
@@ -44,8 +44,8 @@
   --color-accent: #0a84ff;
   --color-danger: #ff453a;
   /* 浏览器预览用的纯色底（不用渐变） */
-  --wallpaper: #101014;
-  --window-tint: rgb(16 16 20 / 0.35);
+  --wallpaper: #0b0b0e;
+  --window-tint: rgb(8 8 10 / 0.45);
   --paper: rgb(28 28 30 / 0.84);
   color-scheme: dark;
 }

@@ -364,23 +364,20 @@ function readForcedRenderer(): "webgl" | "svg" | null {
 
 const forcedRenderer = readForcedRenderer();
 
+// 乾元补丁：用 useSyncExternalStore 读取 <html class="dark">，服务端快照固定为 false，
+// 水合阶段与静态预渲染一致，水合完成后再切到真实值，避免深色下 hydration 属性不匹配。
+function subscribeDarkClass(onChange: () => void): () => void {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
+
 function useGlassDark(): boolean {
-  const [dark, setDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
+  return useSyncExternalStore(
+    subscribeDarkClass,
+    () => document.documentElement.classList.contains("dark"),
+    () => false
   );
-  useEffect(() => {
-    const root = document.documentElement;
-    // 乾元补丁：订阅前先同步一次，避免首帧渲染到订阅之间的类名变化被漏掉
-    setDark(root.classList.contains("dark"));
-    const observer = new MutationObserver(() => {
-      setDark(root.classList.contains("dark"));
-    });
-    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
-    return () => observer.disconnect();
-  }, []);
-  return dark;
 }
 
 const subscribeHydration = () => () => {};

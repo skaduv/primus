@@ -210,8 +210,8 @@ function seamStyle(leftOpen: boolean, rightOpen: boolean, animate: boolean): CSS
     borderRadius: `${l}px ${r}px ${r}px ${l}px`,
     ["--nl" as string]: `${leftOpen ? SEAM_NOTCH : 0}px`,
     ["--nr" as string]: `${rightOpen ? SEAM_NOTCH : 0}px`,
-    // 边缘高光由玻璃自身的描边提供（接缝侧已被裁掉），这里只留投影
-    boxShadow: "0 8px 30px -14px rgb(0 0 0 / 0.3)",
+    // 边缘高光由玻璃自身的描边提供（接缝侧已被裁掉）；投影只往下、横向几乎不外溢，不会落到相邻栏上形成接缝暗带
+    boxShadow: "0 14px 24px -18px rgb(0 0 0 / 0.35)",
     // 窗口模式下贴合/分离在动画端点瞬间切换（侧栏宽度为 0 时），过程中圆角、凹口、描边都不变
     transition: animate ? SEAM_TRANSITION : undefined,
   };

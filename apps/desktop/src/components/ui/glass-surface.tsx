@@ -95,6 +95,10 @@ interface GlassSurfaceProps extends ComponentProps<"div"> {
   specular?: boolean;
   tint?: number;
   tintColor?: string;
+  /** 着色层最大不透明度（默认 0.4）；大面板调高，和背景拉开层次 */
+  veil?: number;
+  /** 斜向光泽层；大面板拼接时会在接缝处露出亮带，可关掉 */
+  sheen?: boolean;
 }
 
 function GlassSurface({
@@ -106,6 +110,8 @@ function GlassSurface({
   specular = true,
   tint = 0.5,
   tintColor,
+  veil = TINT_MAX_ALPHA,
+  sheen: sheenOn = true,
   className,
   style,
   children,
@@ -136,11 +142,11 @@ function GlassSurface({
     () => ({
       setTintLift(delta: number) {
         if (tintRef.current) {
-          tintRef.current.style.background = `rgba(${tintRGB},${Math.max(clamp01(t + delta) * TINT_MAX_ALPHA, MIN_VEIL)})`;
+          tintRef.current.style.background = `rgba(${tintRGB},${Math.max(clamp01(t + delta) * veil, MIN_VEIL)})`;
         }
       },
     }),
-    [t, tintRGB]
+    [t, tintRGB, veil]
   );
 
   useEffect(() => {
@@ -225,16 +231,18 @@ function GlassSurface({
         className="pointer-events-none absolute inset-0 rounded-[inherit]"
         ref={tintRef}
         style={{
-          background: `rgba(${tintRGB},${Math.max(t * TINT_MAX_ALPHA, MIN_VEIL)})`,
+          background: `rgba(${tintRGB},${Math.max(t * veil, MIN_VEIL)})`,
         }}
       />
       {specular ? (
         <>
-          <div
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-0 rounded-[inherit]"
-            style={{ background: sheen }}
-          />
+          {sheenOn ? (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-0 rounded-[inherit]"
+              style={{ background: sheen }}
+            />
+          ) : null}
           <div
             aria-hidden="true"
             className="pointer-events-none absolute inset-0 rounded-[inherit]"
