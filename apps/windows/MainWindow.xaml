@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="Primus.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:Primus"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="Primus"
+    mc:Ignorable="d">
+    <Window.SystemBackdrop>
+        <DesktopAcrylicBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid
+        x:Name="RootLayout"
+        Background="Transparent"
+        RequestedTheme="Light">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Rectangle
+            Grid.RowSpan="2"
+            Fill="{ThemeResource PrimusThemeScrimBrush}"
+            IsHitTestVisible="False" />
+
+        <TitleBar
+            x:Name="AppTitleBar"
+            Background="Transparent"
+            Title="Primus">
+            <TitleBar.IconSource>
+                <ImageIconSource ImageSource="Assets/PrimusTitleBarIcon.png" />
+            </TitleBar.IconSource>
+            <TitleBar.RightHeader>
+                <Button
+                    x:Name="ThemeToggleButton"
+                    Width="32"
+                    Height="32"
+                    Margin="0,4,8,4"
+                    Padding="0"
+                    HorizontalAlignment="Right"
+                    AutomationProperties.Name="切换到深色主题"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    Click="ThemeToggleButton_Click"
+                    CornerRadius="16"
+                    ToolTipService.ToolTip="切换到深色主题">
+                    <Grid>
+                        <FontIcon
+                            x:Name="MoonIcon"
+                            FontFamily="Segoe Fluent Icons"
+                            FontSize="14"
+                            Glyph="&#xE708;" />
+                        <FontIcon
+                            x:Name="SunIcon"
+                            FontFamily="Segoe Fluent Icons"
+                            FontSize="14"
+                            Glyph="&#xE706;"
+                            Visibility="Collapsed" />
+                    </Grid>
+                </Button>
+            </TitleBar.RightHeader>
+        </TitleBar>
+
+        <!--
+            The Frame hosts pages for your application content. Add your UI to
+            MainPage.xaml rather than here so you can use Page features such as
+            navigation events and the Loaded lifecycle.
+        -->
+        <Frame x:Name="RootFrame" Grid.Row="1" />
+    </Grid>
+</Window>

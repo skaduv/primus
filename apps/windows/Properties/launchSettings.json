@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "Primus (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "Primus (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
