@@ -35,6 +35,10 @@ export const strings = {
     thinkingLevel: "思考强度",
     thinkingLevels: { off: "关闭", low: "低", medium: "中", high: "高" },
     mockModel: "Mock 模型",
+    minimize: "最小化",
+    maximize: "最大化",
+    restore: "向下还原",
+    close: "关闭",
   },
   inspectorTabs: {
     changes: "变更",

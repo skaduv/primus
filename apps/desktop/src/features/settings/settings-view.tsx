@@ -4,6 +4,7 @@ import { ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useId, useState } from "react";
 import { GlassPanel } from "@/components/layout/glass-panel";
+import { WindowTitleBar } from "@/components/layout/window-controls";
 import { GlassButton } from "@/components/ui/glass-button";
 import { GlassSlider } from "@/components/ui/glass-slider";
 import { GlassSwitch } from "@/components/ui/glass-switch";
@@ -130,43 +131,47 @@ export function SettingsView() {
   const [group, setGroup] = useState<SettingsGroup>("general");
 
   return (
-    <div className="flex h-screen min-h-[640px] min-w-[960px] gap-2 overflow-hidden p-2 text-fg">
-      <GlassPanel className="w-[232px] shrink-0">
-        <nav aria-label={t.title} className="flex h-full flex-col gap-3 p-3">
-          <div className="flex items-center gap-2">
-            <GlassButton size={30} aria-label={t.back} onClick={() => router.push("/")}>
-              <ChevronLeft aria-hidden size={16} />
-            </GlassButton>
-            <h1 className="text-sm font-semibold">{t.title}</h1>
+    <div className="flex h-screen min-h-[640px] min-w-[960px] flex-col overflow-hidden px-2 pb-2 text-fg">
+      {/* 主窗口没有系统标题栏：顶部细条可拖动窗口，右侧是窗口按钮（浏览器预览中只留上边距） */}
+      <WindowTitleBar className="py-2" />
+      <div className="flex min-h-0 flex-1 gap-2">
+        <GlassPanel className="w-[232px] shrink-0">
+          <nav aria-label={t.title} className="flex h-full flex-col gap-3 p-3">
+            <div className="flex items-center gap-2">
+              <GlassButton size={30} aria-label={t.back} onClick={() => router.push("/")}>
+                <ChevronLeft aria-hidden size={16} />
+              </GlassButton>
+              <h1 className="text-sm font-semibold">{t.title}</h1>
+            </div>
+            <ul className="scroll-thin flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+              {GROUPS.map((g) => (
+                <li key={g}>
+                  <button
+                    type="button"
+                    aria-current={g === group ? "page" : undefined}
+                    onClick={() => setGroup(g)}
+                    className={cn(
+                      "w-full rounded-lg px-3 py-1.5 text-left text-sm hover:bg-hover",
+                      g === group && "bg-accent text-white hover:bg-accent",
+                    )}
+                  >
+                    {t.groups[g]}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        </GlassPanel>
+        <main
+          aria-label={t.groups[group]}
+          className="scroll-thin min-w-0 flex-1 overflow-y-auto rounded-[22px] bg-[var(--paper)] ring-1 ring-border"
+        >
+          <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-8">
+            <h2 className="text-xl font-semibold tracking-tight">{t.groups[group]}</h2>
+            {group === "general" ? <GeneralSettings /> : <Placeholder group={group} />}
           </div>
-          <ul className="scroll-thin flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-            {GROUPS.map((g) => (
-              <li key={g}>
-                <button
-                  type="button"
-                  aria-current={g === group ? "page" : undefined}
-                  onClick={() => setGroup(g)}
-                  className={cn(
-                    "w-full rounded-lg px-3 py-1.5 text-left text-sm hover:bg-hover",
-                    g === group && "bg-accent text-white hover:bg-accent",
-                  )}
-                >
-                  {t.groups[g]}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </nav>
-      </GlassPanel>
-      <main
-        aria-label={t.groups[group]}
-        className="scroll-thin min-w-0 flex-1 overflow-y-auto rounded-[22px] bg-[var(--paper)] ring-1 ring-border"
-      >
-        <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-8">
-          <h2 className="text-xl font-semibold tracking-tight">{t.groups[group]}</h2>
-          {group === "general" ? <GeneralSettings /> : <Placeholder group={group} />}
-        </div>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }
