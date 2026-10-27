@@ -10,8 +10,9 @@ import { cn } from "@/lib/utils";
 
 const PAD_X = 40;
 const PAD_Y = 80;
-const INDICATOR_SPRING = { stiffness: 50, damping: 13 };
-const DEFORM_SPRING = { stiffness: 66, damping: 9 };
+// 原版弹簧偏软（约 0.8s 才停稳），桌面端切换要干脆：约 0.2s 到位，轻微回弹
+const INDICATOR_SPRING = { stiffness: 420, damping: 36, restDelta: 0.05, restSpeed: 1 };
+const DEFORM_SPRING = { stiffness: 480, damping: 30, restDelta: 0.001, restSpeed: 0.01 };
 const VELOCITY_SCALE = 0.134;
 const DEFORM_CLAMP = 0.3;
 const SQUEEZE_X = 0.3;
@@ -207,7 +208,8 @@ function TabsList({ className, children, tint = 0, ...props }: TabsListProps) {
 
   return (
     <TabsPrimitive.List
-      className={cn("relative inline-flex rounded-full p-[2px]", className)}
+      // 玻璃层四周外扩 PAD 供折射采样，必须裁在胶囊内，否则外扩部分的白底会盖到组件外面
+      className={cn("relative isolate inline-flex overflow-hidden rounded-full p-[2px]", className)}
       data-slot="tabs-list"
       ref={listRef}
       style={pillStyle}

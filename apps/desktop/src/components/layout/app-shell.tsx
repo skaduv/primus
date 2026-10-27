@@ -15,6 +15,7 @@ import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { BottomDrawer } from "./bottom-drawer";
+import { GlassPanel } from "./glass-panel";
 import { InspectorPanel } from "./inspector-panel";
 import {
   BOTTOM_DRAWER,
@@ -28,7 +29,7 @@ import {
   SHELL_PADDING,
 } from "./panel-layout";
 import { ResizeHandle } from "./resize-handle";
-import { OUTER_RADIUS, SEAM_NOTCH } from "./seam";
+import { OUTER_RADIUS, SEAM_BLEED, SEAM_NOTCH } from "./seam";
 import { SessionsSidebar } from "./sessions-sidebar";
 import { useViewportSize } from "./use-viewport-size";
 import { WindowTitleBar } from "./window-controls";
@@ -98,7 +99,7 @@ export function AppShell() {
             ref={center.ref}
             aria-label={t.timeline}
             className={cn(
-              "seam-mask relative flex min-h-0 flex-col overflow-hidden bg-[var(--paper)]",
+              "seam-mask relative isolate flex min-h-0 flex-col overflow-hidden",
               center.lockedWidth == null ? "flex-1" : "flex-none",
             )}
             style={{
@@ -107,6 +108,17 @@ export function AppShell() {
               ...seamStyle(center.leftAttached, center.rightAttached, !center.windowMode),
             }}
           >
+            {/* 中央与两侧同款液态玻璃、同样透明度；接缝一侧外扩 SEAM_BLEED 由纸面裁掉，接缝不露高光线 */}
+            <GlassPanel
+              aria-hidden
+              radius={OUTER_RADIUS}
+              className="-z-10 pointer-events-none absolute inset-y-0 shadow-none"
+              style={{
+                position: "absolute",
+                left: center.leftAttached ? -SEAM_BLEED : 0,
+                right: center.rightAttached ? -SEAM_BLEED : 0,
+              }}
+            />
             {/* 左右栏开关：对称贴在纸面左上角、右上角（圆角与纸面同心） */}
             <PanelToggle
               side="left"
@@ -198,16 +210,8 @@ function seamStyle(leftOpen: boolean, rightOpen: boolean, animate: boolean): CSS
     borderRadius: `${l}px ${r}px ${r}px ${l}px`,
     ["--nl" as string]: `${leftOpen ? SEAM_NOTCH : 0}px`,
     ["--nr" as string]: `${rightOpen ? SEAM_NOTCH : 0}px`,
-    // 描边只画在不贴侧栏的边上，接缝处不留线
-    boxShadow: [
-      "0 8px 30px -14px rgb(0 0 0 / 0.3)",
-      "inset 0 1px 0 var(--color-border)",
-      "inset 0 -1px 0 var(--color-border)",
-      leftOpen ? null : "inset 1px 0 0 var(--color-border)",
-      rightOpen ? null : "inset -1px 0 0 var(--color-border)",
-    ]
-      .filter(Boolean)
-      .join(", "),
+    // 边缘高光由玻璃自身的描边提供（接缝侧已被裁掉），这里只留投影
+    boxShadow: "0 8px 30px -14px rgb(0 0 0 / 0.3)",
     // 窗口模式下贴合/分离在动画端点瞬间切换（侧栏宽度为 0 时），过程中圆角、凹口、描边都不变
     transition: animate ? SEAM_TRANSITION : undefined,
   };

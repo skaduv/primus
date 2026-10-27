@@ -17,6 +17,7 @@
         "width": 1280,
         "height": 800,
         "minWidth": 396,
+        "center": true,
         "minHeight": 640,
         "decorations": false,
         "shadow": true,

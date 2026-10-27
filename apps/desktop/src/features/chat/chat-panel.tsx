@@ -6,7 +6,6 @@ import { type FormEvent, type KeyboardEvent, memo, useEffect, useRef, useState }
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
-import { GlassSurface } from "@/components/ui/glass-surface";
 import { isTauriRuntime } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -178,7 +177,6 @@ function useElementHeight<T extends HTMLElement>() {
 
 export function ChatPanel() {
   const { state, error, send, abort } = useChatSession();
-  const composerGlass = useGlassStyle(0.1);
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -254,12 +252,8 @@ export function ChatPanel() {
       </div>
 
       <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
-        <GlassSurface
-          blur={20}
-          radius={24}
-          {...composerGlass}
-          className="pointer-events-auto mx-auto max-w-3xl shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)]"
-        >
+        {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
+        <div className="pointer-events-auto mx-auto max-w-3xl rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border">
           <form onSubmit={submit} className="flex flex-col gap-1 px-4 pt-3 pb-2.5">
             <textarea
               ref={inputRef}
@@ -320,7 +314,7 @@ export function ChatPanel() {
               )}
             </div>
           </form>
-        </GlassSurface>
+        </div>
       </div>
     </div>
   );
