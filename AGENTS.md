@@ -44,7 +44,6 @@
 | `apps/desktop/src/components/ui/` | Liquid Glass 基础组件（lore-glass，MIT；Radix 原语） | 第三方文件的改动登记在该目录 README.md；长列表不套玻璃 |
 | `apps/desktop/src-tauri/` | 薄壳（Rust） | 目标 ≤ 约 4000 行；只做 Core 做不了的事 |
 | `apps/desktop/src-tauri/windows/` | `Primus.wxs`（WiX 7）、WebView2 引导、NSIS 备用 | `UpgradeCode` 永不改变 |
-| `apps/windows/` | Windows 原生界面**原型**（WinUI 3，.NET 10，XAML），仅用于界面验证，可能回滚 | 不属于正式交付，不改变技术方案中的 Tauri 架构；`windows-ui.yml` 只产出预览截图与测试包 |
 | `packages/extensions/` | 第一方 Core 扩展 → `primus-bundle.js` | 只依赖 Core 公开扩展 API |
 | `packages/protocol/` | RPC 记录与 `primus:*` 数据的 TS 类型 | 与锁定版本的 Core RPC 文档逐项对照 |
 | `packages/ui/` | 共享 UI 组件（Radix，shadcn 方式） | |

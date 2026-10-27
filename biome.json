@@ -4,7 +4,6 @@
     "includes": [
       "**/*.{ts,tsx,mts,js,mjs,cjs,json,jsonc,css}",
       "!agent-core",
-      "!apps/windows",
       "!**/dist",
       "!**/out",
       "!**/.next",
