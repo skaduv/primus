@@ -29,11 +29,23 @@ describe("主界面外壳", () => {
     expect(screen.getByRole("complementary", { name: strings.layout.inspector })).toBeTruthy();
   });
 
-  it("按 store 状态收起左右栏", () => {
+  it("按 store 状态收起左右栏（吸附动画结束后卸载）", async () => {
     render(<AppShell />);
     act(() => useAppStore.setState({ sessionsPanelOpen: false, inspectorPanelOpen: false }));
-    expect(screen.queryByRole("navigation", { name: strings.layout.sessions })).toBeNull();
-    expect(screen.queryByRole("complementary", { name: strings.layout.inspector })).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByRole("navigation", { name: strings.layout.sessions })).toBeNull();
+      expect(screen.queryByRole("complementary", { name: strings.layout.inspector })).toBeNull();
+    });
+  });
+
+  it("纸面角上的开关按钮收起、展开左右栏", () => {
+    render(<AppShell />);
+    fireEvent.click(screen.getByRole("button", { name: strings.layout.hideSessions }));
+    expect(useAppStore.getState().sessionsPanelOpen).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: strings.layout.showSessions }));
+    expect(useAppStore.getState().sessionsPanelOpen).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: strings.layout.hideInspector }));
+    expect(useAppStore.getState().inspectorPanelOpen).toBe(false);
   });
 
   it("右栏标签切换变更、文件、计划", () => {
@@ -95,14 +107,14 @@ describe("主界面外壳", () => {
     render(<AppShell />);
     const nav = screen.getByRole("navigation", { name: strings.layout.sessions });
     const aside = screen.getByRole("complementary", { name: strings.layout.inspector });
-    // 960 - 内边距 16 - 两条拖动条 16 - 中央下限 380 = 548：右栏先压到下限 240，左栏得 308
+    // 960 - 内边距 16 - 中央下限 380 = 564（拖动条叠在接缝上不占宽度）：右栏先压到下限 240，左栏得 324
     expect(panelStyle(aside).width).toBe("240px");
-    expect(panelStyle(nav).width).toBe("308px");
+    expect(panelStyle(nav).width).toBe("324px");
     expect(
       screen
         .getByRole("separator", { name: strings.layout.resizeSessions })
         .getAttribute("aria-valuemax"),
-    ).toBe("308");
+    ).toBe("324");
 
     act(() => {
       setViewport(2560, 1440);

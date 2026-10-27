@@ -107,11 +107,8 @@ export function resolvePanelLayout(
   const width = Math.max(viewport.width, MIN_WINDOW.width);
   const height = Math.max(viewport.height, MIN_WINDOW.height);
 
-  const innerWidth =
-    width -
-    2 * SHELL_PADDING -
-    (prefs.leftOpen ? HANDLE_SIZE : 0) -
-    (prefs.rightOpen ? HANDLE_SIZE : 0);
+  const innerWidth = width - 2 * SHELL_PADDING;
+  // 左右栏吸附在中央纸面上：拖动条叠在接缝上，不占宽度
   let overflow = left + right + CENTER_MIN_WIDTH - innerWidth;
   if (overflow > 0 && prefs.rightOpen) {
     const take = Math.min(overflow, right - RIGHT_PANEL.min);

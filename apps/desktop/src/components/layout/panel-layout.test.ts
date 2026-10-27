@@ -58,7 +58,7 @@ describe("resolvePanelLayout", () => {
     expect(r.left.size).toBe(232);
     expect(r.right.size).toBe(300);
     expect(r.drawer.size).toBe(BOTTOM_DRAWER.initial);
-    expect(r.center?.width).toBe(960 - 2 * SHELL_PADDING - 2 * HANDLE_SIZE - 232 - 300);
+    expect(r.center?.width).toBe(960 - 2 * SHELL_PADDING - 232 - 300);
     expect(r.center?.width).toBeGreaterThanOrEqual(CENTER_MIN_WIDTH);
     expect(r.center?.height).toBeGreaterThanOrEqual(CENTER_MIN_HEIGHT);
   });
@@ -68,7 +68,8 @@ describe("resolvePanelLayout", () => {
     const innerHeight = height - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP;
     for (const prefs of allPrefs()) {
       const r = resolvePanelLayout({ width, height }, prefs);
-      const handlesX = (prefs.leftOpen ? HANDLE_SIZE : 0) + (prefs.rightOpen ? HANDLE_SIZE : 0);
+      // 左右拖动条叠在接缝上，不占宽度
+      const handlesX = 0;
       const handlesY = prefs.drawerOpen ? HANDLE_SIZE : 0;
       const center = r.center;
       expect(center).not.toBeNull();
@@ -101,7 +102,7 @@ describe("resolvePanelLayout", () => {
     const wide = { ...defaults, leftWidth: LEFT_PANEL.max, rightWidth: RIGHT_PANEL.max };
     const small = resolvePanelLayout({ width: 960, height: 640 }, wide);
     expect(small.right.size).toBe(RIGHT_PANEL.min);
-    expect(small.left.size).toBe(960 - 16 - 16 - RIGHT_PANEL.min - CENTER_MIN_WIDTH);
+    expect(small.left.size).toBe(960 - 16 - RIGHT_PANEL.min - CENTER_MIN_WIDTH);
     const large = resolvePanelLayout({ width: 2560, height: 1440 }, wide);
     expect(large.left.size).toBe(LEFT_PANEL.max);
     expect(large.right.size).toBe(RIGHT_PANEL.max);
@@ -109,7 +110,7 @@ describe("resolvePanelLayout", () => {
 
   it("拖动条的上限随另一栏与视口变化，保证中央不被挤压", () => {
     const r = resolvePanelLayout({ width: 1280, height: 800 }, defaults);
-    const inner = 1280 - 16 - 16;
+    const inner = 1280 - 16;
     expect(r.left.max).toBe(Math.min(LEFT_PANEL.max, inner - r.right.size - CENTER_MIN_WIDTH));
     expect(r.right.max).toBe(Math.min(RIGHT_PANEL.max, inner - r.left.size - CENTER_MIN_WIDTH));
     // 抽屉不超过细标题栏以下可用高度的一半
