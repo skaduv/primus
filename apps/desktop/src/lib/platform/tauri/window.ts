@@ -1,6 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowControls } from "../window";
+
+// 与 tauri.conf.json 的 minHeight 一致
+const MIN_HEIGHT = 640;
 
 // 当前窗口的标题栏操作；权限见 src-tauri/capabilities/default.json
 export function createTauriWindowControls(): WindowControls {
@@ -21,7 +25,7 @@ export function createTauriWindowControls(): WindowControls {
         }
       });
     },
-    animateBySide: async (side, delta, duration, ease) => {
+    animateWidth: async (delta, duration, ease) => {
       if (await win.isMaximized()) return false;
       const [scale, pos, size] = await Promise.all([
         win.scaleFactor(),
@@ -32,7 +36,7 @@ export function createTauriWindowControls(): WindowControls {
       if (d === 0) return true;
       const apply = (k: number) =>
         invoke("window_set_bounds", {
-          x: side === "left" ? pos.x - k : pos.x,
+          x: pos.x,
           y: pos.y,
           width: size.width + k,
           height: size.height,
@@ -64,6 +68,9 @@ export function createTauriWindowControls(): WindowControls {
         requestAnimationFrame(step);
       });
       return true;
+    },
+    setMinWidth: async (width) => {
+      await win.setMinSize(new LogicalSize(width, MIN_HEIGHT));
     },
   };
 }

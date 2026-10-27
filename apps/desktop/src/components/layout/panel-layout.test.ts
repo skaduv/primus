@@ -144,3 +144,15 @@ describe("resolvePanelLayout", () => {
     expect(r.center).toBeNull();
   });
 });
+
+describe("minWindowWidth", () => {
+  it("两栏都开为 960，收起侧栏后降到中央下限加已开侧栏下限", async () => {
+    const { minWindowWidth, CENTER_MIN_WIDTH, SHELL_PADDING, LEFT_PANEL, RIGHT_PANEL } =
+      await import("./panel-layout");
+    const base = CENTER_MIN_WIDTH + SHELL_PADDING * 2;
+    expect(minWindowWidth(true, true)).toBe(960);
+    expect(minWindowWidth(false, false)).toBe(base);
+    expect(minWindowWidth(true, false)).toBe(base + LEFT_PANEL.min);
+    expect(minWindowWidth(false, true)).toBe(base + RIGHT_PANEL.min);
+  });
+});

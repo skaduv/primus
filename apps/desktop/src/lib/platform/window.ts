@@ -10,14 +10,11 @@ export interface WindowControls {
   /** 窗口最大化状态变化时回调（含双击拖动区、Win+↑、贴靠布局），返回取消监听函数 */
   onMaximizedChange(listener: (maximized: boolean) => void): Promise<() => void>;
   /**
-   * 侧栏展开/收起时窗口向该侧逐帧伸缩 delta 逻辑像素（>0 加宽，<0 收窄），duration 毫秒内按 ease 曲线走完；
-   * onFrame 每帧回报已走的逻辑像素，界面据此同步侧栏宽度。left 侧左边缘与宽度原子地一起变，右边缘不动。
-   * 最大化时不调整，返回 false。
+   * 侧栏展开/收起时窗口宽度逐帧变化 delta 逻辑像素（>0 加宽，<0 收窄），duration 毫秒内按 ease 曲线走完。
+   * 只动右边缘、左上角原点不动：WebView2 的画面挂在窗口原点上，移动左边缘时旧画面会先随原点平移、
+   * 下一帧才重排，必然抖动，所以任何一侧都不移动左边缘。最大化时不调整，返回 false。
    */
-  animateBySide(
-    side: "left" | "right",
-    delta: number,
-    duration: number,
-    ease: (t: number) => number,
-  ): Promise<boolean>;
+  animateWidth(delta: number, duration: number, ease: (t: number) => number): Promise<boolean>;
+  /** 设置窗口最小宽度（逻辑像素），随侧栏开合变化 */
+  setMinWidth(width: number): Promise<void>;
 }

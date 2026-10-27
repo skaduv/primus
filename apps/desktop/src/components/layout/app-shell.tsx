@@ -22,6 +22,7 @@ import {
   CENTER_MIN_WIDTH,
   LEFT_PANEL,
   MIN_WINDOW,
+  minWindowWidth,
   RIGHT_PANEL,
   resolvePanelLayout,
   SHELL_PADDING,
@@ -58,7 +59,10 @@ export function AppShell() {
   return (
     <div
       className="flex h-screen flex-col gap-2 overflow-hidden px-2 pb-2 text-fg"
-      style={{ minWidth: MIN_WINDOW.width, minHeight: MIN_WINDOW.height }}
+      style={{
+        minWidth: minWindowWidth(s.sessionsPanelOpen, s.inspectorPanelOpen),
+        minHeight: MIN_WINDOW.height,
+      }}
     >
       {/* 不再有顶栏：顶部只留一条可拖动窗口的细标题栏，窗口按钮贴在右上角 */}
       <WindowTitleBar className="-mx-2 h-9" />
@@ -210,12 +214,13 @@ function seamStyle(leftOpen: boolean, rightOpen: boolean, animate: boolean): CSS
 }
 
 /**
- * 中央界面不变宽：开关侧栏时窗口边缘跟着侧栏一起逐帧伸缩（同一条曲线、同一时长）。
+ * 中央界面不变宽：开关侧栏时窗口右边缘跟着侧栏一起逐帧伸缩（同一条曲线、同一时长）。
  *   展开：锁住中央像素宽度，中央该侧立即变成接缝（此时侧栏宽 0，看不出切换）→ 窗口向该侧逐帧加宽，
  *         侧栏填满新增空间，外侧圆角边缘始终贴着窗口边缘 → 侧栏定宽、解锁
  *   收起：锁住中央 → 窗口逐帧收窄，侧栏随之被收进接缝 → 侧栏卸载，中央该侧恢复圆角与描边、解锁
  * 侧栏宽度直接等于"窗口宽 − 中央 − 另一侧"，窗口走到哪侧栏就到哪，不会出现空白或错位。
- * 左侧用 window_set_bounds 原子地同时改左边缘与宽度，右边缘不跳。
+ * 窗口只动右边缘、原点不动（移动左边缘在 WebView2 上必然让画面抖一帧）：左栏开合时左边缘不动，
+ * 中央与右栏随左栏平移，宽度不变。收起前先放宽窗口最小宽度，保证窗口能收到目标宽度、中央不被撑宽。
  * 一次开关进行中按钮禁用防叠加；窗口目标宽度按"记住的中央宽度 + 已开侧栏"计算（不低于最小窗口），
  * 不累加增量，反复开关不会越来越大；用户手动改窗口或拖动侧栏后重新记住中央宽度。
  * 最大化或浏览器预览下窗口不能变，退回到中央随侧栏伸缩（windowMode=false）。
@@ -248,6 +253,7 @@ function useWindowChoreography(
       if (!alive || !c) return;
       controls.current = c;
       setHasWindow(true);
+      void c.setMinWidth(minWindowWidth(prev.current.left, prev.current.right));
       off = await c.onMaximizedChange(setMaximized);
     });
     return () => {
@@ -278,8 +284,10 @@ function useWindowChoreography(
     // 本次渲染已按新状态排过版，取上一次提交时记下的中央宽度
     const current = stableWidth.current ?? main.offsetWidth;
     if (centerWidth.current == null) centerWidth.current = current;
+    const minBefore = minWindowWidth(p.left, p.right);
+    const minAfter = minWindowWidth(leftOpen, rightOpen);
     const target = Math.max(
-      MIN_WINDOW.width,
+      minAfter,
       centerWidth.current + SHELL_PADDING * 2 + (leftOpen ? w.left : 0) + (rightOpen ? w.right : 0),
     );
     const delta = target - window.innerWidth;
@@ -292,7 +300,10 @@ function useWindowChoreography(
     let alive = true;
     const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
     void (async () => {
-      await c.animateBySide(side, delta, SNAP_MS, snapEase);
+      // 收起时先放宽最小宽度再收窄；展开时加宽完再收紧，窗口永远不被夹住
+      if (minAfter < minBefore) await c.setMinWidth(minAfter);
+      await c.animateWidth(delta, SNAP_MS, snapEase);
+      if (minAfter > minBefore) await c.setMinWidth(minAfter);
       await frame();
       if (!alive) return;
       setFill(null);
