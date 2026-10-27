@@ -1,3 +1,5 @@
+<p align="center"><img src="assets/logo.png" alt="乾元 Primus logo" width="160" /></p>
+
 # 乾元（Primus）
 
 面向所有人的桌面 Agent 应用。用户选择一个项目目录，用自然语言让 Agent 读代码、改代码、跑命令、查问题。
@@ -46,6 +48,7 @@ primus/
 │     ├─ src/              supervisor、rpc_bridge、job、paths、core_config、vault、
 │     │                    session_index、fs_watch、git、shell_detect、tray、updater、platform
 │     ├─ windows/          Primus.wxs（WiX 7）、WebView2 引导程序、NSIS 备用脚本
+│     ├─ icons/            应用与安装包图标（由 assets/logo.png 生成，见 assets/README.md）
 │     ├─ capabilities/     Tauri 权限声明
 │     └─ tauri.conf.json
 ├─ packages/
@@ -54,6 +57,7 @@ primus/
 │  └─ ui/                  共享 UI 组件
 ├─ agent-core/             Agent Core 完整源码（git subtree 引入，当前 v1.4.0；改动见 agent-core/PATCHES.md）
 ├─ e2e/                    WebdriverIO + tauri-driver
+├─ assets/                项目 logo 源图（logo.png，1024×1024 透明 PNG）
 ├─ scripts/                build-core.mjs、检查脚本、MSI 构建脚本
 └─ docs/                   技术方案、ADR、用户手册
 ```
