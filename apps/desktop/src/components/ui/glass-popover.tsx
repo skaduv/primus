@@ -14,6 +14,8 @@ const GlassPopoverTrigger = MenuPrimitive.Trigger;
 interface GlassPopoverContentProps extends ComponentProps<typeof MenuPrimitive.Content> {
   tint?: number;
   tintColor?: string;
+  /** 菜单最小宽度（px） */
+  minWidth?: number;
 }
 
 function GlassPopoverContent({
@@ -22,6 +24,7 @@ function GlassPopoverContent({
   sideOffset = 10,
   tint = 0.55,
   tintColor,
+  minWidth = 220,
   className,
   children,
   ...props
@@ -39,7 +42,9 @@ function GlassPopoverContent({
         {...props}
       >
         <GlassSurface blur={30} radius={22} tint={tint} tintColor={tintColor}>
-          <div className="min-w-[220px] py-2">{children}</div>
+          <div className="py-2" style={{ minWidth }}>
+            {children}
+          </div>
         </GlassSurface>
       </MenuPrimitive.Content>
     </MenuPrimitive.Portal>

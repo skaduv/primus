@@ -167,7 +167,8 @@ export function SettingsView() {
                       onClick={() => setGroup(g)}
                       className={cn(
                         "w-full rounded-xl px-3 py-[7px] text-left text-sm transition-colors hover:bg-hover",
-                        g === group && "glass-drop font-medium hover:bg-transparent",
+                        g === group &&
+                          "bg-white/75 font-medium shadow-[0_0.5px_1px_rgb(0_0_0/0.06)] ring-1 ring-black/[0.04] hover:bg-white/75 dark:bg-white/[0.1] dark:ring-white/[0.06] dark:hover:bg-white/[0.1]",
                       )}
                     >
                       {t.groups[g]}

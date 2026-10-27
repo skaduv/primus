@@ -1,14 +1,42 @@
 "use client";
 
 import type { AgentMessage } from "@primus/protocol";
-import { ArrowUp, Paperclip, ShieldCheck, Square, Wrench } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, memo, useEffect, useRef, useState } from "react";
+import {
+  ArrowUp,
+  ChevronDown,
+  Folder,
+  FolderOpen,
+  Plus,
+  ShieldCheck,
+  Square,
+  Wrench,
+} from "lucide-react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  memo,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { LogoMark } from "@/components/brand/logo";
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
-import { isTauriRuntime } from "@/lib/platform";
+import {
+  GlassPopover,
+  GlassPopoverContent,
+  GlassPopoverItem,
+  GlassPopoverSeparator,
+  GlassPopoverTrigger,
+} from "@/components/ui/glass-popover";
+import { GlassSurface } from "@/components/ui/glass-surface";
+import { getPlatform, isTauriRuntime } from "@/lib/platform";
+import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/stores/app-store";
 import type { TimelineContent, ToolRun } from "@/stores/session-store";
 import { useChatSession } from "./use-chat-session";
 
@@ -120,30 +148,166 @@ const MessageItem = memo(function MessageItem({
   return null; // 工具结果并入对应的工具卡片显示
 });
 
+// 欢迎页：标志 + 标题 + 三个液态玻璃建议按钮
 function Welcome({ onPick }: { onPick: (text: string) => void }) {
   const glass = useGlassStyle();
   return (
-    <div className="m-auto flex max-w-md flex-col items-center gap-3 text-center">
-      <h2 className="font-serif text-3xl font-medium tracking-tight">{t.welcomeTitle}</h2>
-      <p className="text-sm text-muted">{t.welcomeSubtitle}</p>
+    <div className="m-auto flex max-w-2xl flex-col items-center gap-5 text-center">
+      <LogoMark size={60} className="text-fg/80" />
+      <h2 className="font-serif text-[28px] font-medium tracking-tight">{t.welcomeTitle}</h2>
       <p className="sr-only">{strings.layout.emptyTimeline}</p>
-      <div className="mt-2 flex flex-wrap justify-center gap-2">
+      <div className="flex flex-wrap justify-center gap-2.5">
         {t.suggestions.map((s) => (
           <GlassButton
             key={s}
             variant="capsule"
-            size={32}
+            size={36}
             {...glass}
             className={glassButtonClass}
             onClick={() => onPick(s)}
           >
-            <span className="text-[13px]">{s}</span>
+            <span className="text-[13px] font-normal">{s}</span>
           </GlassButton>
         ))}
       </div>
     </div>
   );
 }
+
+/** 选择工作区：列出最近的工作区；系统文件夹对话框接入前"打开文件夹…"禁用 */
+function WorkspaceMenu({
+  children,
+  onPicked,
+}: {
+  children: ReactNode;
+  onPicked: (ws: WorkspaceInfo) => void;
+}) {
+  const [items, setItems] = useState<WorkspaceInfo[] | null>(null);
+  const load = (open: boolean) => {
+    if (!open) return;
+    getPlatform()
+      .then((p) => p.workspaceList())
+      .then(setItems)
+      .catch(() => setItems([]));
+  };
+  const pick = (ws: WorkspaceInfo) => {
+    getPlatform()
+      .then((p) => p.workspaceOpen(ws.path))
+      .then(onPicked)
+      .catch(() => onPicked(ws));
+  };
+  return (
+    <GlassPopover onOpenChange={load}>
+      <GlassPopoverTrigger asChild>{children}</GlassPopoverTrigger>
+      <GlassPopoverContent side="top" sideOffset={8} tint={0.75} minWidth={240}>
+        {items && items.length > 0 ? (
+          items.map((ws) => (
+            <GlassPopoverItem
+              key={ws.path}
+              icon={<Folder />}
+              label={ws.name}
+              sublabel={ws.path}
+              onSelect={() => pick(ws)}
+            />
+          ))
+        ) : (
+          <GlassPopoverItem icon={<Folder />} label={t.noRecentWorkspaces} disabled />
+        )}
+        <GlassPopoverSeparator />
+        <GlassPopoverItem
+          icon={<FolderOpen />}
+          label={strings.layout.openFolder}
+          sublabel={t.openFolderSoon}
+          disabled
+        />
+      </GlassPopoverContent>
+    </GlassPopover>
+  );
+}
+
+/**
+ * 输入框上方附着的液态玻璃条：未选择工作区时提示选择文件夹（可不选直接对话）。
+ * 选好工作区或开始对话后收起（高度与透明度过渡）。
+ */
+function WorkspaceBar({
+  visible,
+  onPicked,
+}: {
+  visible: boolean;
+  onPicked: (ws: WorkspaceInfo) => void;
+}) {
+  const glass = useGlassStyle(0.2);
+  return (
+    <div
+      aria-hidden={!visible}
+      inert={!visible}
+      className={cn(
+        "grid transition-[grid-template-rows,opacity,transform] duration-300 ease-out",
+        visible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] translate-y-3 opacity-0",
+      )}
+    >
+      <div className="min-h-0 overflow-hidden px-4">
+        <GlassSurface
+          blur={24}
+          radius={18}
+          {...glass}
+          className="-mb-5 pb-5 shadow-[0_6px_18px_-10px_rgb(0_0_0/0.25)] ring-1 ring-black/[0.06] dark:ring-white/[0.08]"
+        >
+          <WorkspaceMenu onPicked={onPicked}>
+            <button
+              type="button"
+              className="flex h-10 w-full items-center gap-2.5 px-4 text-left text-[13px] outline-none"
+            >
+              <FolderOpen aria-hidden size={15} className="text-muted" />
+              <span className="font-medium">{t.chooseFolder}</span>
+              <span className="text-muted">{t.chooseFolderHint}</span>
+              <span className="flex-1" />
+              <ChevronDown aria-hidden size={14} className="text-muted" />
+            </button>
+          </WorkspaceMenu>
+        </GlassSurface>
+      </div>
+    </div>
+  );
+}
+
+/** 上下文占用：小圆环 + 百分比 */
+function ContextRing({ percent }: { percent: number }) {
+  const r = 7;
+  const c = 2 * Math.PI * r;
+  return (
+    <span title={t.context} className="flex items-center gap-1.5 px-1 text-[12px] text-muted">
+      <svg aria-hidden width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
+        <circle
+          cx="9"
+          cy="9"
+          r={r}
+          fill="none"
+          strokeWidth="2.25"
+          className="stroke-black/10 dark:stroke-white/15"
+        />
+        <circle
+          cx="9"
+          cy="9"
+          r={r}
+          fill="none"
+          strokeWidth="2.25"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={c * (1 - percent / 100)}
+          className="stroke-accent"
+        />
+      </svg>
+      {t.context} {percent}%
+    </span>
+  );
+}
+
+/** 发送 / 停止：强调色"水珠"，带上沿高光与内阴影 */
+const dropButtonClass =
+  "grid size-8 place-items-center rounded-full text-white transition-[transform,opacity] duration-200 active:scale-90 " +
+  "shadow-[inset_0_1px_0.5px_rgb(255_255_255/0.55),inset_0_-2px_4px_rgb(0_0_0/0.18),0_2px_6px_-1px_rgb(0_0_0/0.25)] " +
+  "bg-[radial-gradient(120%_90%_at_30%_20%,rgb(255_255_255/0.35),transparent_55%)]";
 
 /** 距底部小于该值视为"停在底部" */
 const STICK_THRESHOLD_PX = 48;
@@ -183,6 +347,9 @@ export function ChatPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [composerRef, composerHeight] = useElementHeight<HTMLDivElement>();
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const glass = useGlassStyle();
+  const workspace = useAppStore((s) => s.workspace);
+  const setWorkspace = useAppStore((s) => s.setWorkspace);
 
   // 只在客户端判断运行环境，避免水合不一致
   useEffect(() => setPreview(!isTauriRuntime()), []);
@@ -252,68 +419,93 @@ export function ChatPanel() {
       </div>
 
       <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
-        {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
-        <div className="pointer-events-auto mx-auto max-w-3xl rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border">
-          <form onSubmit={submit} className="flex flex-col gap-1 px-4 pt-3 pb-2.5">
-            <textarea
-              ref={inputRef}
-              aria-label={t.inputLabel}
-              placeholder={t.inputPlaceholder}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={onKeyDown}
-              rows={2}
-              className="max-h-48 min-h-11 w-full resize-none bg-transparent text-sm leading-relaxed outline-none placeholder:text-muted"
-            />
-            <div className="flex items-center gap-2 text-xs text-muted">
-              <button
-                type="button"
-                aria-label={t.attach}
-                title={t.attachSoon}
-                // 附件选择在后续任务接入，接入前禁用
-                disabled
-                className="rounded-full p-1.5 enabled:hover:bg-hover enabled:hover:text-fg disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Paperclip aria-hidden size={15} />
-              </button>
-              <span
-                title={t.permissionMode}
-                className="flex items-center gap-1 rounded-full bg-hover px-2 py-1"
-              >
-                <ShieldCheck aria-hidden size={13} />
-                {t.permissionAsk}
-              </span>
-              <span title={t.context} className="flex items-center gap-1.5 px-1">
-                <span
-                  aria-hidden
-                  className="relative h-1 w-10 overflow-hidden rounded-full bg-hover"
+        <div className="pointer-events-auto mx-auto max-w-3xl">
+          <WorkspaceBar
+            visible={!workspace && state.messages.length === 0}
+            onPicked={setWorkspace}
+          />
+          {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
+          <div className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border">
+            <form onSubmit={submit} className="flex flex-col gap-1.5 px-3 pt-3 pb-2.5">
+              <textarea
+                ref={inputRef}
+                aria-label={t.inputLabel}
+                placeholder={t.inputPlaceholder}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={onKeyDown}
+                rows={2}
+                className="max-h-48 min-h-11 w-full resize-none bg-transparent px-1 text-sm leading-relaxed outline-none placeholder:text-muted"
+              />
+              <div className="flex items-center gap-1.5 text-xs text-muted">
+                {/* 附件选择在后续任务接入，接入前禁用 */}
+                <GlassButton
+                  size={30}
+                  {...glass}
+                  aria-label={t.attach}
+                  title={t.attachSoon}
+                  disabled
+                  className={glassButtonClass}
                 >
-                  <span className="absolute inset-y-0 left-0 w-0 bg-accent" />
-                </span>
-                {t.context} 0%
-              </span>
-              <span className="flex-1" />
-              {state.running ? (
-                <button
-                  type="button"
-                  aria-label={t.stop}
-                  onClick={() => void abort()}
-                  className="grid size-8 place-items-center rounded-full bg-fg text-surface"
+                  <Plus aria-hidden size={16} />
+                </GlassButton>
+                <GlassButton
+                  variant="capsule"
+                  size={30}
+                  {...glass}
+                  title={t.permissionMode}
+                  className={glassButtonClass}
                 >
-                  <Square aria-hidden size={12} fill="currentColor" />
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  aria-label={t.send}
-                  disabled={!draft.trim()}
-                  className="grid size-8 place-items-center rounded-full bg-accent text-white transition-opacity disabled:opacity-30"
-                >
-                  <ArrowUp aria-hidden size={16} strokeWidth={2.5} />
-                </button>
-              )}
-            </div>
-          </form>
+                  <ShieldCheck
+                    aria-hidden
+                    size={14}
+                    className="text-emerald-600 dark:text-emerald-400"
+                  />
+                  <span className="text-[12px] font-normal">{t.permissionAsk}</span>
+                </GlassButton>
+                {workspace && (
+                  <WorkspaceMenu onPicked={setWorkspace}>
+                    <GlassButton
+                      variant="capsule"
+                      size={30}
+                      {...glass}
+                      title={`${t.currentWorkspace}：${workspace.path}`}
+                      className={glassButtonClass}
+                    >
+                      <Folder aria-hidden size={14} />
+                      <span className="max-w-40 truncate text-[12px] font-normal">
+                        {workspace.name}
+                      </span>
+                    </GlassButton>
+                  </WorkspaceMenu>
+                )}
+                <span className="flex-1" />
+                <ContextRing percent={0} />
+                {state.running ? (
+                  <button
+                    type="button"
+                    aria-label={t.stop}
+                    onClick={() => void abort()}
+                    className={cn(dropButtonClass, "bg-fg text-surface")}
+                  >
+                    <Square aria-hidden size={11} fill="currentColor" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    aria-label={t.send}
+                    disabled={!draft.trim()}
+                    className={cn(
+                      dropButtonClass,
+                      "bg-accent disabled:opacity-35 disabled:active:scale-100",
+                    )}
+                  >
+                    <ArrowUp aria-hidden size={16} strokeWidth={2.5} />
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
         </div>
       </div>
     </div>

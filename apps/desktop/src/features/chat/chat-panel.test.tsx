@@ -3,13 +3,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
+import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel } from "./chat-panel";
 
 const t = strings.chat;
 
 describe("对话区（mock 事件流）", () => {
   beforeEach(() => setPlatformForTesting(createMockPlatform({ intervalMs: 1, batchSize: 50 })));
-  afterEach(() => setPlatformForTesting(undefined));
+  afterEach(() => {
+    setPlatformForTesting(undefined);
+    useAppStore.setState(initialAppState);
+  });
+
+  it("未选择工作区时输入框上方显示选择文件夹；选好后收起并在工具栏显示工作区", async () => {
+    render(<ChatPanel />);
+    const bar = screen.getByRole("button", { name: new RegExp(t.chooseFolder) });
+    fireEvent.keyDown(bar, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /示例工作区/ }));
+    await waitFor(() => expect(useAppStore.getState().workspace?.name).toBe("示例工作区"));
+    expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
+    expect(screen.getByRole("button", { name: /示例工作区/ })).toBeTruthy();
+  });
 
   it("发送消息后流式显示回答，结束后恢复发送按钮", async () => {
     render(<ChatPanel />);
