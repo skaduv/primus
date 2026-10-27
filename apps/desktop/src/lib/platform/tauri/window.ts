@@ -1,4 +1,4 @@
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowControls } from "../window";
 
@@ -21,20 +21,48 @@ export function createTauriWindowControls(): WindowControls {
         }
       });
     },
-    growBySide: async (side, delta) => {
+    animateBySide: async (side, delta, duration, ease) => {
       if (await win.isMaximized()) return false;
-      const [scale, pos, inner] = await Promise.all([
+      const [scale, pos, size] = await Promise.all([
         win.scaleFactor(),
         win.outerPosition(),
-        win.innerSize(),
+        win.outerSize(),
       ]);
       const d = Math.round(delta * scale);
       if (d === 0) return true;
-      // 两次调用同时发出，落在同一帧，左侧伸缩时右边缘不跳
-      await Promise.all([
-        win.setSize(new PhysicalSize(inner.width + d, inner.height)),
-        side === "left" ? win.setPosition(new PhysicalPosition(pos.x - d, pos.y)) : null,
-      ]);
+      const apply = (k: number) =>
+        invoke("window_set_bounds", {
+          x: side === "left" ? pos.x - k : pos.x,
+          y: pos.y,
+          width: size.width + k,
+          height: size.height,
+        }).catch(() => undefined);
+      // 每帧最多一次 IPC：上一帧还没落地就跳过，避免排队造成拖尾
+      let pending: Promise<unknown> | null = null;
+      let last = 0;
+      const start = performance.now();
+      await new Promise<void>((resolve) => {
+        const step = (now: number) => {
+          const t = Math.min(1, (now - start) / duration);
+          const k = Math.round(d * ease(t));
+          if (t < 1) {
+            if (!pending && k !== last) {
+              last = k;
+              pending = apply(k).finally(() => {
+                pending = null;
+              });
+            }
+            requestAnimationFrame(step);
+            return;
+          }
+          void (async () => {
+            await pending;
+            if (last !== d) await apply(d);
+            resolve();
+          })();
+        };
+        requestAnimationFrame(step);
+      });
       return true;
     },
   };
