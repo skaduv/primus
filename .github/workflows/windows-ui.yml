@@ -1,7 +1,9 @@
 # 乾元 Primus Windows 原生界面（apps/windows，WinUI 3）构建与预览
 # - apps/windows 下任何改动推到 dev / main、或指向 main 的 PR，都在 windows-2025 上编译 x64 可执行文件
 # - 编译后实际启动应用、等开场动画结束截取主窗口，截图与可运行的压缩包都作为构建产物上传
-# - 推送到 dev / main 时，把最新截图发布到 GitHub Pages，打开固定地址即可查看最新构建的界面
+# - 只有 dev 的推送发布到 GitHub Pages（所有改动先进 dev，main 只是合并 dev），避免两个分支互相覆盖；
+#   部署前再确认这次提交仍是 dev 的最新提交，较早的构建晚跑完也不会覆盖较新的预览
+# - .NET SDK 版本锁定在 apps/windows/global.json
 name: Windows UI 预览
 
 on:
@@ -41,7 +43,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v6.0.0
         with:
-          dotnet-version: "10.0.x"
+          global-json-file: apps/windows/global.json
 
       # 预览构建用免安装形态（WindowsPackageType=None + Windows App SDK 自包含），不需要 MSIX 签名即可直接运行；
       # 关闭裁剪与 ReadyToRun，编译更快，也避免裁剪误删 XAML 反射用到的类型
@@ -117,7 +119,7 @@ jobs:
           path: ${{ runner.temp }}/primus-windows
 
       - name: 打包 Pages 内容
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         uses: actions/upload-pages-artifact@v5.0.0
         with:
           path: ${{ runner.temp }}/preview
@@ -125,9 +127,10 @@ jobs:
   pages:
     name: 发布预览到 GitHub Pages
     needs: build
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-24.04
     permissions:
+      contents: read
       pages: write
       id-token: write
     environment:
@@ -137,5 +140,19 @@ jobs:
       group: windows-ui-pages
       cancel-in-progress: false
     steps:
+      - name: 确认本次提交仍是 dev 的最新提交
+        id: fresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/${{ github.repository }}/branches/dev" --jq .commit.sha)
+          if [ "$head" = "${{ github.sha }}" ]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::dev 已有更新的提交 ${head:0:7}，跳过发布 ${GITHUB_SHA:0:7}，由新提交的构建发布"
+          fi
+
       - id: deploy
+        if: steps.fresh.outputs.latest == 'true'
         uses: actions/deploy-pages@v5.0.1

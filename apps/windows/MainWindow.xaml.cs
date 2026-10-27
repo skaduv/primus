@@ -26,7 +26,7 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(AppTitleBar);
 
-        AppWindow.SetIcon("Assets/AppIcon.ico");
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico"));
 
         // Navigate the root frame to the main page on startup.
         RootFrame.Loaded += RootFrame_Loaded;
@@ -47,8 +47,8 @@ public sealed partial class MainWindow : Window
 
         var workArea = displayArea.WorkArea;
         var scale = RootFrame.XamlRoot.RasterizationScale;
-        var width = (int)Math.Round(StartupWidthDip * scale);
-        var height = AppWindow.Size.Height;
+        var width = Math.Min((int)Math.Round(StartupWidthDip * scale), workArea.Width);
+        var height = Math.Min(AppWindow.Size.Height, workArea.Height);
         var x = workArea.X + (workArea.Width - width) / 2;
         var y = workArea.Y + (workArea.Height - height) / 2;
 
