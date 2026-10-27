@@ -6,7 +6,7 @@
 
 /*
  * 设计令牌：macOS 27 风格的 Liquid Glass 低保真方案。
- * 窗口底层是纯色底（不用渐变），侧栏、工具栏、输入框等浮在上面的玻璃层折射它；
+ * 窗口底层是 Windows 亚克力磨砂透明背景（浏览器预览为纯色），侧栏、工具栏、输入框等浮在上面的玻璃层折射它；
  * 正文区域保持实色，保证长时间线的可读性和滚动性能。
  */
 @theme {
@@ -21,8 +21,10 @@
 }
 
 :root {
-  /* 纯色底，不用渐变 */
+  /* 浏览器预览用的纯色底（不用渐变） */
   --wallpaper: #f4f3f8;
+  /* Tauri 窗口内：半透明着色叠在系统亚克力磨砂效果上 */
+  --window-tint: rgb(244 243 248 / 0.55);
   /* 时间线所在的"纸面"：几乎不透明，只透出一点壁纸色 */
   --paper: rgb(255 255 255 / 0.82);
   color-scheme: light;
@@ -36,8 +38,9 @@
   --color-hover: rgb(255 255 255 / 0.08);
   --color-accent: #0a84ff;
   --color-danger: #ff453a;
-  /* 纯色底，不用渐变 */
+  /* 浏览器预览用的纯色底（不用渐变） */
   --wallpaper: #101014;
+  --window-tint: rgb(16 16 20 / 0.6);
   --paper: rgb(28 28 30 / 0.84);
   color-scheme: dark;
 }
@@ -52,6 +55,15 @@ body {
   background: var(--wallpaper);
   color: var(--color-fg);
   -webkit-font-smoothing: antialiased;
+}
+
+/* 磨砂透明背景：tauri.conf.json 开启 transparent + windowEffects acrylic，页面本身只铺一层半透明着色 */
+html.window-effects {
+  background: transparent;
+}
+
+html.window-effects body {
+  background: var(--window-tint);
 }
 
 /* 浮层进出场（Radix 用 data-state 驱动；动画 scale 属性而不是 transform，避免和 translate 类冲突） */

@@ -2,6 +2,8 @@
 // 同源脚本，符合 Tauri CSP（default-src 'self'，不允许内联脚本）。
 // 读取 zustand persist 的 "primus.appearance"（{ state: { theme } }），规则同 resolveDark。
 (() => {
+  // 在 Tauri 窗口内（初始化脚本先于页面注入 isTauri）：页面背景透明，透出窗口的亚克力磨砂效果
+  if (window.isTauri === true) document.documentElement.classList.add("window-effects");
   try {
     const raw = localStorage.getItem("primus.appearance");
     const theme = raw ? JSON.parse(raw)?.state?.theme : undefined;
