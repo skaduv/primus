@@ -64,7 +64,7 @@ export function AppShell() {
           )}
           <main
             aria-label={t.timeline}
-            className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[22px] bg-[var(--paper)] shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)] ring-1 ring-border"
+            className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-[16px] bg-[var(--paper)] shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)] ring-1 ring-border"
             style={{ minWidth: CENTER_MIN_WIDTH }}
           >
             <ChatPanel />

@@ -25,7 +25,7 @@ export function useGlassStyle(extra = 0): { tint: number; tintColor: string | un
 // 浮在壁纸上的大块玻璃（侧栏、检查器、设置导航）
 export function GlassPanel({
   className,
-  radius = 22,
+  radius = 16,
   ...props
 }: Omit<ComponentProps<typeof GlassSurface>, "tint" | "tintColor">) {
   const glass = useGlassStyle(0.15);
