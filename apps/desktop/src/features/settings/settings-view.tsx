@@ -4,11 +4,18 @@ import { ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useId, useState } from "react";
 import { GlassPanel } from "@/components/layout/glass-panel";
+import {
+  centerSeamStyle,
+  OUTER_RADIUS,
+  SEAM_BLEED,
+  seamBleedStyle,
+  sidePanelSeamStyle,
+  sideShellClass,
+} from "@/components/layout/seam";
 import { WindowTitleBar } from "@/components/layout/window-controls";
-import { GlassButton } from "@/components/ui/glass-button";
-import { GlassSlider } from "@/components/ui/glass-slider";
-import { GlassSwitch } from "@/components/ui/glass-switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/glass-tabs";
+import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { type ThemeMode, useAppearanceStore } from "@/stores/appearance-store";
@@ -22,7 +29,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-2">
       <h3 className="px-1 text-xs font-medium text-muted">{title}</h3>
-      <div className="divide-y divide-border rounded-2xl bg-surface/80 ring-1 ring-border">
+      <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
         {children}
       </div>
     </section>
@@ -82,7 +89,7 @@ function GeneralSettings() {
         <Row label={t.glass} hint={t.glassHint}>
           <div className="flex items-center gap-3 text-xs text-muted">
             <span>{t.glassClear}</span>
-            <GlassSlider
+            <Slider
               ariaLabel={t.glass}
               min={0}
               max={100}
@@ -98,15 +105,15 @@ function GeneralSettings() {
       </Section>
       <Section title={t.startup}>
         <Row label={t.reopenWorkspace} hint={t.pendingSettingsHint}>
-          <GlassSwitch ariaLabel={t.reopenWorkspace} checked={pending.reopen} disabled />
+          <Switch ariaLabel={t.reopenWorkspace} checked={pending.reopen} disabled />
         </Row>
         <Row label={t.minimizeToTray} hint={t.pendingSettingsHint}>
-          <GlassSwitch ariaLabel={t.minimizeToTray} checked={pending.tray} disabled />
+          <Switch ariaLabel={t.minimizeToTray} checked={pending.tray} disabled />
         </Row>
       </Section>
       <Section title={t.notifications}>
         <Row label={t.notifyEnabled} hint={t.pendingSettingsHint}>
-          <GlassSwitch ariaLabel={t.notifyEnabled} checked={pending.notify} disabled />
+          <Switch ariaLabel={t.notifyEnabled} checked={pending.notify} disabled />
         </Row>
       </Section>
     </div>
@@ -124,8 +131,10 @@ function Placeholder({ group }: { group: Exclude<SettingsGroup, "general"> }) {
   );
 }
 
-// 设置（第 18 章）：左侧玻璃导航列出全部分组，右侧实色纸面显示内容。
-// 低保真阶段只实现"通用"中的外观、启动与通知，其余分组列出将提供的设置项。
+const NAV_WIDTH = 232;
+
+// 设置（第 18 章）：与主界面同样的吸附样式——左侧导航与右侧内容是贴合的两块液态玻璃，
+// 接缝处直角 + 平滑凹口、无缝隙。低保真阶段只实现"通用"中的外观、启动与通知，其余分组列出将提供的设置项。
 export function SettingsView() {
   const router = useRouter();
   const [group, setGroup] = useState<SettingsGroup>("general");
@@ -134,41 +143,58 @@ export function SettingsView() {
     <div className="flex h-screen min-h-[640px] min-w-[960px] flex-col overflow-hidden px-2 pb-2 text-fg">
       {/* 主窗口没有系统标题栏：顶部细条可拖动窗口，窗口按钮贴在右上角（浏览器预览中只留上边距） */}
       <WindowTitleBar className="-mx-2 mb-1" />
-      <div className="flex min-h-0 flex-1 gap-2">
-        <GlassPanel className="w-[232px] shrink-0">
-          <nav aria-label={t.title} className="flex h-full flex-col gap-3 p-3">
-            <div className="flex items-center gap-2">
-              <GlassButton size={30} aria-label={t.back} onClick={() => router.push("/")}>
-                <ChevronLeft aria-hidden size={16} />
-              </GlassButton>
-              <h1 className="text-sm font-semibold">{t.title}</h1>
-            </div>
-            <ul className="scroll-thin flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
-              {GROUPS.map((g) => (
-                <li key={g}>
-                  <button
-                    type="button"
-                    aria-current={g === group ? "page" : undefined}
-                    onClick={() => setGroup(g)}
-                    className={cn(
-                      "w-full rounded-lg px-3 py-1.5 text-left text-sm hover:bg-hover",
-                      g === group && "bg-accent text-white hover:bg-accent",
-                    )}
-                  >
-                    {t.groups[g]}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </nav>
-        </GlassPanel>
+      <div className="flex min-h-0 flex-1">
+        <div className={sideShellClass} style={{ width: NAV_WIDTH, ...sidePanelSeamStyle("left") }}>
+          <GlassPanel className="shrink-0 shadow-none" style={seamBleedStyle("left", NAV_WIDTH)}>
+            <nav aria-label={t.title} className="flex h-full flex-col gap-3 p-3">
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  aria-label={t.back}
+                  onClick={() => router.push("/")}
+                  className="inline-flex size-8 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-fg"
+                >
+                  <ChevronLeft aria-hidden size={18} />
+                </button>
+                <h1 className="text-sm font-semibold">{t.title}</h1>
+              </div>
+              <ul className="scroll-thin flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+                {GROUPS.map((g) => (
+                  <li key={g}>
+                    <button
+                      type="button"
+                      aria-current={g === group ? "page" : undefined}
+                      onClick={() => setGroup(g)}
+                      className={cn(
+                        "w-full rounded-xl px-3 py-[7px] text-left text-sm transition-colors hover:bg-hover",
+                        g === group && "glass-drop font-medium hover:bg-transparent",
+                      )}
+                    >
+                      {t.groups[g]}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </nav>
+          </GlassPanel>
+        </div>
         <main
           aria-label={t.groups[group]}
-          className="scroll-thin min-w-0 flex-1 overflow-y-auto rounded-[22px] bg-[var(--paper)] ring-1 ring-border"
+          className="seam-mask relative isolate flex min-w-0 flex-1 flex-col overflow-hidden"
+          style={centerSeamStyle(true, false)}
         >
-          <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-8">
-            <h2 className="font-serif text-2xl font-medium tracking-tight">{t.groups[group]}</h2>
-            {group === "general" ? <GeneralSettings /> : <Placeholder group={group} />}
+          {/* 与导航同款液态玻璃；接缝一侧外扩 SEAM_BLEED 由外层裁掉，接缝不露高光线 */}
+          <GlassPanel
+            aria-hidden
+            radius={OUTER_RADIUS}
+            className="-z-10 pointer-events-none absolute inset-y-0 shadow-none"
+            style={{ position: "absolute", left: -SEAM_BLEED, right: 0 }}
+          />
+          <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+            <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-8">
+              <h2 className="font-serif text-2xl font-medium tracking-tight">{t.groups[group]}</h2>
+              {group === "general" ? <GeneralSettings /> : <Placeholder group={group} />}
+            </div>
           </div>
         </main>
       </div>

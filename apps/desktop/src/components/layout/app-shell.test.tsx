@@ -58,9 +58,19 @@ describe("主界面外壳", () => {
     expect(screen.queryByText(t.changesEmpty)).toBeNull();
   });
 
-  it("左栏设置按钮打开设置页", () => {
+  it("左栏设置按钮先展开菜单，选“设置”才打开设置页", async () => {
     render(<AppShell />);
-    fireEvent.click(screen.getByRole("button", { name: strings.layout.settings }));
+    const trigger = screen.getByRole("button", { name: strings.layout.settings });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    expect(useRouter().push).not.toHaveBeenCalledWith("/settings/");
+    for (const label of [
+      strings.layout.menuAccount,
+      strings.layout.menuUsage,
+      strings.layout.menuCapabilities,
+    ]) {
+      expect(await screen.findByRole("menuitem", { name: new RegExp(label) })).toBeTruthy();
+    }
+    fireEvent.click(screen.getByRole("menuitem", { name: strings.layout.menuSettings }));
     expect(useRouter().push).toHaveBeenCalledWith("/settings/");
   });
 

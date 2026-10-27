@@ -16,20 +16,24 @@ import {
   useRef,
   useState,
 } from "react";
-import { MotionValue, prefersReducedMotion, SpringDriver } from "@/components/ui/glass-motion";
+import { prefersReducedMotion } from "@/components/ui/glass-motion";
 import { cn } from "@/lib/utils";
 
 /** 约 0.25s 到位、带一点回弹 */
 const SLIDE_SPRING = { stiffness: 520, damping: 34, restDelta: 0.05, restSpeed: 2 };
-/** 鼓起/回落 */
-const LIFT_SPRING = { stiffness: 600, damping: 26, restDelta: 0.001, restSpeed: 0.01 };
+/** 鼓起包络：鼓大、保持、回落（毫秒） */
+const LIFT_IN_MS = 70;
+const LIFT_HOLD_MS = 110;
+const LIFT_OUT_MS = 220;
+const easeOut = (t: number) => 1 - (1 - t) ** 3;
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2);
 /** 速度到形变的换算与上限 */
 const STRETCH_PER_SPEED = 1 / 5000;
 const STRETCH_MAX = 0.22;
-const LIFT_SCALE = 0.1;
+const LIFT_SCALE = 0.32;
 /** 透镜放大倍率与边缘弯折强度 */
-const LENS_ZOOM = 0.22;
-const LENS_EDGE = 0.35;
+const LENS_ZOOM = 0.14;
+const LENS_EDGE = 0.1;
 
 const lensMapCache = new Map<string, string>();
 
@@ -102,40 +106,56 @@ function TabsList({ className, children, ...props }: ComponentProps<typeof TabsP
   const filterId = `${useId().replace(/[^a-zA-Z0-9-]/g, "")}-lens`;
   const lens = box && typeof document !== "undefined" ? lensMap(box.w, box.h) : null;
 
-  const x = useRef(new MotionValue(0));
-  const lift = useRef(new MotionValue(0));
-  const target = useRef({ x: 0, lift: 0 });
-  const ready = useRef(false);
-  const frame = useRef(0);
+  // 动画状态：x 用弹簧（半隐式欧拉，自带速度）；鼓起是按时间的包络（快速鼓大 → 保持 → 回落）
+  const anim = useRef({ x: 0, v: 0, target: 0, liftStart: -1, raf: 0, last: 0 });
 
-  const apply = useCallback(() => {
-    frame.current = 0;
-    const v = x.current.getVelocity();
-    const stretch = Math.min(STRETCH_MAX, Math.abs(v) * STRETCH_PER_SPEED);
-    const l = Math.max(0, lift.current.get());
-    const sx = 1 + stretch + l * LIFT_SCALE;
-    const sy = 1 - stretch * 0.45 + l * LIFT_SCALE;
-    const transform = `translate3d(${x.current.get()}px,0,0) scale(${sx},${sy})`;
+  const apply = useCallback((lift: number) => {
+    const a = anim.current;
+    const stretch = Math.min(STRETCH_MAX, Math.abs(a.v) * STRETCH_PER_SPEED);
+    const sx = 1 + stretch + lift * LIFT_SCALE;
+    const sy = 1 - stretch * 0.45 + lift * LIFT_SCALE;
+    const transform = `translate3d(${a.x}px,0,0) scale(${sx},${sy})`;
     if (dropRef.current) dropRef.current.style.transform = transform;
     if (lensRef.current) {
       lensRef.current.style.transform = transform;
-      // 静止时透镜隐去，文字清晰；滑动越快越明显
-      lensRef.current.style.opacity = String(Math.min(1, stretch / (STRETCH_MAX * 0.5) + l));
+      // 静止时透镜隐去，文字清晰；滑动、鼓起时显现
+      lensRef.current.style.opacity = String(Math.min(1, stretch / (STRETCH_MAX * 0.5) + lift));
     }
   }, []);
 
-  const schedule = useCallback(() => {
-    if (!frame.current) frame.current = requestAnimationFrame(apply);
-  }, [apply]);
+  const tick = useCallback(
+    (now: number) => {
+      const a = anim.current;
+      const dt = Math.min((now - a.last) / 1000, 1 / 30);
+      a.last = now;
+      const accel = -SLIDE_SPRING.stiffness * (a.x - a.target) - SLIDE_SPRING.damping * a.v;
+      a.v += accel * dt;
+      a.x += a.v * dt;
+      const t = Math.max(0, now - a.liftStart);
+      const lift =
+        t < LIFT_IN_MS
+          ? easeOut(t / LIFT_IN_MS)
+          : t < LIFT_IN_MS + LIFT_HOLD_MS
+            ? 1
+            : Math.max(0, 1 - easeInOut((t - LIFT_IN_MS - LIFT_HOLD_MS) / LIFT_OUT_MS));
+      const settled =
+        Math.abs(a.x - a.target) < SLIDE_SPRING.restDelta &&
+        Math.abs(a.v) < SLIDE_SPRING.restSpeed &&
+        lift === 0;
+      if (settled) {
+        a.x = a.target;
+        a.v = 0;
+        a.raf = 0;
+        apply(0);
+        return;
+      }
+      apply(lift);
+      a.raf = requestAnimationFrame(tick);
+    },
+    [apply],
+  );
 
-  const drivers = useRef<{ x: SpringDriver; lift: SpringDriver } | null>(null);
-  if (!drivers.current) {
-    drivers.current = {
-      x: new SpringDriver(x.current, SLIDE_SPRING, () => target.current.x),
-      lift: new SpringDriver(lift.current, LIFT_SPRING, () => target.current.lift),
-    };
-  }
-
+  const ready = useRef(false);
   // 用 offset* 取选中项在轨道内边距盒中的位置，和绝对定位的参照系一致，指示器正好居中压在选中项上
   const measure = useCallback(() => {
     const list = listRef.current;
@@ -150,31 +170,30 @@ function TabsList({ className, children, ...props }: ComponentProps<typeof TabsP
     setBox((b) =>
       b && b.y === next.y && b.w === next.w && b.h === next.h ? b : { ...next, x: 0 },
     );
-    target.current.x = next.x;
-    const d = drivers.current;
-    if (!ready.current || prefersReducedMotion() || !d) {
+    const a = anim.current;
+    a.target = next.x;
+    if (!ready.current || prefersReducedMotion()) {
       ready.current = true;
-      x.current.jump(next.x);
-      apply();
+      cancelAnimationFrame(a.raf);
+      a.raf = 0;
+      a.x = next.x;
+      a.v = 0;
+      apply(0);
       return;
     }
-    if (Math.abs(x.current.get() - next.x) < 0.5) return;
-    // 出发时鼓起，滑行途中回落
-    target.current.lift = 1;
-    d.lift.start();
-    window.setTimeout(() => {
-      target.current.lift = 0;
-      d.lift.start();
-    }, 90);
-    d.x.start();
-  }, [apply]);
+    if (Math.abs(a.x - next.x) < 0.5) return;
+    a.liftStart = performance.now();
+    if (!a.raf) {
+      a.last = performance.now();
+      a.raf = requestAnimationFrame(tick);
+    }
+  }, [apply, tick]);
 
   useLayoutEffect(() => {
     measure();
   }, [measure]);
 
   useEffect(() => {
-    const subs = [x.current.on(schedule), lift.current.on(schedule)];
     const list = listRef.current;
     const mo = new MutationObserver(measure);
     const ro = new ResizeObserver(() => {
@@ -185,15 +204,13 @@ function TabsList({ className, children, ...props }: ComponentProps<typeof TabsP
       mo.observe(list, { subtree: true, attributes: true, attributeFilter: ["data-state"] });
       ro.observe(list);
     }
+    const a = anim.current;
     return () => {
-      for (const off of subs) off();
       mo.disconnect();
       ro.disconnect();
-      cancelAnimationFrame(frame.current);
-      drivers.current?.x.stop();
-      drivers.current?.lift.stop();
+      cancelAnimationFrame(a.raf);
     };
-  }, [measure, schedule]);
+  }, [measure]);
 
   return (
     <TabsPrimitive.List
@@ -212,21 +229,14 @@ function TabsList({ className, children, ...props }: ComponentProps<typeof TabsP
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 z-0 rounded-full will-change-transform",
-            // 亮面玻璃：上沿高光、内描边、下沿一点暗边和柔和投影，加一道斜向光泽
-            "bg-[linear-gradient(160deg,rgb(255_255_255/0.95),rgb(255_255_255/0.7)_55%,rgb(255_255_255/0.85))]",
-            "shadow-[inset_0_1px_0.5px_rgb(255_255_255/1),inset_0_-1px_1px_rgb(0_0_0/0.06),inset_0_0_0_0.5px_rgb(255_255_255/0.7),0_1px_2px_rgb(0_0_0/0.1),0_4px_14px_-4px_rgb(0_0_0/0.18)]",
-            "dark:bg-[linear-gradient(160deg,rgb(255_255_255/0.26),rgb(255_255_255/0.12)_55%,rgb(255_255_255/0.2))]",
-            "dark:shadow-[inset_0_1px_0.5px_rgb(255_255_255/0.35),inset_0_-1px_1px_rgb(0_0_0/0.3),inset_0_0_0_0.5px_rgb(255_255_255/0.12),0_1px_2px_rgb(0_0_0/0.4),0_4px_14px_-4px_rgb(0_0_0/0.5)]",
+            "glass-drop pointer-events-none absolute left-0 z-0 rounded-full will-change-transform",
           )}
           ref={dropRef}
           style={{
             top: box.y,
             width: box.w,
             height: box.h,
-            transform: `translate3d(${x.current.get()}px,0,0)`,
-            backdropFilter: "blur(2px) saturate(1.8)",
-            WebkitBackdropFilter: "blur(2px) saturate(1.8)",
+            transform: `translate3d(${anim.current.x}px,0,0)`,
           }}
         />
       )}
@@ -273,7 +283,7 @@ function TabsList({ className, children, ...props }: ComponentProps<typeof TabsP
               width: box.w,
               height: box.h,
               opacity: 0,
-              transform: `translate3d(${x.current.get()}px,0,0)`,
+              transform: `translate3d(${anim.current.x}px,0,0)`,
               backdropFilter: `url(#${filterId})`,
               WebkitBackdropFilter: `url(#${filterId})`,
               boxShadow:

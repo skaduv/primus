@@ -29,7 +29,7 @@ import {
   SHELL_PADDING,
 } from "./panel-layout";
 import { ResizeHandle } from "./resize-handle";
-import { OUTER_RADIUS, SEAM_BLEED, SEAM_NOTCH } from "./seam";
+import { centerSeamStyle, OUTER_RADIUS, SEAM_BLEED } from "./seam";
 import { SessionsSidebar } from "./sessions-sidebar";
 import { useViewportSize } from "./use-viewport-size";
 import { WindowTitleBar } from "./window-controls";
@@ -202,16 +202,10 @@ export function snapEase(t: number): number {
   return bez(y1, y2, (lo + hi) / 2);
 }
 
-/** 中央纸面：贴着侧栏的一边变直角并刻出凹口，未贴侧栏的一边保持外侧圆角；随侧栏同步过渡 */
+/** 中央纸面：接缝形状见 centerSeamStyle；随侧栏同步过渡 */
 function seamStyle(leftOpen: boolean, rightOpen: boolean, animate: boolean): CSSProperties {
-  const l = leftOpen ? 0 : OUTER_RADIUS;
-  const r = rightOpen ? 0 : OUTER_RADIUS;
   return {
-    borderRadius: `${l}px ${r}px ${r}px ${l}px`,
-    ["--nl" as string]: `${leftOpen ? SEAM_NOTCH : 0}px`,
-    ["--nr" as string]: `${rightOpen ? SEAM_NOTCH : 0}px`,
-    // 边缘高光由玻璃自身的描边提供（接缝侧已被裁掉）；投影只往下、横向几乎不外溢，不会落到相邻栏上形成接缝暗带
-    boxShadow: "0 14px 24px -18px rgb(0 0 0 / 0.35)",
+    ...centerSeamStyle(leftOpen, rightOpen),
     // 窗口模式下贴合/分离在动画端点瞬间切换（侧栏宽度为 0 时），过程中圆角、凹口、描边都不变
     transition: animate ? SEAM_TRANSITION : undefined,
   };

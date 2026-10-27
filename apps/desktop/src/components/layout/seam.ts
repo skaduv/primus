@@ -41,3 +41,15 @@ export function seamBleedStyle(side: "left" | "right", width: number): CSSProper
 /** 侧栏外层：裁剪 + 凹口 + 投影（玻璃自身投影被裁掉，改由这里画） */
 export const sideShellClass =
   "seam-mask flex shrink-0 overflow-hidden shadow-[0_14px_24px_-18px_rgb(0_0_0/0.35)]";
+
+/** 中央面板的接缝形状：贴着侧栏的一边直角 + 凹口，另一边保持外侧圆角；投影只往下，不横向外溢到相邻栏 */
+export function centerSeamStyle(leftAttached: boolean, rightAttached: boolean): CSSProperties {
+  const l = leftAttached ? 0 : OUTER_RADIUS;
+  const r = rightAttached ? 0 : OUTER_RADIUS;
+  return {
+    borderRadius: `${l}px ${r}px ${r}px ${l}px`,
+    ["--nl" as string]: `${leftAttached ? SEAM_NOTCH : 0}px`,
+    ["--nr" as string]: `${rightAttached ? SEAM_NOTCH : 0}px`,
+    boxShadow: "0 14px 24px -18px rgb(0 0 0 / 0.35)",
+  };
+}

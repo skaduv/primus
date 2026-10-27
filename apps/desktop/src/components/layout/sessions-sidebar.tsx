@@ -1,19 +1,24 @@
 "use client";
 
-import { ChevronsUpDown, FolderOpen, MessageSquarePlus, Search, Settings } from "lucide-react";
+import {
+  BarChart3,
+  ChevronsUpDown,
+  FolderOpen,
+  MessageSquarePlus,
+  Puzzle,
+  Search,
+  Settings,
+  UserRound,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { GlassButton } from "@/components/ui/glass-button";
 import {
   GlassPopover,
   GlassPopoverContent,
   GlassPopoverItem,
+  GlassPopoverSeparator,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
-import {
-  GlassTooltip,
-  GlassTooltipContent,
-  GlassTooltipTrigger,
-} from "@/components/ui/glass-tooltip";
 import { strings } from "@/lib/strings";
 import { GlassPanel, glassButtonClass, toolbarButtonClass, useGlassStyle } from "./glass-panel";
 import { seamBleedStyle, sidePanelSeamStyle, sideShellClass } from "./seam";
@@ -72,21 +77,44 @@ export function SessionsSidebar({ width }: { width: number }) {
             <p className="text-xs text-muted/80">{t.noSessionsHint}</p>
           </div>
 
+          {/* 设置入口：先展开菜单（账户 · 用量 · 能力中心 · 设置），选"设置"才进入设置页 */}
           <div className="flex items-center">
-            <GlassTooltip>
-              <GlassTooltipTrigger asChild>
+            <GlassPopover>
+              <GlassPopoverTrigger asChild>
                 <GlassButton
                   size={32}
                   {...glass}
                   aria-label={t.settings}
                   className={toolbarButtonClass}
-                  onClick={() => router.push("/settings/")}
                 >
                   <Settings aria-hidden size={16} />
                 </GlassButton>
-              </GlassTooltipTrigger>
-              <GlassTooltipContent side="right">{t.settings}</GlassTooltipContent>
-            </GlassTooltip>
+              </GlassPopoverTrigger>
+              <GlassPopoverContent side="top" sideOffset={8} tint={0.75}>
+                <GlassPopoverItem
+                  icon={<UserRound />}
+                  label={t.menuAccount}
+                  sublabel={t.menuAccountHint}
+                  disabled
+                />
+                <GlassPopoverItem
+                  icon={<BarChart3 />}
+                  label={t.menuUsage}
+                  onSelect={() => router.push("/usage/")}
+                />
+                <GlassPopoverItem
+                  icon={<Puzzle />}
+                  label={t.menuCapabilities}
+                  onSelect={() => router.push("/capabilities/")}
+                />
+                <GlassPopoverSeparator />
+                <GlassPopoverItem
+                  icon={<Settings />}
+                  label={t.menuSettings}
+                  onSelect={() => router.push("/settings/")}
+                />
+              </GlassPopoverContent>
+            </GlassPopover>
           </div>
         </nav>
       </GlassPanel>
