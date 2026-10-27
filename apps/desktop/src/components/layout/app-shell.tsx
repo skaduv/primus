@@ -1,8 +1,16 @@
 "use client";
 
 import { PanelLeft, PanelRight } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { ChatPanel } from "@/features/chat/chat-panel";
+import { getWindowControls, type WindowControls } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
@@ -18,6 +26,7 @@ import {
   resolvePanelLayout,
 } from "./panel-layout";
 import { ResizeHandle } from "./resize-handle";
+import { OUTER_RADIUS, SEAM_NOTCH } from "./seam";
 import { SessionsSidebar } from "./sessions-sidebar";
 import { useViewportSize } from "./use-viewport-size";
 import { WindowTitleBar } from "./window-controls";
@@ -32,13 +41,17 @@ export function AppShell() {
   const s = useAppStore();
   const viewport = useViewportSize();
   const layout = resolvePanelLayout(viewport, {
-    // 中央纸面宽度不随左右栏开关变化：始终按两栏都展开来分配，收起只是把侧栏缩回接缝
-    leftOpen: true,
+    leftOpen: s.sessionsPanelOpen,
     leftWidth: s.sessionsPanelWidth,
-    rightOpen: true,
+    rightOpen: s.inspectorPanelOpen,
     rightWidth: s.inspectorPanelWidth,
     drawerOpen: s.bottomDrawerOpen,
     drawerHeight: s.bottomDrawerHeight,
+  });
+
+  const center = useStableCenter(s.sessionsPanelOpen, s.inspectorPanelOpen, {
+    left: s.sessionsPanelWidth,
+    right: s.inspectorPanelWidth,
   });
 
   return (
@@ -50,7 +63,10 @@ export function AppShell() {
       <WindowTitleBar className="-mx-2 h-9" />
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex min-h-0 flex-1" style={{ minHeight: CENTER_MIN_HEIGHT }}>
+        <div
+          className="flex min-h-0 flex-1 overflow-hidden"
+          style={{ minHeight: CENTER_MIN_HEIGHT }}
+        >
           <SnapSlot side="left" open={s.sessionsPanelOpen} size={layout.left.size}>
             {(w) => <SessionsSidebar width={w} />}
           </SnapSlot>
@@ -68,11 +84,16 @@ export function AppShell() {
             />
           )}
           <main
+            ref={center.ref}
             aria-label={t.timeline}
-            className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--paper)] shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)] ring-1 ring-border transition-[border-radius] duration-200"
+            className={cn(
+              "seam-mask relative flex min-h-0 flex-col overflow-hidden bg-[var(--paper)] shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)] ring-1 ring-border",
+              center.lockedWidth == null ? "flex-1" : "flex-none",
+            )}
             style={{
               minWidth: CENTER_MIN_WIDTH,
-              borderRadius: seamRadius(s.sessionsPanelOpen, s.inspectorPanelOpen),
+              width: center.lockedWidth ?? undefined,
+              ...seamStyle(s.sessionsPanelOpen, s.inspectorPanelOpen),
             }}
           >
             {/* 左右栏开关：对称贴在纸面左上角、右上角（圆角与纸面同心） */}
@@ -130,18 +151,90 @@ export function AppShell() {
 /** 接缝上的拖动条：8px 命中区域用负边距叠在两块面板之间，不占宽度 */
 const seamHandleClass = "-mx-1 z-20";
 
-/** 外侧圆角与接缝处的小圆角：两块面板贴合处只留一点圆角，读起来是融在一起的一整块 */
-export const OUTER_RADIUS = 16;
-export const SEAM_RADIUS = 6;
-function seamRadius(leftOpen: boolean, rightOpen: boolean): string {
-  const l = leftOpen ? SEAM_RADIUS : OUTER_RADIUS;
-  const r = rightOpen ? SEAM_RADIUS : OUTER_RADIUS;
-  return `${l}px ${r}px ${r}px ${l}px`;
-}
-
-/** 吸附动画：快起慢停，像磁吸一样贴到中央纸面上 */
+/** 吸附动画：快起慢停，像磁吸一样贴到中央纸面上；圆角、凹口、侧栏宽度、窗口宽度都用同一条曲线同步 */
 export const SNAP_MS = 320;
 const SNAP_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
+const SEAM_TRANSITION = `border-radius ${SNAP_MS}ms ${SNAP_EASE}, --nl ${SNAP_MS}ms ${SNAP_EASE}, --nr ${SNAP_MS}ms ${SNAP_EASE}`;
+
+/** cubic-bezier(0.22, 1, 0.36, 1) 的 JS 版本，供窗口宽度动画与 CSS 过渡同步 */
+export function snapEase(t: number): number {
+  const [x1, y1, x2, y2] = [0.22, 1, 0.36, 1];
+  const bez = (a: number, b: number, u: number) =>
+    3 * a * u * (1 - u) ** 2 + 3 * b * u * u * (1 - u) + u ** 3;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (bez(x1, x2, mid) < t) lo = mid;
+    else hi = mid;
+  }
+  return bez(y1, y2, (lo + hi) / 2);
+}
+
+/** 中央纸面：贴着侧栏的一边变直角并刻出凹口，未贴侧栏的一边保持外侧圆角；随侧栏同步过渡 */
+function seamStyle(leftOpen: boolean, rightOpen: boolean): CSSProperties {
+  const l = leftOpen ? 0 : OUTER_RADIUS;
+  const r = rightOpen ? 0 : OUTER_RADIUS;
+  return {
+    borderRadius: `${l}px ${r}px ${r}px ${l}px`,
+    ["--nl" as string]: `${leftOpen ? SEAM_NOTCH : 0}px`,
+    ["--nr" as string]: `${rightOpen ? SEAM_NOTCH : 0}px`,
+    transition: SEAM_TRANSITION,
+  };
+}
+
+/**
+ * 中央界面不变宽：开关侧栏时把窗口向该侧加宽/收窄同样的宽度（左栏同时移动窗口左边缘），
+ * 动画期间锁住中央像素宽度，避免窗口尺寸 IPC 稍有滞后时中央被挤压。最大化或浏览器预览下窗口不能变，
+ * 退回到中央随侧栏伸缩。
+ */
+function useStableCenter(
+  leftOpen: boolean,
+  rightOpen: boolean,
+  widths: { left: number; right: number },
+) {
+  const ref = useRef<HTMLElement>(null);
+  const controls = useRef<WindowControls | undefined>(undefined);
+  const maximized = useRef(false);
+  const prev = useRef({ left: leftOpen, right: rightOpen });
+  const [lockedWidth, setLockedWidth] = useState<number | null>(null);
+
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let alive = true;
+    void getWindowControls().then(async (c) => {
+      if (!alive || !c) return;
+      controls.current = c;
+      off = await c.onMaximizedChange((m) => {
+        maximized.current = m;
+      });
+    });
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const p = prev.current;
+    prev.current = { left: leftOpen, right: rightOpen };
+    const c = controls.current;
+    if (!c || maximized.current) return;
+    const changes: { side: "left" | "right"; delta: number }[] = [];
+    if (p.left !== leftOpen)
+      changes.push({ side: "left", delta: leftOpen ? widths.left : -widths.left });
+    if (p.right !== rightOpen)
+      changes.push({ side: "right", delta: rightOpen ? widths.right : -widths.right });
+    if (changes.length === 0) return;
+    const w = ref.current?.offsetWidth;
+    if (w) setLockedWidth(w);
+    for (const ch of changes) void c.resizeBySide(ch.side, ch.delta, SNAP_MS, snapEase);
+    const timer = setTimeout(() => setLockedWidth(null), SNAP_MS + 80);
+    return () => clearTimeout(timer);
+  }, [leftOpen, rightOpen, widths.left, widths.right]);
+
+  return { ref, lockedWidth };
+}
 
 /**
  * 侧栏插槽：展开时宽度从 0 弹到目标宽度，面板内容贴着接缝一侧，看起来是从中央纸面背后滑出并吸附；
@@ -190,28 +283,22 @@ function SnapSlot({
     };
   }, [open]);
 
+  if (!mounted) return null;
   const width = last.current;
-  // 外层始终占住侧栏宽度（中央不变宽），内层贴着接缝从 0 向外展开到目标宽度
+  // 宽度从 0 展开到目标宽度（或反向收回），面板内容贴着接缝一侧，像从中央纸面两侧向外长出来
   return (
     <div
-      className={cn("flex min-h-0 shrink-0", side === "left" ? "justify-end" : "justify-start")}
-      style={{ width: size || width }}
-    >
-      {mounted && (
-        <div
-          className={cn(
-            "flex min-h-0 shrink-0",
-            side === "left" ? "justify-end" : "justify-start",
-            animating && "overflow-hidden",
-          )}
-          style={{
-            width: shown ? width : 0,
-            transition: animating ? `width ${SNAP_MS}ms ${SNAP_EASE}` : undefined,
-          }}
-        >
-          {children(width)}
-        </div>
+      className={cn(
+        "flex min-h-0 shrink-0",
+        side === "left" ? "justify-end" : "justify-start",
+        animating && "overflow-hidden",
       )}
+      style={{
+        width: shown ? size || width : 0,
+        transition: animating ? `width ${SNAP_MS}ms ${SNAP_EASE}` : undefined,
+      }}
+    >
+      {children(size || width)}
     </div>
   );
 }

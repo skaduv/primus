@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/glass-tooltip";
 import { strings } from "@/lib/strings";
 import { GlassPanel, glassButtonClass, toolbarButtonClass, useGlassStyle } from "./glass-panel";
+import { sidePanelSeamStyle } from "./seam";
 
 const t = strings.layout;
 
@@ -26,7 +27,7 @@ export function SessionsSidebar({ width }: { width: number }) {
   const glass = useGlassStyle();
 
   return (
-    <GlassPanel className="shrink-0" style={{ width, borderRadius: "16px 6px 6px 16px" }}>
+    <GlassPanel className="seam-mask shrink-0" style={{ width, ...sidePanelSeamStyle("left") }}>
       <nav aria-label={t.sessions} className="flex h-full flex-col gap-3 p-3">
         <GlassPopover>
           <GlassPopoverTrigger asChild>

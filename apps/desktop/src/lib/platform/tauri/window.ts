@@ -1,3 +1,4 @@
+import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowControls } from "../window";
 
@@ -18,6 +19,27 @@ export function createTauriWindowControls(): WindowControls {
           last = now;
           listener(now);
         }
+      });
+    },
+    resizeBySide: async (side, delta, durationMs, ease) => {
+      if (await win.isMaximized()) return false;
+      const [scale, pos, size] = await Promise.all([
+        win.scaleFactor(),
+        win.outerPosition(),
+        win.outerSize(),
+      ]);
+      const d = Math.round(delta * scale);
+      const start = performance.now();
+      return new Promise<boolean>((resolve) => {
+        const step = (now: number) => {
+          const p = Math.min(1, (now - start) / durationMs);
+          const dw = Math.round(d * ease(p));
+          if (side === "left") void win.setPosition(new PhysicalPosition(pos.x - dw, pos.y));
+          void win.setSize(new PhysicalSize(size.width + dw, size.height));
+          if (p < 1) requestAnimationFrame(step);
+          else resolve(true);
+        };
+        requestAnimationFrame(step);
       });
     },
   };

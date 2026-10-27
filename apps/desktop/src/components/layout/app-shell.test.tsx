@@ -126,3 +126,18 @@ describe("主界面外壳", () => {
     });
   });
 });
+
+describe("snapEase", () => {
+  it("与 CSS 曲线一致：0→0、1→1、单调、快起慢停", async () => {
+    const { snapEase } = await import("./app-shell");
+    expect(snapEase(0)).toBeCloseTo(0, 3);
+    expect(snapEase(1)).toBeCloseTo(1, 3);
+    expect(snapEase(0.25)).toBeGreaterThan(0.5);
+    let last = 0;
+    for (let i = 1; i <= 20; i++) {
+      const v = snapEase(i / 20);
+      expect(v).toBeGreaterThanOrEqual(last);
+      last = v;
+    }
+  });
+});
