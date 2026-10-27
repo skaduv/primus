@@ -6,7 +6,7 @@
 
 /*
  * 设计令牌：macOS 27 风格的 Liquid Glass 低保真方案。
- * 窗口底层是一张柔和的"壁纸"，侧栏、工具栏、输入框等浮在上面的玻璃层折射它；
+ * 窗口底层是纯色底（不用渐变），侧栏、工具栏、输入框等浮在上面的玻璃层折射它；
  * 正文区域保持实色，保证长时间线的可读性和滚动性能。
  */
 @theme {
@@ -21,11 +21,8 @@
 }
 
 :root {
-  --wallpaper:
-    radial-gradient(60% 70% at 8% 12%, rgb(255 196 222 / 0.75), transparent 70%),
-    radial-gradient(55% 60% at 92% 8%, rgb(170 210 255 / 0.85), transparent 70%),
-    radial-gradient(70% 70% at 70% 100%, rgb(196 182 255 / 0.7), transparent 70%),
-    radial-gradient(50% 50% at 15% 95%, rgb(170 240 220 / 0.6), transparent 70%), #f4f3f8;
+  /* 纯色底，不用渐变 */
+  --wallpaper: #f4f3f8;
   /* 时间线所在的"纸面"：几乎不透明，只透出一点壁纸色 */
   --paper: rgb(255 255 255 / 0.82);
   color-scheme: light;
@@ -39,11 +36,8 @@
   --color-hover: rgb(255 255 255 / 0.08);
   --color-accent: #0a84ff;
   --color-danger: #ff453a;
-  --wallpaper:
-    radial-gradient(60% 70% at 8% 12%, rgb(120 40 90 / 0.65), transparent 70%),
-    radial-gradient(55% 60% at 92% 8%, rgb(30 70 140 / 0.75), transparent 70%),
-    radial-gradient(70% 70% at 70% 100%, rgb(70 50 150 / 0.6), transparent 70%),
-    radial-gradient(50% 50% at 15% 95%, rgb(20 100 90 / 0.5), transparent 70%), #101014;
+  /* 纯色底，不用渐变 */
+  --wallpaper: #101014;
   --paper: rgb(28 28 30 / 0.84);
   color-scheme: dark;
 }
