@@ -76,6 +76,7 @@ jobs:
           $out = "$env:RUNNER_TEMP/preview"
           $sha = $env:COMMIT_SHA.Substring(0, 7)
           $msg = [System.Net.WebUtility]::HtmlEncode(($env:COMMIT_MSG -split "`n")[0])
+          $ref = [System.Net.WebUtility]::HtmlEncode($env:REF_NAME)
           $time = (Get-Date).ToUniversalTime().AddHours(8).ToString("yyyy-MM-dd HH:mm")
           $html = @"
           <!doctype html>
@@ -97,7 +98,7 @@ jobs:
           <body>
           <main>
             <h1>乾元 Primus · Windows 界面预览</h1>
-            <p class="meta">分支 $env:REF_NAME · 提交 $sha · $msg · 构建于 $time（北京时间）· <a href="$env:RUN_URL">构建记录与可运行包下载</a></p>
+            <p class="meta">分支 $ref · 提交 $sha · $msg · 构建于 $time（北京时间）· <a href="$env:RUN_URL">构建记录与可运行包下载</a></p>
             <img src="main.png?v=$sha" alt="Primus 主窗口截图">
             <details><summary>整屏截图</summary><img src="desktop.png?v=$sha" alt="整屏截图"></details>
           </main>
