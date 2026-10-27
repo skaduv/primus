@@ -24,6 +24,7 @@ import {
   MIN_WINDOW,
   RIGHT_PANEL,
   resolvePanelLayout,
+  SHELL_PADDING,
 } from "./panel-layout";
 import { ResizeHandle } from "./resize-handle";
 import { OUTER_RADIUS, SEAM_NOTCH } from "./seam";
@@ -49,7 +50,7 @@ export function AppShell() {
     drawerHeight: s.bottomDrawerHeight,
   });
 
-  const center = useStableCenter(s.sessionsPanelOpen, s.inspectorPanelOpen, {
+  const center = useWindowChoreography(s.sessionsPanelOpen, s.inspectorPanelOpen, {
     left: s.sessionsPanelWidth,
     right: s.inspectorPanelWidth,
   });
@@ -65,9 +66,15 @@ export function AppShell() {
       <div className="flex min-h-0 flex-1 flex-col">
         <div
           className="flex min-h-0 flex-1 overflow-hidden"
-          style={{ minHeight: CENTER_MIN_HEIGHT }}
+          style={{ minHeight: CENTER_MIN_HEIGHT, justifyContent: center.anchor }}
         >
-          <SnapSlot side="left" open={s.sessionsPanelOpen} size={layout.left.size}>
+          <SnapSlot
+            side="left"
+            open={s.sessionsPanelOpen}
+            size={layout.left.size}
+            reserve={center.windowMode}
+            hold={center.hold === "left"}
+          >
             {(w) => <SessionsSidebar width={w} />}
           </SnapSlot>
           {s.sessionsPanelOpen && (
@@ -87,7 +94,7 @@ export function AppShell() {
             ref={center.ref}
             aria-label={t.timeline}
             className={cn(
-              "seam-mask relative flex min-h-0 flex-col overflow-hidden bg-[var(--paper)] shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)] ring-1 ring-border",
+              "seam-mask relative flex min-h-0 flex-col overflow-hidden bg-[var(--paper)]",
               center.lockedWidth == null ? "flex-1" : "flex-none",
             )}
             style={{
@@ -101,12 +108,14 @@ export function AppShell() {
               side="left"
               open={s.sessionsPanelOpen}
               label={s.sessionsPanelOpen ? t.hideSessions : t.showSessions}
+              disabled={center.busy}
               onToggle={() => s.setSessionsPanelOpen(!s.sessionsPanelOpen)}
             />
             <PanelToggle
               side="right"
               open={s.inspectorPanelOpen}
               label={s.inspectorPanelOpen ? t.hideInspector : t.showInspector}
+              disabled={center.busy}
               onToggle={() => s.setInspectorPanelOpen(!s.inspectorPanelOpen)}
             />
             <ChatPanel />
@@ -124,7 +133,13 @@ export function AppShell() {
               className={seamHandleClass}
             />
           )}
-          <SnapSlot side="right" open={s.inspectorPanelOpen} size={layout.right.size}>
+          <SnapSlot
+            side="right"
+            open={s.inspectorPanelOpen}
+            size={layout.right.size}
+            reserve={center.windowMode}
+            hold={center.hold === "right"}
+          >
             {(w) => <InspectorPanel width={w} />}
           </SnapSlot>
         </div>
@@ -179,25 +194,48 @@ function seamStyle(leftOpen: boolean, rightOpen: boolean): CSSProperties {
     borderRadius: `${l}px ${r}px ${r}px ${l}px`,
     ["--nl" as string]: `${leftOpen ? SEAM_NOTCH : 0}px`,
     ["--nr" as string]: `${rightOpen ? SEAM_NOTCH : 0}px`,
+    // 描边只画在不贴侧栏的边上，接缝处不留线
+    boxShadow: [
+      "0 8px 30px -14px rgb(0 0 0 / 0.3)",
+      "inset 0 1px 0 var(--color-border)",
+      "inset 0 -1px 0 var(--color-border)",
+      leftOpen ? null : "inset 1px 0 0 var(--color-border)",
+      rightOpen ? null : "inset -1px 0 0 var(--color-border)",
+    ]
+      .filter(Boolean)
+      .join(", "),
     transition: SEAM_TRANSITION,
   };
 }
 
 /**
- * 中央界面不变宽：开关侧栏时把窗口向该侧加宽/收窄同样的宽度（左栏同时移动窗口左边缘），
- * 动画期间锁住中央像素宽度，避免窗口尺寸 IPC 稍有滞后时中央被挤压。最大化或浏览器预览下窗口不能变，
- * 退回到中央随侧栏伸缩。
+ * 中央界面不变宽：开关侧栏时窗口向该侧伸缩同样宽度。动作严格按先后进行：
+ *   展开：锁住中央像素宽度 → 窗口先向该侧加宽（新空出的地方暂时空着）→ 侧栏从接缝向外长出 → 解锁
+ *   收起：锁住中央 → 侧栏收回接缝 → 窗口再向该侧收窄 → 解锁
+ * 一次开关进行中按钮禁用，避免动画叠加。窗口目标宽度按"记住的中央宽度 + 已开侧栏"计算，
+ * 不累加增量，反复开关不会越来越大；用户手动改窗口或拖动侧栏后重新记住中央宽度。
+ * 最大化或浏览器预览下窗口不能变，退回到中央随侧栏伸缩（windowMode=false）。
  */
-function useStableCenter(
+function useWindowChoreography(
   leftOpen: boolean,
   rightOpen: boolean,
   widths: { left: number; right: number },
 ) {
   const ref = useRef<HTMLElement>(null);
   const controls = useRef<WindowControls | undefined>(undefined);
-  const maximized = useRef(false);
+  const [maximized, setMaximized] = useState(false);
+  const [hasWindow, setHasWindow] = useState(false);
   const prev = useRef({ left: leftOpen, right: rightOpen });
+  const centerWidth = useRef<number | null>(null);
+  const busyRef = useRef(false);
+  const [busy, setBusy] = useState(false);
   const [lockedWidth, setLockedWidth] = useState<number | null>(null);
+  const [anchor, setAnchor] = useState<"flex-start" | "flex-end">("flex-start");
+  const [hold, setHold] = useState<"left" | "right" | null>(null);
+  const windowMode = hasWindow && !maximized;
+  // 只在开关状态变化时编排；宽度与窗口模式取最新值即可
+  const latest = useRef({ widths, windowMode });
+  latest.current = { widths, windowMode };
 
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -205,9 +243,8 @@ function useStableCenter(
     void getWindowControls().then(async (c) => {
       if (!alive || !c) return;
       controls.current = c;
-      off = await c.onMaximizedChange((m) => {
-        maximized.current = m;
-      });
+      setHasWindow(true);
+      off = await c.onMaximizedChange(setMaximized);
     });
     return () => {
       alive = false;
@@ -215,25 +252,76 @@ function useStableCenter(
     };
   }, []);
 
+  // 中央宽度被用户改变（拖侧栏、改窗口大小）时重新记住；编排过程中的变化不算
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (!busyRef.current) centerWidth.current = null;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   useLayoutEffect(() => {
     const p = prev.current;
     prev.current = { left: leftOpen, right: rightOpen };
     const c = controls.current;
-    if (!c || maximized.current) return;
-    const changes: { side: "left" | "right"; delta: number }[] = [];
-    if (p.left !== leftOpen)
-      changes.push({ side: "left", delta: leftOpen ? widths.left : -widths.left });
-    if (p.right !== rightOpen)
-      changes.push({ side: "right", delta: rightOpen ? widths.right : -widths.right });
-    if (changes.length === 0) return;
-    const w = ref.current?.offsetWidth;
-    if (w) setLockedWidth(w);
-    for (const ch of changes) void c.resizeBySide(ch.side, ch.delta, SNAP_MS, snapEase);
-    const timer = setTimeout(() => setLockedWidth(null), SNAP_MS + 80);
-    return () => clearTimeout(timer);
-  }, [leftOpen, rightOpen, widths.left, widths.right]);
+    const side = p.left !== leftOpen ? "left" : p.right !== rightOpen ? "right" : null;
+    if (!side || !c || !latest.current.windowMode) return;
+    const widths = latest.current.widths;
+    const opening = side === "left" ? leftOpen : rightOpen;
+    const main = ref.current;
+    if (!main) return;
+    const current = main.offsetWidth;
+    if (centerWidth.current == null) centerWidth.current = current;
+    const target =
+      centerWidth.current +
+      SHELL_PADDING * 2 +
+      (leftOpen ? widths.left : 0) +
+      (rightOpen ? widths.right : 0);
+    const delta = target - window.innerWidth;
 
-  return { ref, lockedWidth };
+    busyRef.current = true;
+    setBusy(true);
+    setLockedWidth(current);
+    setAnchor(side === "left" ? "flex-end" : "flex-start");
+    if (opening) setHold(side);
+
+    let alive = true;
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+    void (async () => {
+      if (opening) {
+        await c.growBySide(side, delta);
+        await frame();
+        if (!alive) return;
+        setHold(null);
+        await wait(SNAP_MS + 40);
+      } else {
+        await wait(SNAP_MS + 40);
+        if (!alive) return;
+        await c.growBySide(side, delta);
+        await frame();
+      }
+      if (!alive) return;
+      setLockedWidth(null);
+      setAnchor("flex-start");
+      await frame();
+      busyRef.current = false;
+      setBusy(false);
+    })();
+    return () => {
+      alive = false;
+      busyRef.current = false;
+      setBusy(false);
+      setHold(null);
+      setLockedWidth(null);
+      setAnchor("flex-start");
+    };
+  }, [leftOpen, rightOpen]);
+
+  return { ref, lockedWidth, anchor, hold, busy, windowMode };
 }
 
 /**
@@ -244,11 +332,17 @@ function SnapSlot({
   side,
   open,
   size,
+  reserve,
+  hold,
   children,
 }: {
   side: "left" | "right";
   open: boolean;
   size: number;
+  /** 窗口模式：外层始终占住侧栏宽度（空间由窗口伸缩提供），只有内层从接缝长出/收回 */
+  reserve: boolean;
+  /** 窗口还没加宽完：先占位不展开 */
+  hold: boolean;
   children: (width: number) => ReactNode;
 }) {
   const last = useRef(size);
@@ -261,6 +355,11 @@ function SnapSlot({
   useEffect(() => {
     if (first.current) {
       first.current = false;
+      return;
+    }
+    if (open && hold) {
+      setMounted(true);
+      setShown(false);
       return;
     }
     setAnimating(true);
@@ -276,17 +375,16 @@ function SnapSlot({
     const timer = setTimeout(() => {
       setAnimating(false);
       if (!open) setMounted(false);
-    }, SNAP_MS + 40);
+    }, SNAP_MS + 20);
     return () => {
       cancelAnimationFrame(frame);
       clearTimeout(timer);
     };
-  }, [open]);
+  }, [open, hold]);
 
   if (!mounted) return null;
-  const width = last.current;
-  // 宽度从 0 展开到目标宽度（或反向收回），面板内容贴着接缝一侧，像从中央纸面两侧向外长出来
-  return (
+  const width = open && size > 0 ? size : last.current;
+  const inner = (
     <div
       className={cn(
         "flex min-h-0 shrink-0",
@@ -294,11 +392,21 @@ function SnapSlot({
         animating && "overflow-hidden",
       )}
       style={{
-        width: shown ? size || width : 0,
+        width: shown ? width : 0,
         transition: animating ? `width ${SNAP_MS}ms ${SNAP_EASE}` : undefined,
       }}
     >
-      {children(size || width)}
+      {children(width)}
+    </div>
+  );
+  if (!reserve) return inner;
+  // 宽度从 0 长到目标宽度（或反向收回），内容贴着接缝一侧，像从中央纸面两侧向外长出来
+  return (
+    <div
+      className={cn("flex min-h-0 shrink-0", side === "left" ? "justify-end" : "justify-start")}
+      style={{ width }}
+    >
+      {inner}
     </div>
   );
 }
@@ -308,11 +416,14 @@ function PanelToggle({
   open,
   label,
   onToggle,
+  disabled = false,
 }: {
   side: "left" | "right";
   open: boolean;
   label: string;
   onToggle: () => void;
+  /** 一次开关动画进行中禁用，避免叠加 */
+  disabled?: boolean;
 }) {
   const Icon = side === "left" ? PanelLeft : PanelRight;
   return (
@@ -321,7 +432,10 @@ function PanelToggle({
       aria-label={label}
       title={label}
       aria-pressed={open}
-      onClick={onToggle}
+      onClick={() => {
+        if (!disabled) onToggle();
+      }}
+      aria-disabled={disabled || undefined}
       className={cn(
         "absolute top-1.5 z-10 grid size-7 place-items-center rounded-[10px] text-muted transition-colors hover:bg-hover hover:text-fg aria-pressed:text-fg",
         side === "left" ? "left-1.5" : "right-1.5",

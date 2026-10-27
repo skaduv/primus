@@ -21,26 +21,21 @@ export function createTauriWindowControls(): WindowControls {
         }
       });
     },
-    resizeBySide: async (side, delta, durationMs, ease) => {
+    growBySide: async (side, delta) => {
       if (await win.isMaximized()) return false;
-      const [scale, pos, size] = await Promise.all([
+      const [scale, pos, inner] = await Promise.all([
         win.scaleFactor(),
         win.outerPosition(),
-        win.outerSize(),
+        win.innerSize(),
       ]);
       const d = Math.round(delta * scale);
-      const start = performance.now();
-      return new Promise<boolean>((resolve) => {
-        const step = (now: number) => {
-          const p = Math.min(1, (now - start) / durationMs);
-          const dw = Math.round(d * ease(p));
-          if (side === "left") void win.setPosition(new PhysicalPosition(pos.x - dw, pos.y));
-          void win.setSize(new PhysicalSize(size.width + dw, size.height));
-          if (p < 1) requestAnimationFrame(step);
-          else resolve(true);
-        };
-        requestAnimationFrame(step);
-      });
+      if (d === 0) return true;
+      // 两次调用同时发出，落在同一帧，左侧伸缩时右边缘不跳
+      await Promise.all([
+        win.setSize(new PhysicalSize(inner.width + d, inner.height)),
+        side === "left" ? win.setPosition(new PhysicalPosition(pos.x - d, pos.y)) : null,
+      ]);
+      return true;
     },
   };
 }

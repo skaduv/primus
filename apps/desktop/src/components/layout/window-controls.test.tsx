@@ -13,7 +13,7 @@ function fakeControls() {
     toggleMaximize: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
     isMaximized: vi.fn(async () => false),
-    resizeBySide: vi.fn(async () => true),
+    growBySide: vi.fn(async () => true),
     onMaximizedChange: vi.fn(async (listener) => {
       emit = listener;
       listener(false);

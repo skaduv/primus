@@ -11,7 +11,8 @@ function setViewport(width: number, height: number) {
 }
 
 /** 面板外层玻璃容器（GlassPanel 根元素，带 shrink-0 与内联尺寸）的样式 */
-const panelStyle = (el: HTMLElement) => (el.closest(".shrink-0") as HTMLElement).style;
+const panelStyle = (el: HTMLElement) =>
+  ((el.closest(".seam-mask") ?? el.closest(".shrink-0")) as HTMLElement).style;
 
 describe("主界面外壳", () => {
   const original = { width: window.innerWidth, height: window.innerHeight };

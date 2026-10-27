@@ -17,3 +17,27 @@ export function sidePanelSeamStyle(side: "left" | "right"): CSSProperties {
         ["--nl" as string]: `${SEAM_NOTCH}px`,
       };
 }
+
+/**
+ * 侧栏玻璃在接缝一侧多出的宽度：玻璃的高光描边与折射边带（最宽约 24px）被推到裁剪区之外，
+ * 接缝处只剩干净的玻璃，不露线。外层负责裁剪、凹口和投影。
+ */
+export const SEAM_BLEED = 28;
+export function seamBleedStyle(side: "left" | "right", width: number): CSSProperties {
+  return side === "left"
+    ? {
+        width: width + SEAM_BLEED,
+        paddingRight: SEAM_BLEED,
+        borderRadius: `${OUTER_RADIUS}px 0 0 ${OUTER_RADIUS}px`,
+      }
+    : {
+        width: width + SEAM_BLEED,
+        marginLeft: -SEAM_BLEED,
+        paddingLeft: SEAM_BLEED,
+        borderRadius: `0 ${OUTER_RADIUS}px ${OUTER_RADIUS}px 0`,
+      };
+}
+
+/** 侧栏外层：裁剪 + 凹口 + 投影（玻璃自身投影被裁掉，改由这里画） */
+export const sideShellClass =
+  "seam-mask flex shrink-0 overflow-hidden shadow-[0_8px_30px_-14px_rgb(0_0_0/0.3)]";
