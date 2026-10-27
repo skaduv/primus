@@ -17,7 +17,12 @@
   --color-hover: rgb(0 0 0 / 0.05);
   --color-accent: #0a84ff;
   --color-danger: #d70015;
-  --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  /* 西文：界面 Inter，标题与助手回复 Source Serif 4（均为 OFL 开源、本地打包）；中文回落系统黑体 */
+  --font-sans:
+    "Inter Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-serif:
+    "Source Serif 4 Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Georgia,
+    serif;
 }
 
 :root {

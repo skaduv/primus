@@ -167,7 +167,7 @@ export function SettingsView() {
           className="scroll-thin min-w-0 flex-1 overflow-y-auto rounded-[22px] bg-[var(--paper)] ring-1 ring-border"
         >
           <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-8">
-            <h2 className="text-xl font-semibold tracking-tight">{t.groups[group]}</h2>
+            <h2 className="font-serif text-2xl font-medium tracking-tight">{t.groups[group]}</h2>
             {group === "general" ? <GeneralSettings /> : <Placeholder group={group} />}
           </div>
         </main>

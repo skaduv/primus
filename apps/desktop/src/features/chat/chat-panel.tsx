@@ -84,7 +84,7 @@ function AssistantBlocks({
         if (block.type === "toolCall")
           return <ToolCard key={key} name={block.name} run={toolRuns[block.id]} />;
         return (
-          <p key={key} className="whitespace-pre-wrap leading-relaxed">
+          <p key={key} className="whitespace-pre-wrap font-serif text-[15px] leading-relaxed">
             {block.text}
           </p>
         );
@@ -125,7 +125,7 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
   const glass = useGlassStyle();
   return (
     <div className="m-auto flex max-w-md flex-col items-center gap-3 text-center">
-      <h2 className="text-2xl font-semibold tracking-tight">{t.welcomeTitle}</h2>
+      <h2 className="font-serif text-3xl font-medium tracking-tight">{t.welcomeTitle}</h2>
       <p className="text-sm text-muted">{t.welcomeSubtitle}</p>
       <p className="sr-only">{strings.layout.emptyTimeline}</p>
       <div className="mt-2 flex flex-wrap justify-center gap-2">
