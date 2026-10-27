@@ -1,6 +1,6 @@
 // 主界面三栏 + 底部抽屉的尺寸规则（技术方案第 16.2 节）。纯函数，便于在各种视口下单测“不错位”。
 //
-//   ┌──────────────────────────── 顶栏 ────────────────────────────┐
+//   ┌─────────────────────── 细标题栏（窗口按钮）──────────────────────┐
 //   │ 左栏 ┃ 中央时间线                                  ┃ 右栏     │   ┃ = 拖动条（HANDLE）
 //   ├━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┤
 //   │ 底部抽屉（终端 · 日志）                                        │
@@ -19,11 +19,11 @@ export interface PanelLimits {
 
 /** 最小窗口（第 16.2 节），与 tauri.conf.json 一致 */
 export const MIN_WINDOW = { width: 960, height: 640 } as const;
-/** 外壳内边距（p-2） */
+/** 外壳左右与底部内边距（px-2 pb-2）；顶部由细标题栏贴住窗口上沿 */
 export const SHELL_PADDING = 8;
-/** 顶栏高度（h-10）与其下方间距（gap-2） */
-export const TOPBAR_HEIGHT = 40;
-export const TOPBAR_GAP = 8;
+/** 细标题栏高度（h-9，与窗口按钮同高）与其下方间距（gap-2） */
+export const TITLEBAR_HEIGHT = 36;
+export const TITLEBAR_GAP = 8;
 /** 拖动条宽度：同时充当栏间距 */
 export const HANDLE_SIZE = 8;
 /** 中央时间线的最小宽度 */
@@ -126,7 +126,7 @@ export function resolvePanelLayout(
   const rightMax = clamp(innerWidth - left - CENTER_MIN_WIDTH, RIGHT_PANEL.min, RIGHT_PANEL.max);
 
   const innerHeight =
-    height - 2 * SHELL_PADDING - TOPBAR_HEIGHT - TOPBAR_GAP - (prefs.drawerOpen ? HANDLE_SIZE : 0);
+    height - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP - (prefs.drawerOpen ? HANDLE_SIZE : 0);
   const drawerMax = Math.max(
     BOTTOM_DRAWER.min,
     Math.min(

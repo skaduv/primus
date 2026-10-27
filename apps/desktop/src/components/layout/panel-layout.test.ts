@@ -10,8 +10,8 @@ import {
   RIGHT_PANEL,
   resolvePanelLayout,
   SHELL_PADDING,
-  TOPBAR_GAP,
-  TOPBAR_HEIGHT,
+  TITLEBAR_GAP,
+  TITLEBAR_HEIGHT,
 } from "./panel-layout";
 
 // 第 16.2 节：最小窗口 960×640 到 2560×1440 的常见尺寸（含 Windows 常见缩放后的逻辑分辨率）
@@ -65,7 +65,7 @@ describe("resolvePanelLayout", () => {
 
   it.each(VIEWPORTS)("%i×%i：任意开关与尺寸组合都不错位", (width, height) => {
     const innerWidth = width - 2 * SHELL_PADDING;
-    const innerHeight = height - 2 * SHELL_PADDING - TOPBAR_HEIGHT - TOPBAR_GAP;
+    const innerHeight = height - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP;
     for (const prefs of allPrefs()) {
       const r = resolvePanelLayout({ width, height }, prefs);
       const handlesX = (prefs.leftOpen ? HANDLE_SIZE : 0) + (prefs.rightOpen ? HANDLE_SIZE : 0);
@@ -112,14 +112,14 @@ describe("resolvePanelLayout", () => {
     const inner = 1280 - 16 - 16;
     expect(r.left.max).toBe(Math.min(LEFT_PANEL.max, inner - r.right.size - CENTER_MIN_WIDTH));
     expect(r.right.max).toBe(Math.min(RIGHT_PANEL.max, inner - r.left.size - CENTER_MIN_WIDTH));
-    // 抽屉不超过顶栏以下可用高度的一半
-    const innerHeight = 800 - 16 - 40 - 8 - 8;
+    // 抽屉不超过细标题栏以下可用高度的一半
+    const innerHeight = 800 - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP - HANDLE_SIZE;
     expect(r.drawer.max).toBe(Math.floor(innerHeight / 2));
   });
 
   it("最小窗口 960×640 下抽屉拉到最大，中央仍能容纳悬浮输入框与至少一行内容", () => {
     const r = resolvePanelLayout({ width: 960, height: 640 }, { ...defaults, drawerHeight: 5000 });
-    const innerHeight = 640 - 2 * SHELL_PADDING - TOPBAR_HEIGHT - TOPBAR_GAP - HANDLE_SIZE;
+    const innerHeight = 640 - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP - HANDLE_SIZE;
     // 此时中央高度的约束比"可用高度一半"更紧
     expect(innerHeight - CENTER_MIN_HEIGHT).toBeLessThan(Math.floor(innerHeight / 2));
     expect(r.drawer.max).toBe(innerHeight - CENTER_MIN_HEIGHT);

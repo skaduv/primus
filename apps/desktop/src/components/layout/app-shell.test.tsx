@@ -21,31 +21,18 @@ describe("主界面外壳", () => {
   });
   afterEach(() => setViewport(original.width, original.height));
 
-  it("显示产品名和三栏", () => {
+  it("显示三栏，不再有顶栏", () => {
     render(<AppShell />);
-    expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(strings.appName);
+    expect(screen.queryByRole("banner")).toBeNull();
     expect(screen.getByRole("navigation", { name: strings.layout.sessions })).toBeTruthy();
     expect(screen.getByRole("main", { name: strings.layout.timeline })).toBeTruthy();
     expect(screen.getByRole("complementary", { name: strings.layout.inspector })).toBeTruthy();
   });
 
-  it("点击切换按钮收起和展开左栏", () => {
+  it("按 store 状态收起左右栏", () => {
     render(<AppShell />);
-    const toggle = screen.getByRole("button", { name: strings.layout.toggleSessions });
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    act(() => useAppStore.setState({ sessionsPanelOpen: false, inspectorPanelOpen: false }));
     expect(screen.queryByRole("navigation", { name: strings.layout.sessions })).toBeNull();
-    expect(useAppStore.getState().sessionsPanelOpen).toBe(false);
-
-    fireEvent.click(toggle);
-    expect(screen.getByRole("navigation", { name: strings.layout.sessions })).toBeTruthy();
-  });
-
-  it("点击切换按钮收起右栏", () => {
-    render(<AppShell />);
-    fireEvent.click(screen.getByRole("button", { name: strings.layout.toggleInspector }));
     expect(screen.queryByRole("complementary", { name: strings.layout.inspector })).toBeNull();
   });
 
@@ -72,16 +59,13 @@ describe("主界面外壳", () => {
     expect((input as HTMLTextAreaElement).value).toBe(suggestion);
   });
 
-  it("左右栏有可聚焦的拖动条；底部抽屉默认收起，可从顶栏打开", () => {
+  it("左右栏有可聚焦的拖动条；底部抽屉默认收起，打开后可切换标签", () => {
     render(<AppShell />);
     expect(screen.getByRole("separator", { name: strings.layout.resizeSessions })).toBeTruthy();
     expect(screen.getByRole("separator", { name: strings.layout.resizeInspector })).toBeTruthy();
     expect(screen.queryByRole("region", { name: strings.layout.drawer })).toBeNull();
 
-    const toggle = screen.getByRole("button", { name: strings.layout.toggleDrawer });
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    act(() => useAppStore.setState({ bottomDrawerOpen: true }));
     const drawer = screen.getByRole("region", { name: strings.layout.drawer });
     expect(panelStyle(drawer).height).toBe("220px");
     expect(screen.getByRole("separator", { name: strings.layout.resizeDrawer })).toBeTruthy();
@@ -89,7 +73,7 @@ describe("主界面外壳", () => {
     fireEvent.mouseDown(screen.getByRole("tab", { name: strings.drawerTabs.logs }));
     expect(screen.getByText(strings.drawerTabs.logsEmpty)).toBeTruthy();
 
-    fireEvent.click(toggle);
+    act(() => useAppStore.setState({ bottomDrawerOpen: false }));
     expect(screen.queryByRole("region", { name: strings.layout.drawer })).toBeNull();
   });
 
@@ -101,7 +85,7 @@ describe("主界面外壳", () => {
     fireEvent.keyDown(handle, { key: "ArrowRight" });
     expect(useAppStore.getState().sessionsPanelWidth).toBe(248);
     expect(panelStyle(nav).width).toBe("248px");
-    fireEvent.click(screen.getByRole("button", { name: strings.layout.toggleSessions }));
+    act(() => useAppStore.setState({ sessionsPanelOpen: false }));
     expect(screen.queryByRole("separator", { name: strings.layout.resizeSessions })).toBeNull();
   });
 
