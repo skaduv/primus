@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Effect, getCurrentWindow } from "@tauri-apps/api/window";
 import type { WindowControls } from "../window";
 
 // 与 tauri.conf.json 的 minHeight 一致
@@ -72,5 +72,6 @@ export function createTauriWindowControls(): WindowControls {
     setMinWidth: async (width) => {
       await win.setMinSize(new LogicalSize(width, MIN_HEIGHT));
     },
+    setAcrylic: (on) => (on ? win.setEffects({ effects: [Effect.Acrylic] }) : win.clearEffects()),
   };
 }

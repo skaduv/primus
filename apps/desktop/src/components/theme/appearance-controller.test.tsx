@@ -6,7 +6,16 @@ import { AppearanceController } from "./appearance-controller";
 describe("外观控制器", () => {
   afterEach(() => {
     useAppearanceStore.setState(initialAppearance);
-    document.documentElement.classList.remove("dark");
+    document.documentElement.classList.remove("dark", "glass-clear");
+  });
+
+  it("玻璃效果拉到最低时窗口背景完全透明，其余档位保持磨砂", () => {
+    render(<AppearanceController />);
+    expect(document.documentElement.classList.contains("glass-clear")).toBe(false);
+    act(() => useAppearanceStore.getState().setGlassTint(0));
+    expect(document.documentElement.classList.contains("glass-clear")).toBe(true);
+    act(() => useAppearanceStore.getState().setGlassTint(0.01));
+    expect(document.documentElement.classList.contains("glass-clear")).toBe(false);
   });
 
   it("按主题切换 <html> 的 dark 类", () => {

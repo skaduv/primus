@@ -117,7 +117,8 @@ export const strings = {
     theme: "主题",
     themes: { system: "跟随系统", light: "浅色", dark: "深色" },
     glass: "玻璃效果",
-    glassHint: "向左更通透，向右更易读。系统开启“减少透明度”时自动使用最易读的效果。",
+    glassHint:
+      "拉到最左时窗口背景完全透明；其余档位保持磨砂，向右界面着色更深、更易读。系统开启“减少透明度”时自动使用最易读的效果。",
     glassClear: "透明",
     glassTinted: "着色",
     language: "语言",

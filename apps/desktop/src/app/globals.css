@@ -77,6 +77,11 @@ html.window-effects body {
   background: var(--window-tint);
 }
 
+/* 玻璃效果拉到最低：关闭亚克力，窗口背景完全透明，只剩界面面板 */
+html.window-effects.glass-clear body {
+  background: transparent;
+}
+
 /* 浮层进出场（Radix 用 data-state 驱动；动画 scale 属性而不是 transform，避免和 translate 类冲突） */
 /*
  * 弹出菜单只在外层做缩放；淡入淡出放到玻璃的每一层上。
