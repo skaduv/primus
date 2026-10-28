@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils";
 
 /** 深色下玻璃用更深的着色，避免大面积玻璃发灰发白 */
 const DARK_TINT_COLOR = "30,30,34";
+/** 深色大面板着色：比窗口底（#101014）亮一档 */
+const PANEL_DARK_TINT = "44,44,50";
 
 /**
  * 当前外观下的玻璃参数：着色程度跟随外观设置（系统"减少透明度"时为 1），
@@ -25,16 +27,21 @@ export function useGlassStyle(extra = 0): { tint: number; tintColor: string | un
 // 浮在壁纸上的大块玻璃（侧栏、检查器、设置导航）
 export function GlassPanel({
   className,
-  radius = 22,
+  radius = 16,
   ...props
 }: Omit<ComponentProps<typeof GlassSurface>, "tint" | "tintColor">) {
   const glass = useGlassStyle(0.15);
+  const dark = useGlassDark();
   return (
     <GlassSurface
       blur={28}
       radius={radius}
-      {...glass}
-      className={cn("shadow-[0_8px_30px_-12px_rgb(0_0_0/0.25)]", className)}
+      // 大面板比窗口底色明显更亮（深色下更浅），三栏和背景拉开层次；仍跟随外观里的着色滑块
+      tint={Math.min(1, glass.tint + 0.35)}
+      tintColor={dark ? PANEL_DARK_TINT : undefined}
+      veil={dark ? 0.75 : 0.85}
+      sheen={false}
+      className={cn("shadow-[0_14px_24px_-18px_rgb(0_0_0/0.35)]", className)}
       {...props}
     />
   );

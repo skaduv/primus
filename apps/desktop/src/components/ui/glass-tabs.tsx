@@ -1,29 +1,85 @@
 "use client";
 
-// 移植自 lore-glass（MIT，见本目录 LICENSE-lore-glass）：无障碍原语由 @base-ui/react 换成本项目统一使用的 Radix UI，视觉与动效逻辑不变。
+// 分段切换（Liquid Glass 风格）。无障碍原语用 Radix Tabs。
+// 结构：浅浅凹下去的半透明轨道 → 选中项下方的玻璃"水滴"（亮面、高光描边、柔和投影，文字保持清晰）→ 文字
+//      → 文字上方的一层透镜（与水滴同形同位），只在滑动时显现：Chromium 下用 backdrop-filter: url(#位移贴图)
+//        把压在下面的文字放大、边缘弯折，像透过一滴水看文字。
+// 切换时水滴按弹簧滑过去：出发鼓起、途中按速度横向拉伸纵向压扁，停下回弹到原形。
 
 import { Tabs as TabsPrimitive } from "radix-ui";
-import { type ComponentProps, useCallback, useEffect, useRef } from "react";
-import { Glass, isSafariBrowser, useGlassDark } from "@/components/ui/glass";
-import { MotionValue, prefersReducedMotion, SpringDriver } from "@/components/ui/glass-motion";
+import {
+  type ComponentProps,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { prefersReducedMotion } from "@/components/ui/glass-motion";
 import { cn } from "@/lib/utils";
 
-const PAD_X = 40;
-const PAD_Y = 80;
-const INDICATOR_SPRING = { stiffness: 50, damping: 13 };
-const DEFORM_SPRING = { stiffness: 66, damping: 9 };
-const VELOCITY_SCALE = 0.134;
-const DEFORM_CLAMP = 0.3;
-const SQUEEZE_X = 0.3;
-const STRETCH_X = 2;
-const RATIO_Y = 4;
+/** 约 0.25s 到位、带一点回弹 */
+const SLIDE_SPRING = { stiffness: 520, damping: 34, restDelta: 0.05, restSpeed: 2 };
+/** 鼓起包络：鼓大、保持、回落（毫秒） */
+const LIFT_IN_MS = 70;
+const LIFT_HOLD_MS = 110;
+const LIFT_OUT_MS = 220;
+const easeOut = (t: number) => 1 - (1 - t) ** 3;
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t ** 3 : 1 - (-2 * t + 2) ** 3 / 2);
+/** 速度到形变的换算与上限 */
+const STRETCH_PER_SPEED = 1 / 5000;
+const STRETCH_MAX = 0.22;
+const LIFT_SCALE = 0.32;
+/** 透镜放大倍率与边缘弯折强度 */
+const LENS_ZOOM = 0.14;
+const LENS_EDGE = 0.1;
 
-const BG1_LIGHT = "#faf9f9";
-const BG1_DARK = "#100f0f";
-const BORDER1_LIGHT = "#2e0f0f14";
-const BORDER1_DARK = "#ffffff14";
-const BODY_LIGHT = "#fff";
-const BODY_DARK = "#100f0f";
+const lensMapCache = new Map<string, string>();
+
+/**
+ * 透镜位移贴图：R/G 通道编码每个像素的采样偏移（128 为不偏移）。
+ * 中心向内采样 → 放大；靠近胶囊边缘偏移陡增 → 边缘弯折。返回 data URL 与位移幅度。
+ */
+function lensMap(w: number, h: number): { href: string; scale: number } {
+  const scale = Math.max(w, h) * (LENS_ZOOM + LENS_EDGE);
+  const key = `${w}x${h}`;
+  const cached = lensMapCache.get(key);
+  if (cached !== undefined) return { href: cached, scale };
+  const W = Math.max(2, Math.round(w));
+  const H = Math.max(2, Math.round(h));
+  const canvas = document.createElement("canvas");
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return { href: "", scale: 0 };
+  const img = ctx.createImageData(W, H);
+  const r = H / 2;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      // 到胶囊中轴线的距离，归一化到 0（中心）~1（边缘）
+      const cx = Math.min(Math.max(x + 0.5, r), W - r);
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - r;
+      const d = Math.min(1, Math.hypot(dx, dy) / r);
+      const edge = d ** 4 * LENS_EDGE;
+      // 采样点朝中心收（放大）；水平方向用相对整颗胶囊中心的位置
+      const ox =
+        -((x + 0.5 - W / 2) / Math.max(W, H)) * LENS_ZOOM - (dx / r) * edge * (r / Math.max(W, H));
+      const oy =
+        -((y + 0.5 - r) / Math.max(W, H)) * LENS_ZOOM - (dy / r) * edge * (r / Math.max(W, H));
+      const i = (y * W + x) * 4;
+      img.data[i] = Math.round(128 + (255 * (ox * Math.max(W, H))) / scale);
+      img.data[i + 1] = Math.round(128 + (255 * (oy * Math.max(W, H))) / scale);
+      img.data[i + 2] = 128;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const href = canvas.toDataURL();
+  lensMapCache.set(key, href);
+  return { href, scale };
+}
 
 function Tabs({ className, ...props }: ComponentProps<typeof TabsPrimitive.Root>) {
   return (
@@ -35,224 +91,207 @@ function Tabs({ className, ...props }: ComponentProps<typeof TabsPrimitive.Root>
   );
 }
 
-interface TabsListProps extends ComponentProps<typeof TabsPrimitive.List> {
-  tint?: number;
+interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
 }
 
-function TabsList({ className, children, tint = 0, ...props }: TabsListProps) {
-  const dark = useGlassDark();
-  const safari = isSafariBrowser();
+function TabsList({ className, children, ...props }: ComponentProps<typeof TabsPrimitive.List>) {
   const listRef = useRef<HTMLDivElement | null>(null);
-  const markerRef = useRef<HTMLDivElement | null>(null);
+  const dropRef = useRef<HTMLDivElement | null>(null);
+  const lensRef = useRef<HTMLDivElement | null>(null);
+  const [box, setBox] = useState<Box | null>(null);
+  const filterId = `${useId().replace(/[^a-zA-Z0-9-]/g, "")}-lens`;
+  const lens = box && typeof document !== "undefined" ? lensMap(box.w, box.h) : null;
 
-  const cx = useRef(new MotionValue(0));
-  const cy = useRef(new MotionValue(0));
-  const hw = useRef(new MotionValue(0));
-  const hh = useRef(new MotionValue(0));
-  const deform = useRef(new MotionValue(0));
-  const initialized = useRef(false);
-  const frame = useRef(0);
+  // 动画状态：x 用弹簧（半隐式欧拉，自带速度）；鼓起是按时间的包络（快速鼓大 → 保持 → 回落）
+  const anim = useRef({ x: 0, v: 0, target: 0, liftStart: -1, raf: 0, last: 0 });
 
-  const apply = useCallback(() => {
-    frame.current = 0;
-    const marker = markerRef.current;
-    if (!marker) {
-      return;
+  const apply = useCallback((lift: number) => {
+    const a = anim.current;
+    const stretch = Math.min(STRETCH_MAX, Math.abs(a.v) * STRETCH_PER_SPEED);
+    const sx = 1 + stretch + lift * LIFT_SCALE;
+    const sy = 1 - stretch * 0.45 + lift * LIFT_SCALE;
+    const transform = `translate3d(${a.x}px,0,0) scale(${sx},${sy})`;
+    if (dropRef.current) dropRef.current.style.transform = transform;
+    if (lensRef.current) {
+      lensRef.current.style.transform = transform;
+      // 静止时透镜隐去，文字清晰；滑动、鼓起时显现
+      lensRef.current.style.opacity = String(Math.min(1, stretch / (STRETCH_MAX * 0.5) + lift));
     }
-    const q = Math.max(0, deform.current.get());
-    const widthFactor = 1 - q * (q > 0 ? SQUEEZE_X : STRETCH_X);
-    const heightFactor = 1 + q * RATIO_Y;
-    const w = Math.max(hw.current.get() * 2 * widthFactor, 0);
-    const h = Math.max(hh.current.get() * 2 * heightFactor, 0);
-    marker.style.width = `${w}px`;
-    marker.style.height = `${h}px`;
-    marker.style.borderRadius = `${Math.min(w, h) / 2}px`;
-    marker.style.left = `${PAD_X + cx.current.get() - w / 2}px`;
-    marker.style.top = `${PAD_Y + cy.current.get() - h / 2}px`;
   }, []);
 
-  const schedule = useCallback(() => {
-    if (frame.current === 0) {
-      frame.current = requestAnimationFrame(apply);
-    }
-  }, [apply]);
+  const tick = useCallback(
+    (now: number) => {
+      const a = anim.current;
+      const dt = Math.min((now - a.last) / 1000, 1 / 30);
+      a.last = now;
+      const accel = -SLIDE_SPRING.stiffness * (a.x - a.target) - SLIDE_SPRING.damping * a.v;
+      a.v += accel * dt;
+      a.x += a.v * dt;
+      const t = Math.max(0, now - a.liftStart);
+      const lift =
+        t < LIFT_IN_MS
+          ? easeOut(t / LIFT_IN_MS)
+          : t < LIFT_IN_MS + LIFT_HOLD_MS
+            ? 1
+            : Math.max(0, 1 - easeInOut((t - LIFT_IN_MS - LIFT_HOLD_MS) / LIFT_OUT_MS));
+      const settled =
+        Math.abs(a.x - a.target) < SLIDE_SPRING.restDelta &&
+        Math.abs(a.v) < SLIDE_SPRING.restSpeed &&
+        lift === 0;
+      if (settled) {
+        a.x = a.target;
+        a.v = 0;
+        a.raf = 0;
+        apply(0);
+        return;
+      }
+      apply(lift);
+      a.raf = requestAnimationFrame(tick);
+    },
+    [apply],
+  );
 
-  const springTargets = useRef({ cx: 0, cy: 0, hw: 0, hh: 0 });
-  const springDrivers = useRef<SpringDriver[] | null>(null);
-  if (!springDrivers.current) {
-    springDrivers.current = [
-      new SpringDriver(cx.current, INDICATOR_SPRING, () => springTargets.current.cx),
-      new SpringDriver(cy.current, INDICATOR_SPRING, () => springTargets.current.cy),
-      new SpringDriver(hw.current, INDICATOR_SPRING, () => springTargets.current.hw),
-      new SpringDriver(hh.current, INDICATOR_SPRING, () => springTargets.current.hh),
-    ];
-  }
-
-  const deformDriver = useRef<SpringDriver | null>(null);
-  if (!deformDriver.current) {
-    deformDriver.current = new SpringDriver(
-      deform.current,
-      DEFORM_SPRING,
-      () => {
-        const list = listRef.current;
-        const width = list ? list.getBoundingClientRect().width + 2 * PAD_X : 1;
-        const vNorm = Math.abs(cx.current.getVelocity()) / Math.max(width, 1);
-        return Math.min(DEFORM_CLAMP, Math.sqrt(vNorm) * VELOCITY_SCALE);
-      },
-      () => Math.abs(cx.current.getVelocity()) < 0.005,
-    );
-  }
-
+  const ready = useRef(false);
+  // 用 offset* 取选中项在轨道内边距盒中的位置，和绝对定位的参照系一致，指示器正好居中压在选中项上
   const measure = useCallback(() => {
     const list = listRef.current;
-    if (!list) {
+    const active = list?.querySelector<HTMLElement>('[data-state="active"]');
+    if (!list || !active) return;
+    const next = {
+      x: active.offsetLeft,
+      y: active.offsetTop,
+      w: active.offsetWidth,
+      h: active.offsetHeight,
+    };
+    setBox((b) =>
+      b && b.y === next.y && b.w === next.w && b.h === next.h ? b : { ...next, x: 0 },
+    );
+    const a = anim.current;
+    a.target = next.x;
+    if (!ready.current || prefersReducedMotion()) {
+      ready.current = true;
+      cancelAnimationFrame(a.raf);
+      a.raf = 0;
+      a.x = next.x;
+      a.v = 0;
+      apply(0);
       return;
     }
-    const active = list.querySelector<HTMLElement>('[aria-selected="true"]');
-    if (!active) {
-      return;
+    if (Math.abs(a.x - next.x) < 0.5) return;
+    a.liftStart = performance.now();
+    if (!a.raf) {
+      a.last = performance.now();
+      a.raf = requestAnimationFrame(tick);
     }
-    const listRect = list.getBoundingClientRect();
-    const rect = active.getBoundingClientRect();
-    const targets = springTargets.current;
-    targets.cx = rect.left - listRect.left + rect.width / 2;
-    targets.cy = rect.top - listRect.top + rect.height / 2;
-    targets.hw = rect.width / 2;
-    targets.hh = rect.height / 2;
-    if (!initialized.current || prefersReducedMotion()) {
-      initialized.current = true;
-      cx.current.jump(targets.cx);
-      cy.current.jump(targets.cy);
-      hw.current.jump(targets.hw);
-      hh.current.jump(targets.hh);
-      apply();
-      return;
-    }
-    for (const driver of springDrivers.current ?? []) {
-      driver.start();
-    }
-    deformDriver.current?.start();
-  }, [apply]);
+  }, [apply, tick]);
+
+  useLayoutEffect(() => {
+    measure();
+  }, [measure]);
 
   useEffect(() => {
-    const subs = [
-      cx.current.on(() => {
-        schedule();
-        deformDriver.current?.start();
-      }),
-      cy.current.on(schedule),
-      hw.current.on(schedule),
-      hh.current.on(schedule),
-      deform.current.on(schedule),
-    ];
-    measure();
     const list = listRef.current;
-    const observer = new MutationObserver(measure);
-    if (list) {
-      observer.observe(list, {
-        subtree: true,
-        attributes: true,
-        attributeFilter: ["aria-selected"],
-      });
-    }
-    const resize = new ResizeObserver(() => {
-      initialized.current = false;
+    const mo = new MutationObserver(measure);
+    const ro = new ResizeObserver(() => {
+      ready.current = false;
       measure();
     });
     if (list) {
-      resize.observe(list);
+      mo.observe(list, { subtree: true, attributes: true, attributeFilter: ["data-state"] });
+      ro.observe(list);
     }
+    const a = anim.current;
     return () => {
-      for (const off of subs) {
-        off();
-      }
-      observer.disconnect();
-      resize.disconnect();
-      cancelAnimationFrame(frame.current);
-      for (const driver of springDrivers.current ?? []) {
-        driver.stop();
-      }
-      deformDriver.current?.stop();
+      mo.disconnect();
+      ro.disconnect();
+      cancelAnimationFrame(a.raf);
     };
-  }, [measure, schedule]);
-
-  const config = dark
-    ? {
-        brightness: 0.06,
-        specularAngle: 45,
-        glow: 0.5,
-        glowSpread: 0.3,
-        glowExponent: 1.5,
-        edgeHighlight: 0.6,
-        edgeWidth: 1,
-        edgeExponent: 1.5,
-        specularDark: false,
-      }
-    : {
-        brightness: -0.04,
-        specularAngle: 28,
-        glow: 0,
-        glowSpread: 0.5,
-        glowExponent: 3,
-        edgeHighlight: 0.15,
-        edgeWidth: 1.5,
-        edgeExponent: 1,
-        specularDark: true,
-      };
-
-  const pillStyle = {
-    background: dark ? BG1_DARK : BG1_LIGHT,
-    border: `1px solid ${dark ? BORDER1_DARK : BORDER1_LIGHT}`,
-  };
+  }, [measure]);
 
   return (
     <TabsPrimitive.List
-      className={cn("relative inline-flex rounded-full p-[2px]", className)}
+      className={cn(
+        "relative isolate inline-flex rounded-full p-[3px]",
+        // 轨道：比所在玻璃面略深一点、向内凹，和上面的水滴形成对比
+        "bg-black/[0.05] shadow-[inset_0_1px_2px_rgb(0_0_0/0.08),inset_0_0_0_0.5px_rgb(0_0_0/0.05)]",
+        "dark:bg-white/[0.06] dark:shadow-[inset_0_1px_2px_rgb(0_0_0/0.4),inset_0_0_0_0.5px_rgb(255_255_255/0.06)]",
+        className,
+      )}
       data-slot="tabs-list"
       ref={listRef}
-      style={pillStyle}
       {...props}
     >
-      <Glass
-        chroma={0.1}
-        className="pointer-events-none absolute z-0"
-        depth={2.5}
-        domeDepth={0}
-        edgeExponent={config.edgeExponent}
-        edgeHighlight={config.edgeHighlight}
-        edgeWidth={config.edgeWidth}
-        glow={config.glow}
-        glowExponent={config.glowExponent}
-        glowSpread={config.glowSpread}
-        lens={
-          <div className="absolute" data-glass-lens ref={markerRef}>
-            <div
-              className="absolute inset-0 rounded-[inherit]"
-              style={{
-                background: config.brightness >= 0 ? "#fff" : "#000",
-                opacity: Math.abs(config.brightness),
-              }}
-            />
-          </div>
-        }
-        reveal
-        scaleX={0.045}
-        scaleY={safari ? 0.075 : 0.025}
-        specularAngle={config.specularAngle}
-        specularDark={config.specularDark}
-        specularStrength={1}
-        splay={1}
-        tint={tint}
-        style={{
-          left: -PAD_X,
-          top: -PAD_Y,
-          width: `calc(100% + ${2 * PAD_X}px)`,
-          height: `calc(100% + ${2 * PAD_Y}px)`,
-        }}
-      >
-        <div className="absolute inset-0" style={{ background: dark ? BODY_DARK : BODY_LIGHT }} />
-      </Glass>
-      <div className="relative z-10 flex">{children}</div>
+      {box && (
+        <div
+          aria-hidden="true"
+          className={cn(
+            "glass-drop pointer-events-none absolute left-0 z-0 rounded-full will-change-transform",
+          )}
+          ref={dropRef}
+          style={{
+            top: box.y,
+            width: box.w,
+            height: box.h,
+            transform: `translate3d(${anim.current.x}px,0,0)`,
+          }}
+        />
+      )}
+      {children}
+      {box && lens?.href ? (
+        <>
+          <svg aria-hidden="true" className="absolute h-0 w-0" focusable="false">
+            <defs>
+              <filter
+                colorInterpolationFilters="sRGB"
+                filterUnits="objectBoundingBox"
+                height="1"
+                id={filterId}
+                primitiveUnits="userSpaceOnUse"
+                width="1"
+                x="0"
+                y="0"
+              >
+                <feImage
+                  height={box.h}
+                  href={lens.href}
+                  preserveAspectRatio="none"
+                  result="map"
+                  width={box.w}
+                  x="0"
+                  y="0"
+                />
+                <feDisplacementMap
+                  in="SourceGraphic"
+                  in2="map"
+                  scale={lens.scale}
+                  xChannelSelector="R"
+                  yChannelSelector="G"
+                />
+              </filter>
+            </defs>
+          </svg>
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute left-0 z-20 rounded-full will-change-transform"
+            ref={lensRef}
+            style={{
+              top: box.y,
+              width: box.w,
+              height: box.h,
+              opacity: 0,
+              transform: `translate3d(${anim.current.x}px,0,0)`,
+              backdropFilter: `url(#${filterId})`,
+              WebkitBackdropFilter: `url(#${filterId})`,
+              boxShadow:
+                "inset 0 1px 0.5px rgb(255 255 255 / 0.9), inset 0 0 0 0.5px rgb(255 255 255 / 0.5)",
+            }}
+          />
+        </>
+      ) : null}
     </TabsPrimitive.List>
   );
 }
@@ -261,7 +300,7 @@ function TabsTrigger({ className, ...props }: ComponentProps<typeof TabsPrimitiv
   return (
     <TabsPrimitive.Trigger
       className={cn(
-        "inline-flex cursor-pointer items-center gap-[6px] whitespace-nowrap rounded-full px-[13px] py-[10px] font-medium text-[#727274] text-sm leading-none transition-colors hover:text-[#5a5858] focus-visible:shadow-[0_0_0_2px_#9896ff] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=active]:text-black dark:text-[#8f8e8e] dark:hover:text-[#bcbbbb] dark:data-[state=active]:text-white",
+        "relative z-10 inline-flex cursor-pointer items-center justify-center gap-[6px] whitespace-nowrap rounded-full px-[14px] py-[8px] font-medium text-[#727274] text-sm leading-none transition-colors duration-150 hover:text-[#4a4a4c] focus-visible:shadow-[0_0_0_2px_#9896ff] focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=active]:text-black dark:text-[#8f8e8e] dark:hover:text-[#cfcfcf] dark:data-[state=active]:text-white",
         className,
       )}
       data-slot="tabs-trigger"

@@ -29,6 +29,7 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .invoke_handler(tauri::generate_handler![commands::window_set_bounds])
         .run(tauri::generate_context!())
         .expect("failed to run Primus");
 }

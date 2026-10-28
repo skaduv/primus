@@ -1,6 +1,6 @@
 // 主界面三栏 + 底部抽屉的尺寸规则（技术方案第 16.2 节）。纯函数，便于在各种视口下单测“不错位”。
 //
-//   ┌──────────────────────────── 顶栏 ────────────────────────────┐
+//   ┌─────────────────────── 细标题栏（窗口按钮）──────────────────────┐
 //   │ 左栏 ┃ 中央时间线                                  ┃ 右栏     │   ┃ = 拖动条（HANDLE）
 //   ├━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┤
 //   │ 底部抽屉（终端 · 日志）                                        │
@@ -19,11 +19,11 @@ export interface PanelLimits {
 
 /** 最小窗口（第 16.2 节），与 tauri.conf.json 一致 */
 export const MIN_WINDOW = { width: 960, height: 640 } as const;
-/** 外壳内边距（p-2） */
+/** 外壳左右与底部内边距（px-2 pb-2）；顶部由细标题栏贴住窗口上沿 */
 export const SHELL_PADDING = 8;
-/** 顶栏高度（h-10）与其下方间距（gap-2） */
-export const TOPBAR_HEIGHT = 40;
-export const TOPBAR_GAP = 8;
+/** 细标题栏高度（h-9，与窗口按钮同高）与其下方间距（gap-2） */
+export const TITLEBAR_HEIGHT = 36;
+export const TITLEBAR_GAP = 8;
 /** 拖动条宽度：同时充当栏间距 */
 export const HANDLE_SIZE = 8;
 /** 中央时间线的最小宽度 */
@@ -42,6 +42,21 @@ export const CENTER_MIN_HEIGHT =
   COMPOSER_RESERVE_HEIGHT + CENTER_PADDING_TOP + CENTER_CONTENT_MIN_HEIGHT;
 
 /** 左栏：会话列表，默认 232px（第 16.2 节） */
+/**
+ * 当前开合状态下窗口允许的最小宽度：两栏都开时为 MIN_WINDOW.width；
+ * 收起侧栏后窗口会向该侧收窄同样宽度，最小宽度随之降到"中央下限 + 已开侧栏下限"，
+ * 否则窗口被夹住、中央被迫变宽。
+ */
+export function minWindowWidth(leftOpen: boolean, rightOpen: boolean): number {
+  if (leftOpen && rightOpen) return MIN_WINDOW.width;
+  return (
+    CENTER_MIN_WIDTH +
+    SHELL_PADDING * 2 +
+    (leftOpen ? LEFT_PANEL.min : 0) +
+    (rightOpen ? RIGHT_PANEL.min : 0)
+  );
+}
+
 export const LEFT_PANEL: PanelLimits = { initial: 232, min: 200, max: 400 };
 /** 右栏：变更 · 文件 · 计划 */
 export const RIGHT_PANEL: PanelLimits = { initial: 300, min: 240, max: 560 };
@@ -104,14 +119,11 @@ export function resolvePanelLayout(
   }
 
   // 窗口不会小于最小尺寸（外壳也有同样的 min-width / min-height，小于时出现滚动而不是挤压）
-  const width = Math.max(viewport.width, MIN_WINDOW.width);
+  const width = Math.max(viewport.width, minWindowWidth(prefs.leftOpen, prefs.rightOpen));
   const height = Math.max(viewport.height, MIN_WINDOW.height);
 
-  const innerWidth =
-    width -
-    2 * SHELL_PADDING -
-    (prefs.leftOpen ? HANDLE_SIZE : 0) -
-    (prefs.rightOpen ? HANDLE_SIZE : 0);
+  const innerWidth = width - 2 * SHELL_PADDING;
+  // 左右栏吸附在中央纸面上：拖动条叠在接缝上，不占宽度
   let overflow = left + right + CENTER_MIN_WIDTH - innerWidth;
   if (overflow > 0 && prefs.rightOpen) {
     const take = Math.min(overflow, right - RIGHT_PANEL.min);
@@ -126,7 +138,7 @@ export function resolvePanelLayout(
   const rightMax = clamp(innerWidth - left - CENTER_MIN_WIDTH, RIGHT_PANEL.min, RIGHT_PANEL.max);
 
   const innerHeight =
-    height - 2 * SHELL_PADDING - TOPBAR_HEIGHT - TOPBAR_GAP - (prefs.drawerOpen ? HANDLE_SIZE : 0);
+    height - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP - (prefs.drawerOpen ? HANDLE_SIZE : 0);
   const drawerMax = Math.max(
     BOTTOM_DRAWER.min,
     Math.min(

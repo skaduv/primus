@@ -10,8 +10,8 @@ import {
   RIGHT_PANEL,
   resolvePanelLayout,
   SHELL_PADDING,
-  TOPBAR_GAP,
-  TOPBAR_HEIGHT,
+  TITLEBAR_GAP,
+  TITLEBAR_HEIGHT,
 } from "./panel-layout";
 
 // 第 16.2 节：最小窗口 960×640 到 2560×1440 的常见尺寸（含 Windows 常见缩放后的逻辑分辨率）
@@ -58,17 +58,18 @@ describe("resolvePanelLayout", () => {
     expect(r.left.size).toBe(232);
     expect(r.right.size).toBe(300);
     expect(r.drawer.size).toBe(BOTTOM_DRAWER.initial);
-    expect(r.center?.width).toBe(960 - 2 * SHELL_PADDING - 2 * HANDLE_SIZE - 232 - 300);
+    expect(r.center?.width).toBe(960 - 2 * SHELL_PADDING - 232 - 300);
     expect(r.center?.width).toBeGreaterThanOrEqual(CENTER_MIN_WIDTH);
     expect(r.center?.height).toBeGreaterThanOrEqual(CENTER_MIN_HEIGHT);
   });
 
   it.each(VIEWPORTS)("%i×%i：任意开关与尺寸组合都不错位", (width, height) => {
     const innerWidth = width - 2 * SHELL_PADDING;
-    const innerHeight = height - 2 * SHELL_PADDING - TOPBAR_HEIGHT - TOPBAR_GAP;
+    const innerHeight = height - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP;
     for (const prefs of allPrefs()) {
       const r = resolvePanelLayout({ width, height }, prefs);
-      const handlesX = (prefs.leftOpen ? HANDLE_SIZE : 0) + (prefs.rightOpen ? HANDLE_SIZE : 0);
+      // 左右拖动条叠在接缝上，不占宽度
+      const handlesX = 0;
       const handlesY = prefs.drawerOpen ? HANDLE_SIZE : 0;
       const center = r.center;
       expect(center).not.toBeNull();
@@ -101,7 +102,7 @@ describe("resolvePanelLayout", () => {
     const wide = { ...defaults, leftWidth: LEFT_PANEL.max, rightWidth: RIGHT_PANEL.max };
     const small = resolvePanelLayout({ width: 960, height: 640 }, wide);
     expect(small.right.size).toBe(RIGHT_PANEL.min);
-    expect(small.left.size).toBe(960 - 16 - 16 - RIGHT_PANEL.min - CENTER_MIN_WIDTH);
+    expect(small.left.size).toBe(960 - 16 - RIGHT_PANEL.min - CENTER_MIN_WIDTH);
     const large = resolvePanelLayout({ width: 2560, height: 1440 }, wide);
     expect(large.left.size).toBe(LEFT_PANEL.max);
     expect(large.right.size).toBe(RIGHT_PANEL.max);
@@ -109,17 +110,17 @@ describe("resolvePanelLayout", () => {
 
   it("拖动条的上限随另一栏与视口变化，保证中央不被挤压", () => {
     const r = resolvePanelLayout({ width: 1280, height: 800 }, defaults);
-    const inner = 1280 - 16 - 16;
+    const inner = 1280 - 16;
     expect(r.left.max).toBe(Math.min(LEFT_PANEL.max, inner - r.right.size - CENTER_MIN_WIDTH));
     expect(r.right.max).toBe(Math.min(RIGHT_PANEL.max, inner - r.left.size - CENTER_MIN_WIDTH));
-    // 抽屉不超过顶栏以下可用高度的一半
-    const innerHeight = 800 - 16 - 40 - 8 - 8;
+    // 抽屉不超过细标题栏以下可用高度的一半
+    const innerHeight = 800 - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP - HANDLE_SIZE;
     expect(r.drawer.max).toBe(Math.floor(innerHeight / 2));
   });
 
   it("最小窗口 960×640 下抽屉拉到最大，中央仍能容纳悬浮输入框与至少一行内容", () => {
     const r = resolvePanelLayout({ width: 960, height: 640 }, { ...defaults, drawerHeight: 5000 });
-    const innerHeight = 640 - 2 * SHELL_PADDING - TOPBAR_HEIGHT - TOPBAR_GAP - HANDLE_SIZE;
+    const innerHeight = 640 - SHELL_PADDING - TITLEBAR_HEIGHT - TITLEBAR_GAP - HANDLE_SIZE;
     // 此时中央高度的约束比"可用高度一半"更紧
     expect(innerHeight - CENTER_MIN_HEIGHT).toBeLessThan(Math.floor(innerHeight / 2));
     expect(r.drawer.max).toBe(innerHeight - CENTER_MIN_HEIGHT);
@@ -141,5 +142,17 @@ describe("resolvePanelLayout", () => {
     expect(r.left.size).toBe(LEFT_PANEL.min);
     expect(r.right.size).toBe(RIGHT_PANEL.max);
     expect(r.center).toBeNull();
+  });
+});
+
+describe("minWindowWidth", () => {
+  it("两栏都开为 960，收起侧栏后降到中央下限加已开侧栏下限", async () => {
+    const { minWindowWidth, CENTER_MIN_WIDTH, SHELL_PADDING, LEFT_PANEL, RIGHT_PANEL } =
+      await import("./panel-layout");
+    const base = CENTER_MIN_WIDTH + SHELL_PADDING * 2;
+    expect(minWindowWidth(true, true)).toBe(960);
+    expect(minWindowWidth(false, false)).toBe(base);
+    expect(minWindowWidth(true, false)).toBe(base + LEFT_PANEL.min);
+    expect(minWindowWidth(false, true)).toBe(base + RIGHT_PANEL.min);
   });
 });

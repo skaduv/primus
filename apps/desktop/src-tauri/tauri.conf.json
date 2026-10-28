@@ -16,8 +16,13 @@
         "title": "乾元 Primus",
         "width": 1280,
         "height": 800,
-        "minWidth": 960,
+        "minWidth": 396,
+        "center": true,
         "minHeight": 640,
+        "decorations": false,
+        "shadow": true,
+        "transparent": true,
+        "windowEffects": { "effects": ["acrylic"] },
         "label": "main"
       }
     ],

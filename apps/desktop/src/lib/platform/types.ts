@@ -61,6 +61,11 @@ export interface Platform {
   workspaceList(): Promise<WorkspaceInfo[]>;
   workspaceTrust(path: string, trusted: boolean): Promise<void>;
 
+  /** 系统文件夹对话框；取消时返回 null */
+  dialogPickFolder(): Promise<string | null>;
+  /** 系统文件对话框（可多选）；只返回本地路径，文件不复制 */
+  dialogPickFiles(): Promise<string[]>;
+
   sessionList(workspace: string, cursor?: string): Promise<Page<SessionSummary>>;
   sessionSearch(workspace: string, query: string): Promise<SessionSummary[]>;
   /** 分配或启动 Core 进程；`onBatch` 接收该会话的事件批次（第 7.3 节） */
@@ -110,6 +115,8 @@ export const COMMANDS = {
   workspaceOpen: "workspace_open",
   workspaceList: "workspace_list",
   workspaceTrust: "workspace_trust",
+  dialogPickFolder: "dialog_pick_folder",
+  dialogPickFiles: "dialog_pick_files",
   sessionList: "session_list",
   sessionSearch: "session_search",
   sessionOpen: "session_open",

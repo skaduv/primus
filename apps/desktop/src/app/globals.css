@@ -6,7 +6,7 @@
 
 /*
  * 设计令牌：macOS 27 风格的 Liquid Glass 低保真方案。
- * 窗口底层是一张柔和的"壁纸"，侧栏、工具栏、输入框等浮在上面的玻璃层折射它；
+ * 窗口底层是 Windows 亚克力磨砂透明背景（浏览器预览为纯色），侧栏、工具栏、输入框等浮在上面的玻璃层折射它；
  * 正文区域保持实色，保证长时间线的可读性和滚动性能。
  */
 @theme {
@@ -17,15 +17,24 @@
   --color-hover: rgb(0 0 0 / 0.05);
   --color-accent: #0a84ff;
   --color-danger: #d70015;
-  --font-sans: "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --color-warning: #c93400;
+  --color-success: #248a3d;
+  /* Windows 11 标题栏关闭按钮（系统红），浅深色一致 */
+  --color-caption-close: #e81123;
+  --color-caption-close-pressed: #f1707a;
+  /* 西文：界面 Inter，标题与助手回复 Source Serif 4（均为 OFL 开源、本地打包）；中文回落系统黑体 */
+  --font-sans:
+    "Inter Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+  --font-serif:
+    "Source Serif 4 Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Georgia,
+    serif;
 }
 
 :root {
-  --wallpaper:
-    radial-gradient(60% 70% at 8% 12%, rgb(255 196 222 / 0.75), transparent 70%),
-    radial-gradient(55% 60% at 92% 8%, rgb(170 210 255 / 0.85), transparent 70%),
-    radial-gradient(70% 70% at 70% 100%, rgb(196 182 255 / 0.7), transparent 70%),
-    radial-gradient(50% 50% at 15% 95%, rgb(170 240 220 / 0.6), transparent 70%), #f4f3f8;
+  /* 浏览器预览用的纯色底（不用渐变） */
+  --wallpaper: #e6e6ee;
+  /* Tauri 窗口内：半透明着色叠在系统亚克力磨砂效果上 */
+  --window-tint: rgb(222 222 232 / 0.42);
   /* 时间线所在的"纸面"：几乎不透明，只透出一点壁纸色 */
   --paper: rgb(255 255 255 / 0.82);
   color-scheme: light;
@@ -39,11 +48,11 @@
   --color-hover: rgb(255 255 255 / 0.08);
   --color-accent: #0a84ff;
   --color-danger: #ff453a;
-  --wallpaper:
-    radial-gradient(60% 70% at 8% 12%, rgb(120 40 90 / 0.65), transparent 70%),
-    radial-gradient(55% 60% at 92% 8%, rgb(30 70 140 / 0.75), transparent 70%),
-    radial-gradient(70% 70% at 70% 100%, rgb(70 50 150 / 0.6), transparent 70%),
-    radial-gradient(50% 50% at 15% 95%, rgb(20 100 90 / 0.5), transparent 70%), #101014;
+  --color-warning: #ff9f0a;
+  --color-success: #30d158;
+  /* 浏览器预览用的纯色底（不用渐变） */
+  --wallpaper: #0b0b0e;
+  --window-tint: rgb(8 8 10 / 0.45);
   --paper: rgb(28 28 30 / 0.84);
   color-scheme: dark;
 }
@@ -52,6 +61,8 @@ html,
 body {
   height: 100%;
   font-family: var(--font-sans);
+  /* 桌面应用：窗口本身不滚动，只有时间线等内部区域滚动（避免右侧/底部出现整页滚动条） */
+  overflow: hidden;
 }
 
 body {
@@ -60,25 +71,40 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 磨砂透明背景：tauri.conf.json 开启 transparent + windowEffects acrylic，页面本身只铺一层半透明着色 */
+html.window-effects {
+  background: transparent;
+}
+
+html.window-effects body {
+  background: var(--window-tint);
+}
+
+/* 玻璃效果拉到最低：关闭亚克力，窗口背景完全透明，只剩界面面板 */
+html.window-effects.glass-clear body {
+  background: transparent;
+}
+
 /* 浮层进出场（Radix 用 data-state 驱动；动画 scale 属性而不是 transform，避免和 translate 类冲突） */
+/*
+ * 弹出菜单只在外层做缩放；淡入淡出放到玻璃的每一层上。
+ * 外层 opacity < 1 会让 Chromium 把它当作 backdrop root，动画期间磨砂失效、菜单先透明再突然变实，
+ * 所以不能给外层做透明度动画。
+ */
 @keyframes glass-pop-in {
   from {
-    opacity: 0;
     scale: 0.85;
   }
   to {
-    opacity: 1;
     scale: 1;
   }
 }
 
 @keyframes glass-pop-out {
   from {
-    opacity: 1;
     scale: 1;
   }
   to {
-    opacity: 0;
     scale: 0.95;
   }
 }
@@ -107,6 +133,14 @@ body {
   animation: glass-pop-out 150ms ease-out forwards;
 }
 
+.glass-pop[data-state$="open"] > * > * {
+  animation: glass-fade-in 200ms ease-out;
+}
+
+.glass-pop[data-state="closed"] > * > * {
+  animation: glass-fade-out 150ms ease-out forwards;
+}
+
 .glass-fade[data-state="open"] {
   animation: glass-fade-in 300ms ease-out;
 }
@@ -117,13 +151,203 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .glass-pop[data-state],
+  .glass-pop[data-state] > * > *,
   .glass-fade[data-state] {
     animation: none;
   }
+
+  /* 两个伪元素分开写：同一规则里出现不认识的伪元素会整条失效 */
+  .ui-range::-webkit-slider-thumb {
+    transition: none;
+  }
+
+  .ui-range::-moz-range-thumb {
+    transition: none;
+  }
+}
+
+/* 可滚动但不显示滚动条（输入框等小区域） */
+.scroll-none {
+  scrollbar-width: none;
+}
+.scroll-none::-webkit-scrollbar {
+  display: none;
 }
 
 /* 细滚动条，悬停才明显 */
 .scroll-thin {
   scrollbar-width: thin;
   scrollbar-color: rgb(127 127 127 / 0.35) transparent;
+}
+
+/*
+ * 接缝融合：左右栏与中央纸面贴合的一侧是直角，各自在上下两端刻出半个平滑凹口（smoothstep 曲线），
+ * 两块拼起来就是一道向下微凹、两肩圆润的连续轮廓，像液态玻璃两滴融在一起（参考 liquid-glass-studio 的 smooth union）。
+ * --nl / --nr 为左/右侧凹口宽度，深度为宽度的 6/14；注册为 <length> 以便和圆角一起过渡。
+ * 底层整块遮罩用 no-clip + repeat 铺到盒子外，阴影不被裁掉。
+ */
+@property --nl {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@property --nr {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+.seam-mask {
+  mask-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 6' preserveAspectRatio='none'%3E%3Cpath d='M0 0V6C7 6 7 0 14 0Z'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 6' preserveAspectRatio='none'%3E%3Cpath d='M0 6V0C7 0 7 6 14 6Z'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 6' preserveAspectRatio='none'%3E%3Cpath d='M14 0V6C7 6 7 0 0 0Z'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 6' preserveAspectRatio='none'%3E%3Cpath d='M14 6V0C7 0 7 6 0 6Z'/%3E%3C/svg%3E"),
+    linear-gradient(#000 0 0);
+  /* 凹口贴边一侧向盒外多伸 2px，配合下方合成层：非整数缩放（125%/150%）下贴边那列设备像素不再漏出亮线 */
+  mask-position:
+    -2px top,
+    -2px bottom,
+    calc(100% + 2px) top,
+    calc(100% + 2px) bottom,
+    0 0;
+  mask-size:
+    calc(var(--nl) + 2px) calc(var(--nl) * 6 / 14),
+    calc(var(--nl) + 2px) calc(var(--nl) * 6 / 14),
+    calc(var(--nr) + 2px) calc(var(--nr) * 6 / 14),
+    calc(var(--nr) + 2px) calc(var(--nr) * 6 / 14),
+    auto;
+  mask-repeat: no-repeat, no-repeat, no-repeat, no-repeat, repeat;
+  mask-clip: border-box, border-box, border-box, border-box, no-clip;
+  mask-composite: exclude, exclude, exclude, exclude, add;
+  /* 独立合成层：非整数缩放下，内含 backdrop-filter 的子层与遮罩对齐有 1 设备像素误差，
+     凹口里会漏出一根亮线（线头）；提升为合成层后遮罩与内容按同一网格栅格化 */
+  transform: translateZ(0);
+}
+
+/* 液态玻璃"水滴"：分段切换的选中指示器、开关滑块、滑杆拇指共用。亮面、上沿高光、内描边、下沿暗边与柔和投影 */
+.glass-drop {
+  background: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.97),
+    rgb(255 255 255 / 0.74) 55%,
+    rgb(255 255 255 / 0.88)
+  );
+  box-shadow:
+    inset 0 1px 0.5px rgb(255 255 255 / 1),
+    inset 0 -1px 1px rgb(0 0 0 / 0.06),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.7),
+    0 1px 2px rgb(0 0 0 / 0.12),
+    0 4px 14px -4px rgb(0 0 0 / 0.2);
+  backdrop-filter: blur(2px) saturate(1.8);
+}
+
+.dark .glass-drop {
+  background: linear-gradient(
+    160deg,
+    rgb(255 255 255 / 0.3),
+    rgb(255 255 255 / 0.14) 55%,
+    rgb(255 255 255 / 0.22)
+  );
+  box-shadow:
+    inset 0 1px 0.5px rgb(255 255 255 / 0.4),
+    inset 0 -1px 1px rgb(0 0 0 / 0.3),
+    inset 0 0 0 0.5px rgb(255 255 255 / 0.14),
+    0 1px 2px rgb(0 0 0 / 0.4),
+    0 4px 14px -4px rgb(0 0 0 / 0.5);
+}
+
+/* 开关滑块、滑杆拇指：不透明的亮面"水珠"（两种主题都是白色，叠在强调色上不发蓝），上沿高光 + 柔和投影 */
+.glass-knob {
+  background: linear-gradient(180deg, #fff, #f3f3f6);
+  box-shadow:
+    inset 0 1px 0.5px rgb(255 255 255 / 1),
+    inset 0 -1px 1px rgb(0 0 0 / 0.05),
+    0 0 0 0.5px rgb(0 0 0 / 0.06),
+    0 1px 2px rgb(0 0 0 / 0.16),
+    0 4px 10px -3px rgb(0 0 0 / 0.22);
+}
+
+/* 设置里的滑杆（原生 range，自绘）：细凹槽 + 强调色填充 + 液态玻璃拇指，按住拖动时拇指鼓大 */
+.ui-range {
+  appearance: none;
+  height: 24px;
+  background: transparent;
+  cursor: pointer;
+  --track: rgb(0 0 0 / 0.09);
+}
+
+.dark .ui-range {
+  --track: rgb(255 255 255 / 0.12);
+}
+
+.ui-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ui-range:focus-visible {
+  outline: none;
+}
+
+.ui-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--color-accent) var(--pct), var(--track) var(--pct));
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.1);
+}
+
+.ui-range::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--color-accent) var(--pct), var(--track) var(--pct));
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.1);
+}
+
+.ui-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 30px;
+  height: 20px;
+  margin-top: -7px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #fff, #f3f3f6);
+  box-shadow:
+    inset 0 -1px 1px rgb(0 0 0 / 0.05),
+    0 0 0 0.5px rgb(0 0 0 / 0.06),
+    0 1px 2px rgb(0 0 0 / 0.16),
+    0 4px 12px -3px rgb(0 0 0 / 0.22);
+  transition:
+    transform 260ms cubic-bezier(0.3, 1.6, 0.6, 1),
+    box-shadow 160ms;
+}
+
+.ui-range::-moz-range-thumb {
+  width: 30px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #fff, #f3f3f6);
+  box-shadow:
+    inset 0 1px 0.5px rgb(255 255 255 / 1),
+    0 1px 2px rgb(0 0 0 / 0.16),
+    0 4px 12px -3px rgb(0 0 0 / 0.22);
+  transition: transform 260ms cubic-bezier(0.3, 1.6, 0.6, 1);
+}
+
+.ui-range:enabled:hover::-webkit-slider-thumb {
+  transform: scale(1.06);
+}
+
+.ui-range:enabled:active::-webkit-slider-thumb {
+  transform: scale(1.4, 1.3);
+}
+
+.ui-range:enabled:active::-moz-range-thumb {
+  transform: scale(1.4, 1.3);
+}
+
+.ui-range:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    inset 0 1px 0.5px rgb(255 255 255 / 1),
+    0 1px 2px rgb(0 0 0 / 0.16),
+    0 0 0 3px color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
