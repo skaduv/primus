@@ -82,8 +82,9 @@ export function useChatSession(): ChatSession {
       const c = conn.current;
       if (!c) throw new Error("会话未打开");
       const id = `${c.sessionKey}-${c.nextId++}`;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const response = new Promise<RpcResponse>((resolve, reject) => {
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           waiters.current.delete(id);
           reject(new Error(`${type} 响应超时`));
         }, RESPONSE_TIMEOUT_MS);
@@ -95,7 +96,10 @@ export function useChatSession(): ChatSession {
       try {
         await c.platform.coreSend(c.sessionKey, { id, type, ...fields } satisfies RpcCommand);
       } catch (e) {
+        // 发送失败：撤销等待并停掉计时器，避免 30 秒后出现未处理的拒绝
         waiters.current.delete(id);
+        clearTimeout(timer);
+        response.catch(() => {});
         throw e;
       }
       return response;
