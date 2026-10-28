@@ -49,10 +49,9 @@ export function summarize(events, exitCode = 0) {
   return { findings, counts, blocking, error, skipped, incomplete, exitCode };
 }
 
-/** 错误是否为限流或额度用尽 */
+/** 错误是否为限流或额度用尽（按 CLI 结构化错误的 errorType 判断） */
 export function isRateLimit(error) {
-  const text = `${error?.errorType ?? ""} ${error?.message ?? ""}`.toLowerCase();
-  return /rate.?limit|quota|too many/.test(text);
+  return error?.errorType === "rate_limit";
 }
 
 /** 根据汇总决定是否阻止推送 */
@@ -105,7 +104,7 @@ const ZERO_SHA = /^0+$/;
 /**
  * 解析 pre-push 钩子的标准输入（每行 `<本地引用> <本地 SHA> <远端引用> <远端 SHA>`）。
  * CLI 只能审查当前 HEAD 的已提交改动：待推送提交不是 HEAD 的引用列入 rejected（无法确定审查范围，拒绝推送）；
- * 只删除远端引用时 review 为 false。
+ * 只删除远端引用或只推送标签时 review 为 false。
  */
 export function prePushPlan(stdinText, headSha) {
   const rejected = [];
@@ -113,6 +112,8 @@ export function prePushPlan(stdinText, headSha) {
   for (const line of String(stdinText).split(/\r?\n/)) {
     const [localRef, localSha] = line.trim().split(/\s+/);
     if (!localRef || !localSha || ZERO_SHA.test(localSha)) continue;
+    // 标签（含 annotated tag 对象）不是待审查的分支提交
+    if (localRef.startsWith("refs/tags/")) continue;
     if (localSha === headSha) review = true;
     else rejected.push(localRef);
   }

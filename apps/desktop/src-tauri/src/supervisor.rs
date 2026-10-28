@@ -500,7 +500,7 @@ impl Supervisor {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// 为会话 `key` 拉起 Core。达到上限时先结束最久未使用的进程；该会话 1 分钟内已崩溃 3 次时拒绝。
+    /// 为会话 `key` 拉起 Core。成功后若超出上限，结束最久未使用的其他进程；该会话 1 分钟内已崩溃 3 次时拒绝。
     pub(crate) fn spawn(&self, key: &str, opts: &LaunchOptions) -> Result<u32, SupervisorError> {
         self.layout.check()?;
         let mut evicted = Vec::new();
@@ -528,11 +528,16 @@ impl Supervisor {
         {
             return Err(SupervisorError::CrashLoop(key.to_owned()));
         }
+        // 先拉起新进程，成功后再淘汰超出上限的旧进程：拉起失败（项目目录不存在等）不影响其他会话
+        let process = self.launch(key, opts)?;
+        let pid = process.pid();
+        state.procs.insert(key.to_owned(), process);
         let max = self.max_processes();
-        while state.procs.len() >= max {
+        while state.procs.len() > max {
             let Some(lru) = state
                 .procs
                 .iter()
+                .filter(|(k, _)| k.as_str() != key)
                 .max_by_key(|(_, p)| p.idle_for())
                 .map(|(k, _)| k.clone())
             else {
@@ -542,10 +547,6 @@ impl Supervisor {
                 evicted.push(process);
             }
         }
-
-        let process = self.launch(key, opts)?;
-        let pid = process.pid();
-        state.procs.insert(key.to_owned(), process);
         Ok(pid)
     }
 
@@ -958,6 +959,13 @@ process.stderr.write("line one\nline two\r\nline three\n");
             Err(SupervisorError::AlreadyRunning(_))
         ));
         supervisor.spawn("b", &opts(&tmp.0)).unwrap();
+        assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
+
+        // 拉起失败（工作目录不存在）不淘汰已有会话
+        assert!(matches!(
+            supervisor.spawn("c", &opts(&tmp.0.join("missing"))),
+            Err(SupervisorError::Io(_))
+        ));
         assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
 
         assert_eq!(supervisor.stop("b").map(|t| t.len()), Some(0));

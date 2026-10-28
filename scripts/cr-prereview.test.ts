@@ -51,6 +51,7 @@ describe("CodeRabbit 本地预审", () => {
       block: false,
       reason: "CodeRabbit CLI 本小时额度已用完，本次不阻塞推送",
     });
+    expect(isRateLimit({ errorType: "network", message: "too many open files" })).toBe(false);
     const failed = summarize([{ type: "error", errorType: "network", message: "offline" }]);
     expect(decide(failed).block).toBe(false);
   });
@@ -121,5 +122,9 @@ describe("CodeRabbit 本地预审", () => {
       rejected: [],
     });
     expect(prePushPlan("", head)).toEqual({ review: false, rejected: [] });
+    expect(prePushPlan(`refs/tags/v1.0 ${other} refs/tags/v1.0 ${zero}\n`, head)).toEqual({
+      review: false,
+      rejected: [],
+    });
   });
 });
