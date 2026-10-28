@@ -1,0 +1,5 @@
+#!/bin/sh
+# 推送前用 CodeRabbit CLI 本地预审已提交改动（scripts/cr-prereview.mjs）。
+# 启用：pnpm hooks:install；跳过：PRIMUS_SKIP_CR=1 git push，或 git push --no-verify。
+# 待推送引用由标准输入传给脚本：只删除远端分支时不审查；待推送提交不是当前 HEAD 的引用无法审查，拒绝推送。
+exec node scripts/cr-prereview.mjs --pre-push

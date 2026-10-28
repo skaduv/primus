@@ -20,13 +20,14 @@ tauri-plugin-single-instance = "=2.5.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 
-# Windows 平台层（第 4.3 节 ACL、第 3.7 节修复引导）：只用 windows-sys 的原始 FFI，版本见技术方案第 2.4 节
+# Windows 平台层（第 4.3 节 ACL、第 3.7 节修复引导、第 2.2 节 Job Object）：只用 windows-sys 的原始 FFI，版本见技术方案第 2.4 节
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "=0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
+  "Win32_System_JobObjects",
   "Win32_System_Registry",
   "Win32_System_Threading",
   "Win32_UI_Shell",

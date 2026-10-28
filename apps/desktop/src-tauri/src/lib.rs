@@ -31,6 +31,26 @@ pub fn run() {
         std::process::exit(1);
     };
 
+    // Core 进程监管：所有 Core 进程放进同一个 Job Object，主进程被强杀时由系统统一回收（第 2.2 节）
+    let supervisor = paths::exe_dir()
+        .map_err(|e| e.to_string())
+        .and_then(|exe_dir| {
+            let layout = supervisor::CoreLayout::resolve(
+                cfg!(debug_assertions),
+                &exe_dir,
+                &paths::repo_root(),
+            );
+            supervisor::Supervisor::new(layout, data_paths.clone())
+                .map_err(|e| format!("无法创建内核进程作业对象：{e}"))
+        });
+    let supervisor = match supervisor {
+        Ok(supervisor) => supervisor,
+        Err(message) => {
+            platform::show_error(&message);
+            std::process::exit(1);
+        }
+    };
+
     tauri::Builder::default()
         // 单实例必须最先注册：第二个实例启动时把已有主窗口带到前台（第 2.2 节）
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -41,7 +61,14 @@ pub fn run() {
             }
         }))
         .manage(data_paths)
+        .manage(supervisor)
         .invoke_handler(tauri::generate_handler![commands::window_set_bounds])
-        .run(tauri::generate_context!())
-        .expect("failed to run Primus");
+        .build(tauri::generate_context!())
+        .expect("failed to build Primus")
+        .run(|app, event| {
+            // 正常退出时主动结束 Core；异常退出由 Job Object 兜底
+            if let tauri::RunEvent::Exit = event {
+                app.state::<supervisor::Supervisor>().shutdown();
+            }
+        });
 }

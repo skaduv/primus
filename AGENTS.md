@@ -112,6 +112,8 @@ pnpm check:versions && pnpm check:tauri-imports && pnpm check:forbidden-sdk && p
 2. 推送后开（或更新）PR：`dev → main`，等 CodeRabbit 审查完成。
 3. CodeRabbit 结论为**低风险**（无未解决的实质性问题）才能合并到 `main`；否则按审查意见继续在 `dev` 上修改并推送，直至低风险。
 
+推送前先本地预审：首次执行 `pnpm hooks:install`，之后 `git push` 会先跑 CodeRabbit CLI 审查已提交改动（`scripts/cr-prereview.mjs`），critical / major 问题修完再推，减少 PR 审查被限流卡住。
+
 
 - 提交信息用 Conventional Commits：`feat(shell): ...`、`fix(frontend): ...`、`chore(core): ...`。scope 建议：`frontend`、`shell`（薄壳）、`core`、`ext`、`protocol`、`ui`、`installer`、`ci`、`docs`。
 - 一个 PR 只做一件事；不要顺手格式化无关文件。
