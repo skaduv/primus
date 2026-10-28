@@ -342,7 +342,7 @@ mod windows_impl {
 
     /// 安全地创建或收紧 `users/<SID>`（第 4.3 节）：
     /// - 不存在：`CreateDirectoryW` 时直接带上“所有者 = 当前用户、受保护 DACL（仅当前用户与 SYSTEM）”，不存在先建后改的窗口；
-    /// - 已存在：以不跟随重解析点的句柄打开，拒绝重解析点，且所有者必须是当前用户（防止其他本地用户预先创建），
+    /// - 已存在：以不跟随重解析点的句柄打开，拒绝重解析点，且所有者必须可信（见 `is_trusted_owner`，防止其他本地用户预先创建），
     ///   再在同一句柄上重设受保护 DACL（幂等，能纠正被手工放宽的权限）。
     pub(crate) fn secure_user_dir(dir: &Path) -> io::Result<()> {
         let user = TokenUserBuf::current()?;
