@@ -82,6 +82,14 @@ describe("CodeRabbit 本地预审", () => {
       "abc123",
     ]);
     expect(reviewArgs("")).toEqual(["review", "--agent", "--committed"]);
+    expect(reviewArgs("abc123", { fresh: true })).toEqual([
+      "review",
+      "--agent",
+      "--committed",
+      "--fresh",
+      "--base-commit",
+      "abc123",
+    ]);
   });
 
   it("CLI 非零退出视为未完整结束，不单独阻塞", () => {

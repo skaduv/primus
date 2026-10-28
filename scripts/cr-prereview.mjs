@@ -89,9 +89,13 @@ export function formatFinding(finding) {
   return `[${finding.severity ?? "none"}] ${location} ${firstLine.trim()}`;
 }
 
-/** 审查命令参数：只看已提交改动，基准为与主干的合并基点 */
-export function reviewArgs(baseCommit) {
+/**
+ * 审查命令参数：只看已提交改动，基准为与主干的合并基点。
+ * fresh 为真时加 `--fresh` 完整审查、不沿用本地增量检查点（推送门禁必须看到全部已有问题）。
+ */
+export function reviewArgs(baseCommit, { fresh = false } = {}) {
   const args = ["review", "--agent", "--committed"];
+  if (fresh) args.push("--fresh");
   if (baseCommit) args.push("--base-commit", baseCommit);
   return args;
 }
@@ -155,8 +159,12 @@ function install(root) {
   }
   try {
     chmodSync(hook, 0o755);
-  } catch {
-    // Windows 不需要可执行位
+  } catch (error) {
+    // Windows 不需要可执行位；其他系统上没有可执行位的钩子会被 Git 忽略
+    if (!IS_WINDOWS) {
+      log(`启用失败：无法给 .githooks/pre-push 加可执行位（${error.message}）`);
+      return 1;
+    }
   }
   log("已启用 .githooks/pre-push：git push 前会自动预审");
   if (!cliInstalled()) {
@@ -199,7 +207,7 @@ async function review({ prePush }) {
     return 0;
   }
   log(`开始审查已提交改动（基准 ${baseRef} @ ${base.slice(0, 7)}），通常需要几分钟……`);
-  const child = launch(reviewArgs(base), {
+  const child = launch(reviewArgs(base, { fresh: prePush }), {
     stdio: ["ignore", "pipe", "inherit"],
   });
   const exited = new Promise((done) => {

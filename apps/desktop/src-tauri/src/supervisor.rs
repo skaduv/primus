@@ -7,7 +7,9 @@
 //!   `data/users/<SID>`，`PRIMUS_SKIP_VERSION_CHECK=1`、`PRIMUS_TELEMETRY`、`PRIMUS_OFFLINE`，并清空 `NODE_OPTIONS`。
 //!   其余环境变量（如 `PATH`）照常继承，工具命令需要它们。
 //! - stderr 单独读取（第 5.4 节）：逐行写入 `data/shared/logs/core-<会话>-<日期>.log`，并保留最近 200 行用于崩溃展示。
-//! - 所有 Core 进程放进同一个 Job Object（`job` 模块）：主进程被强杀时系统统一回收 Core 及其子孙进程。
+//! - 每个 Core 进程各放进一个 Job Object（`job` 模块，句柄全部由主进程持有）：主进程被强杀时系统回收全部 Core
+//!   及其子孙进程；结束单个 Core（淘汰、空闲回收、停止）时结束其整个作业，工具子进程不残留。
+//! - 结束进程、等待 stderr 收尾都不在监管器锁内进行，且 stderr 收尾有时限（后代进程可能仍持有管道写端）。
 //! - stdin / stdout 由 `rpc_bridge` 接管（[`CoreProcess::take_stdin`]、[`CoreProcess::take_stdout`]）。
 //! - 健康检查与 10 分钟空闲回收依赖 `rpc_bridge` 提供的活动信息，随其接入；这里先提供
 //!   [`Supervisor::evict_idle`] 与按最久未使用淘汰的上限控制。
@@ -21,6 +23,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -38,6 +41,8 @@ pub(crate) const IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// 1 分钟内连续崩溃 3 次不再自动重启（第 5.5 节）。
 pub(crate) const CRASH_WINDOW: Duration = Duration::from_secs(60);
 pub(crate) const CRASH_LIMIT: usize = 3;
+/// 进程结束后等待 stderr 读取线程收尾的时限：超时即放弃等待（线程留在后台直到管道关闭）。
+const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(windows)]
 const NODE_EXE: &str = "node.exe";
@@ -238,15 +243,37 @@ impl StderrTail {
     }
 }
 
+/// stderr 读取线程。
+struct StderrReader {
+    handle: JoinHandle<()>,
+    /// 线程结束时发送端随之释放，`recv_timeout` 立即返回 Disconnected
+    done: Receiver<()>,
+}
+
+impl StderrReader {
+    /// 最多等待 `timeout` 让线程读完剩余输出；超时则不再等待
+    /// （Core 的后代进程可能继承了 stderr 写端，管道迟迟不关闭）。
+    fn finish(self, timeout: Duration) {
+        match self.done.recv_timeout(timeout) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => {
+                let _ = self.handle.join();
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
 /// 后台读取 stderr：只按 LF 分行（去行尾 `\r`，非法 UTF-8 按替换字符处理），写日志并保留尾部。
 fn spawn_stderr_reader(
     stderr: ChildStderr,
     tail: StderrTail,
     mut log: Option<File>,
-) -> io::Result<JoinHandle<()>> {
-    std::thread::Builder::new()
+) -> io::Result<StderrReader> {
+    let (done_tx, done) = mpsc::channel::<()>();
+    let handle = std::thread::Builder::new()
         .name("core-stderr".into())
         .spawn(move || {
+            let _done = done_tx;
             let mut reader = BufReader::new(stderr);
             let mut buf = Vec::new();
             loop {
@@ -266,7 +293,8 @@ fn spawn_stderr_reader(
                 }
                 tail.push(text);
             }
-        })
+        })?;
+    Ok(StderrReader { handle, done })
 }
 
 /// UTC 日期 `YYYYMMDD`（日志文件名用；日志模块落地后统一按天滚动与清理）。
@@ -310,7 +338,9 @@ pub(crate) struct CoreProcess {
     stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
     tail: StderrTail,
-    stderr_reader: Option<JoinHandle<()>>,
+    stderr_reader: Option<StderrReader>,
+    /// 本进程独占的作业：结束时连同子孙进程一起结束
+    job: Job,
     last_used: Instant,
 }
 
@@ -348,19 +378,20 @@ impl CoreProcess {
         self.child.try_wait()
     }
 
-    /// 等待 stderr 读取线程收尾（进程退出后管道关闭，线程随之结束）。
-    fn join_reader(&mut self) {
-        if let Some(handle) = self.stderr_reader.take() {
-            let _ = handle.join();
+    /// 有时限地等待 stderr 读取线程收尾。
+    fn drain_stderr(&mut self) {
+        if let Some(reader) = self.stderr_reader.take() {
+            reader.finish(STDERR_DRAIN_TIMEOUT);
         }
     }
 
-    /// 结束进程并回收，返回最近的 stderr。
+    /// 结束进程及其子孙进程并回收，返回最近的 stderr。不要在持有监管器锁时调用。
     pub(crate) fn kill(mut self) -> Vec<String> {
         self.stdin.take();
+        let _ = self.job.terminate();
         let _ = self.child.kill();
         let _ = self.child.wait();
-        self.join_reader();
+        self.drain_stderr();
         self.tail.lines()
     }
 }
@@ -430,17 +461,17 @@ struct State {
 pub(crate) struct Supervisor {
     layout: CoreLayout,
     paths: DataPaths,
-    job: Job,
     max_processes: Mutex<usize>,
     state: Mutex<State>,
 }
 
 impl Supervisor {
     pub(crate) fn new(layout: CoreLayout, paths: DataPaths) -> io::Result<Self> {
+        // 启动时探测一次作业对象可用，失败则不让 App 带着无法回收的 Core 运行
+        Job::new()?;
         Ok(Self {
             layout,
             paths,
-            job: Job::new()?,
             max_processes: Mutex::new(DEFAULT_MAX_PROCESSES),
             state: Mutex::new(State {
                 procs: HashMap::new(),
@@ -472,6 +503,21 @@ impl Supervisor {
     /// 为会话 `key` 拉起 Core。达到上限时先结束最久未使用的进程；该会话 1 分钟内已崩溃 3 次时拒绝。
     pub(crate) fn spawn(&self, key: &str, opts: &LaunchOptions) -> Result<u32, SupervisorError> {
         self.layout.check()?;
+        let mut evicted = Vec::new();
+        let result = self.spawn_locked(key, opts, &mut evicted);
+        // 被淘汰的进程在锁外结束
+        for process in evicted {
+            process.kill();
+        }
+        result
+    }
+
+    fn spawn_locked(
+        &self,
+        key: &str,
+        opts: &LaunchOptions,
+        evicted: &mut Vec<CoreProcess>,
+    ) -> Result<u32, SupervisorError> {
         let mut state = self.state();
         if state.procs.contains_key(key) {
             return Err(SupervisorError::AlreadyRunning(key.to_owned()));
@@ -493,7 +539,7 @@ impl Supervisor {
                 break;
             };
             if let Some(process) = state.procs.remove(&lru) {
-                process.kill();
+                evicted.push(process);
             }
         }
 
@@ -504,9 +550,10 @@ impl Supervisor {
     }
 
     fn launch(&self, key: &str, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {
+        let job = Job::new()?;
         let mut cmd = build_command(&self.layout, &self.paths, opts);
         let mut child = cmd.spawn()?;
-        if let Err(e) = self.job.assign(&child) {
+        if let Err(e) = job.assign(&child) {
             // 不在作业里的 Core 主进程崩溃时会残留，宁可不启动
             let _ = child.kill();
             let _ = child.wait();
@@ -524,6 +571,7 @@ impl Supervisor {
             child,
             tail,
             stderr_reader,
+            job,
             last_used: Instant::now(),
         })
     }
@@ -564,57 +612,75 @@ impl Supervisor {
 
     /// 收集意外退出的进程并计入崩溃次数；调用方据此在时间线标记“内核已退出”。
     pub(crate) fn reap_exited(&self) -> Vec<ExitedCore> {
-        let mut state = self.state();
-        let mut exited = Vec::new();
-        let keys: Vec<String> = state.procs.keys().cloned().collect();
-        for key in keys {
-            let done = match state.procs.get_mut(&key).map(CoreProcess::try_wait) {
-                Some(Ok(Some(status))) => Some(status),
-                _ => None,
-            };
-            let Some(status) = done else { continue };
-            let Some(mut process) = state.procs.remove(&key) else {
-                continue;
-            };
-            process.join_reader();
-            let now = Instant::now();
-            let tracker = state.crashes.entry(key.clone()).or_default();
-            tracker.record(now);
-            let restart_allowed = tracker.allows_restart(now);
-            exited.push(ExitedCore {
-                key,
-                status,
-                stderr_tail: process.tail.lines(),
-                restart_allowed,
-            });
+        let mut collected = Vec::new();
+        {
+            let mut state = self.state();
+            let keys: Vec<String> = state.procs.keys().cloned().collect();
+            for key in keys {
+                let done = match state.procs.get_mut(&key).map(CoreProcess::try_wait) {
+                    Some(Ok(Some(status))) => Some(status),
+                    _ => None,
+                };
+                let Some(status) = done else { continue };
+                let Some(process) = state.procs.remove(&key) else {
+                    continue;
+                };
+                let now = Instant::now();
+                let tracker = state.crashes.entry(key.clone()).or_default();
+                tracker.record(now);
+                let restart_allowed = tracker.allows_restart(now);
+                collected.push((key, status, process, restart_allowed));
+            }
         }
-        exited
+        // 锁外收尾：结束残留的子孙进程，有时限地等待 stderr 读完
+        collected
+            .into_iter()
+            .map(|(key, status, mut process, restart_allowed)| {
+                let _ = process.job.terminate();
+                process.drain_stderr();
+                ExitedCore {
+                    key,
+                    status,
+                    stderr_tail: process.tail.lines(),
+                    restart_allowed,
+                }
+            })
+            .collect()
     }
 
     /// 结束空闲超过 `timeout` 的进程，返回被回收的会话。
     pub(crate) fn evict_idle(&self, timeout: Duration) -> Vec<String> {
-        let mut state = self.state();
-        let idle: Vec<String> = state
-            .procs
-            .iter()
-            .filter(|(_, p)| p.idle_for() >= timeout)
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in &idle {
-            if let Some(process) = state.procs.remove(key) {
+        let removed: Vec<(String, CoreProcess)> = {
+            let mut state = self.state();
+            let idle: Vec<String> = state
+                .procs
+                .iter()
+                .filter(|(_, p)| p.idle_for() >= timeout)
+                .map(|(k, _)| k.clone())
+                .collect();
+            idle.into_iter()
+                .filter_map(|key| state.procs.remove(&key).map(|p| (key, p)))
+                .collect()
+        };
+        removed
+            .into_iter()
+            .map(|(key, process)| {
                 process.kill();
-            }
-        }
-        idle
+                key
+            })
+            .collect()
     }
 
     /// 结束全部 Core 进程（退出 App 时）。
     pub(crate) fn shutdown(&self) {
         let procs: Vec<CoreProcess> = self.state().procs.drain().map(|(_, p)| p).collect();
+        // 先结束全部作业（Core 与子孙进程立即退出），再逐个回收
+        for process in &procs {
+            let _ = process.job.terminate();
+        }
         for process in procs {
             process.kill();
         }
-        let _ = self.job.terminate();
     }
 }
 
@@ -949,6 +1015,94 @@ process.stderr.write("line one\nline two\r\nline three\n");
             supervisor.spawn("c", &opts(&tmp.0)),
             Err(SupervisorError::CrashLoop(_))
         ));
+    }
+
+    /// 拉起一个继承 stderr 的常驻孙进程并打印其 pid；`exit` 为真时 Core 随即退出。
+    fn grandchild_script(exit: bool) -> String {
+        format!(
+            r#"
+const {{ spawn }} = require("node:child_process");
+const g = spawn(process.execPath, ["-e", "setInterval(() => {{}}, 1000)"], {{ stdio: ["ignore", "ignore", "inherit"] }});
+process.stdout.write(String(g.pid) + "\n", () => {{ if ({exit}) process.exit(0); }});
+setInterval(() => {{}}, 1000);
+"#
+        )
+    }
+
+    fn read_pid(supervisor: &Supervisor, key: &str) -> u32 {
+        let stdout = supervisor
+            .with_process(key, CoreProcess::take_stdout)
+            .flatten()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line).unwrap();
+        line.trim().parse().expect("孙进程 pid")
+    }
+
+    /// 孙进程收尾：Windows 上应已随作业结束；其他平台没有作业，测试自行清理。
+    fn cleanup_grandchild(pid: u32) {
+        if cfg!(windows) {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let alive = Command::new("tasklist")
+                    .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+                assert!(Instant::now() < deadline, "孙进程应随 Core 的作业结束");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        } else {
+            let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        }
+    }
+
+    #[test]
+    fn stop_does_not_hang_when_grandchild_holds_stderr() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(
+            fake_layout(&tmp.0, &grandchild_script(false)),
+            data_paths(&tmp.0),
+        )
+        .unwrap();
+        supervisor.spawn("g", &opts(&tmp.0)).unwrap();
+        let grandchild = read_pid(&supervisor, "g");
+        let started = Instant::now();
+        assert!(supervisor.stop("g").is_some());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "stderr 收尾应有时限"
+        );
+        cleanup_grandchild(grandchild);
+    }
+
+    #[test]
+    fn reap_does_not_hang_when_grandchild_holds_stderr() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(
+            fake_layout(&tmp.0, &grandchild_script(true)),
+            data_paths(&tmp.0),
+        )
+        .unwrap();
+        supervisor.spawn("g", &opts(&tmp.0)).unwrap();
+        let grandchild = read_pid(&supervisor, "g");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let exited = loop {
+            let started = Instant::now();
+            let e = supervisor.reap_exited();
+            assert!(started.elapsed() < Duration::from_secs(5), "reap 应有时限");
+            if !e.is_empty() || Instant::now() > deadline {
+                break e;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(exited.len(), 1);
+        // 监管器锁未被占住
+        assert!(supervisor.running_keys().is_empty());
+        cleanup_grandchild(grandchild);
     }
 
     #[test]
