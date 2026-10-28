@@ -165,6 +165,12 @@ export const permissionMeta: Record<PermissionMode, { icon: typeof Hand; tone: s
 
 const MODES: PermissionMode[] = ["ask", "edit", "full"];
 
+/**
+ * 已真正生效的权限档位。权限模式还没有传给 Core / primus-guard，在接入前只开放"每次询问"（Core 的默认行为），
+ * 另外两档显示但禁用，避免界面显示"完全访问"而实际行为不变。
+ */
+const PERMISSION_READY: ReadonlySet<PermissionMode> = new Set(["ask"]);
+
 /** 权限模式：三档，每档一句说明；当前项右侧打勾，完全访问整行用警示色 */
 export function PermissionPicker({
   mode,
@@ -185,7 +191,12 @@ export function PermissionPicker({
         minWidth={300}
         className="max-w-[340px]"
       >
-        <Menu.RadioGroup value={mode} onValueChange={(v) => onChange(v as PermissionMode)}>
+        <Menu.RadioGroup
+          value={mode}
+          onValueChange={(v) => {
+            if (PERMISSION_READY.has(v as PermissionMode)) onChange(v as PermissionMode);
+          }}
+        >
           {MODES.map((m) => {
             const { icon: Icon, tone } = permissionMeta[m];
             const p = t.permissions[m];
@@ -194,6 +205,7 @@ export function PermissionPicker({
                 key={m}
                 value={m}
                 textValue={p.label}
+                disabled={!PERMISSION_READY.has(m)}
                 className={cn(rowClass, "items-start gap-3 py-2", m === "full" && tone)}
               >
                 <Icon
@@ -211,6 +223,7 @@ export function PermissionPicker({
                     )}
                   >
                     {p.hint}
+                    {!PERMISSION_READY.has(m) && `（${t.permissionPending}）`}
                   </span>
                 </span>
                 <Menu.ItemIndicator className="mt-0.5 shrink-0">

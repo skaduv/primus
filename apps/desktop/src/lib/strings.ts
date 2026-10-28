@@ -84,6 +84,7 @@ export const strings = {
         hint: "不再询问，可访问互联网和电脑上的任何文件",
       },
     },
+    permissionPending: "接入 Core 权限确认后可用",
     context: "上下文",
     welcomeTitle: "今天想做点什么？",
     chooseFolder: "选择文件夹",

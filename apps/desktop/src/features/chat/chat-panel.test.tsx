@@ -62,15 +62,16 @@ describe("对话区（mock 事件流）", () => {
     );
   });
 
-  it("权限模式菜单切换到完全访问", async () => {
+  it("权限菜单接入 Core 前只开放每次询问，其余档位禁用", async () => {
     render(<ChatPanel />);
     const trigger = screen.getByRole("button", { name: new RegExp(t.permissionMode) });
     fireEvent.keyDown(trigger, { key: "Enter" });
-    fireEvent.click(
-      await screen.findByRole("menuitemradio", { name: new RegExp(t.permissions.full.label) }),
-    );
-    await waitFor(() => expect(useAppStore.getState().permissionMode).toBe("full"));
-    expect(screen.getByRole("button", { name: new RegExp(t.permissions.full.label) })).toBeTruthy();
+    const full = await screen.findByRole("menuitemradio", {
+      name: new RegExp(t.permissions.full.label),
+    });
+    expect(full.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(full);
+    expect(useAppStore.getState().permissionMode).toBe("ask");
   });
 
   it("运行中可以停止", async () => {
