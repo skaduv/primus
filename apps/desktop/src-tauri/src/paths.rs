@@ -687,6 +687,10 @@ mod tests {
         let (protected, aces) = platform::dacl_summary(&dir).unwrap();
         assert!(protected);
         assert_eq!(aces, 2);
+        // 预先存在、继承了上级权限的 users 也在同一句柄上被收紧
+        let (protected, aces) = platform::dacl_summary(&tmp.0.join("users")).unwrap();
+        assert!(protected);
+        assert_eq!(aces, 4);
     }
 
     #[cfg(windows)]

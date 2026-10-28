@@ -49,8 +49,8 @@ mod windows_impl {
     use std::ptr::{null, null_mut};
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_SUCCESS, GetLastError, HANDLE,
-        INVALID_HANDLE_VALUE, LocalFree, WIN32_ERROR,
+        CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_SUCCESS,
+        GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WIN32_ERROR,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, SE_FILE_OBJECT,
@@ -514,27 +514,33 @@ mod windows_impl {
 
     /// 安全地创建或校验 `data/users`：
     /// - 不存在：带 [`users_root_acl`] 新建；
-    /// - 已存在：以不跟随重解析点的句柄打开（拒绝 symlink / junction），权限安全则直接使用；不安全时若所有者可信
-    ///   （见 [`is_trusted_owner`]）就在同一句柄上重设，否则报错——它可能被其他本地用户预先创建，需要管理员删除后重试。
+    /// - 已存在：以不跟随重解析点的句柄打开（拒绝 symlink / junction），权限安全则直接使用；不安全时若该句柄可写 DACL
+    ///   且所有者可信（见 [`is_trusted_owner`]）就在同一句柄上重设，否则报错——它可能被其他本地用户预先创建，需要管理员删除后重试。
     pub(crate) fn secure_users_root(dir: &Path) -> io::Result<()> {
         let acl = users_root_acl()?;
         if create_dir_with_dacl(dir, acl.0, None)? {
             return Ok(());
         }
         let user = TokenUserBuf::current()?;
-        let handle = open_dir_no_follow(dir, READ_CONTROL)?;
+        // 校验与修复必须基于同一句柄：能拿到 WRITE_DAC 就用带写权限的句柄；拿不到（例如 users 由其他用户创建）
+        // 只读校验，不安全时直接拒绝，不再按路径重新打开，避免两次打开之间目录被替换
+        let (handle, writable) = match open_dir_no_follow(dir, READ_CONTROL | WRITE_DAC) {
+            Ok(handle) => (handle, true),
+            Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                (open_dir_no_follow(dir, READ_CONTROL)?, false)
+            }
+            Err(e) => return Err(e),
+        };
         if users_root_is_safe(&handle, &user)? {
             return Ok(());
         }
         let (_sd, owner, _) = get_security(&handle, OWNER_SECURITY_INFORMATION)?;
-        if !is_trusted_owner(owner, &user)? {
+        if !writable || !is_trusted_owner(owner, &user)? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "data\\users 的所有者与权限不可信（可能被其他用户预先创建），请让管理员删除该目录后重试",
             ));
         }
-        drop(handle);
-        let handle = open_dir_no_follow(dir, READ_CONTROL | WRITE_DAC)?;
         set_dacl(&handle, acl.0, true)
     }
 
