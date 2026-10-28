@@ -63,8 +63,8 @@ mod windows_impl {
         PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
         SECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, SetSecurityDescriptorOwner,
-        TOKEN_QUERY, TOKEN_USER, TokenUser, WELL_KNOWN_SID_TYPE, WinBuiltinUsersSid,
-        WinLocalSystemSid,
+        TOKEN_QUERY, TOKEN_USER, TokenUser, WELL_KNOWN_SID_TYPE, WinBuiltinAdministratorsSid,
+        WinBuiltinUsersSid, WinLocalSystemSid,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE, FILE_ALL_ACCESS,
@@ -315,6 +315,26 @@ mod windows_impl {
         Ok(String::from_utf16_lossy(slice))
     }
 
+    /// 已存在的 `users/<SID>` 可接受的所有者：当前用户；或 Administrators 组 / SYSTEM——管理员以提权方式运行时
+    /// 新建对象的默认所有者是 Administrators 组，而普通用户无法把所有者设成这两者，所以它们不可能是其他普通用户预先创建的。
+    fn is_trusted_owner(owner: PSID, user: &TokenUserBuf) -> io::Result<bool> {
+        if owner.is_null() {
+            return Ok(false);
+        }
+        // SAFETY: owner 指向调用方持有的安全描述符内部，user.sid() 指向 user 缓冲区，二者均有效
+        if unsafe { EqualSid(owner, user.sid()) } != 0 {
+            return Ok(true);
+        }
+        for kind in [WinBuiltinAdministratorsSid, WinLocalSystemSid] {
+            let mut trusted = WellKnownSid::new(kind)?;
+            // SAFETY: 两个 SID 均有效
+            if unsafe { EqualSid(owner, trusted.psid()) } != 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// 路径不能是符号链接或 junction 等重解析点（用于 `data/users`）。
     pub(crate) fn ensure_not_link(path: &Path) -> io::Result<()> {
         open_dir_no_follow(path, READ_CONTROL).map(drop)
@@ -358,8 +378,7 @@ mod windows_impl {
 
         let handle = open_dir_no_follow(dir, READ_CONTROL | WRITE_DAC)?;
         let (_sd, owner, _) = get_security(&handle, OWNER_SECURITY_INFORMATION)?;
-        // SAFETY: owner 指向 _sd 内部，user.sid() 指向 user 缓冲区，二者均有效
-        if owner.is_null() || unsafe { EqualSid(owner, user.sid()) } == 0 {
+        if !is_trusted_owner(owner, &user)? {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "用户数据目录的所有者不是当前用户（可能被其他用户预先创建），请删除该目录后重试",
