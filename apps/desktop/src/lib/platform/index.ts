@@ -9,6 +9,14 @@ export * from "./types";
 export type { WindowControls } from "./window";
 
 /** 是否运行在 Tauri 窗口内（Tauri 2 注入 `globalThis.isTauri`） */
+/**
+ * 是否能弹系统文件/文件夹对话框。薄壳尚未注册 dialog_pick_folder / dialog_pick_files（待接入 tauri-plugin-dialog），
+ * Tauri 内为 false，界面隐藏"打开文件夹…"和附件入口；浏览器预览走 mock。接入后改为恒 true。
+ */
+export function canPickFiles(): boolean {
+  return !isTauriRuntime();
+}
+
 export function isTauriRuntime(): boolean {
   return (globalThis as { isTauri?: unknown }).isTauri === true;
 }

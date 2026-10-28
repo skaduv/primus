@@ -174,6 +174,11 @@ const seamHandleClass = "-mx-1 z-20";
 
 /** 吸附动画：快起慢停，像磁吸一样贴到中央纸面上；圆角、凹口、侧栏宽度、窗口宽度都用同一条曲线同步 */
 export const SNAP_MS = 320;
+/** 侧栏吸附动画实际时长：系统开启"减少动态效果"时几乎瞬时完成（不用 0，避免除零） */
+const snapDuration = () =>
+  typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+    ? 1
+    : SNAP_MS;
 const SNAP_EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 const SEAM_TRANSITION = `border-radius ${SNAP_MS}ms ${SNAP_EASE}, --nl ${SNAP_MS}ms ${SNAP_EASE}, --nr ${SNAP_MS}ms ${SNAP_EASE}`;
 
@@ -232,7 +237,10 @@ function useWindowChoreography(
   const windowMode = hasWindow && !maximized;
   // 只在开关状态变化时编排；宽度与窗口模式取最新值即可
   const latest = useRef({ widths, windowMode });
-  latest.current = { widths, windowMode };
+  // 渲染期间不写 ref；layout effect 按声明顺序执行，这里先于下面的编排
+  useLayoutEffect(() => {
+    latest.current = { widths, windowMode };
+  });
 
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -267,7 +275,12 @@ function useWindowChoreography(
     const c = controls.current;
     const side = p.left !== leftOpen ? "left" : p.right !== rightOpen ? "right" : null;
     const main = ref.current;
-    if (!side || !c || !main || !latest.current.windowMode) return;
+    if (!side || !c || !main) return;
+    if (!latest.current.windowMode) {
+      // 最大化/非窗口模式只做 CSS 开合，但最小宽度仍要跟上，还原窗口后不会小于当前布局
+      void c.setMinWidth(minWindowWidth(leftOpen, rightOpen)).catch(() => {});
+      return;
+    }
     const w = latest.current.widths;
     // 本次渲染已按新状态排过版，取上一次提交时记下的中央宽度
     const current = stableWidth.current ?? main.offsetWidth;
@@ -289,9 +302,13 @@ function useWindowChoreography(
     const frame = () => new Promise((r) => requestAnimationFrame(() => r(null)));
     void (async () => {
       // 收起时先放宽最小宽度再收窄；展开时加宽完再收紧，窗口永远不被夹住
-      if (minAfter < minBefore) await c.setMinWidth(minAfter);
-      await c.animateWidth(delta, SNAP_MS, snapEase);
-      if (minAfter > minBefore) await c.setMinWidth(minAfter);
+      try {
+        if (minAfter < minBefore) await c.setMinWidth(minAfter);
+        await c.animateWidth(delta, snapDuration(), snapEase);
+        if (minAfter > minBefore) await c.setMinWidth(minAfter);
+      } catch {
+        // 窗口操作失败也要走完清理，否则开关按钮会一直禁用、中央宽度被锁住
+      }
       await frame();
       if (!alive) return;
       setFill(null);
@@ -347,11 +364,14 @@ function SnapSlot({
   children: (width: number) => ReactNode;
 }) {
   const last = useRef(size);
-  if (open && size > 0) last.current = size;
   const width = open && size > 0 ? size : last.current;
+  useLayoutEffect(() => {
+    if (open && size > 0) last.current = size;
+  });
   const [mounted, setMounted] = useState(open);
   const [shown, setShown] = useState(open);
   const [animating, setAnimating] = useState(false);
+  const [ms, setMs] = useState(SNAP_MS);
   const first = useRef(true);
 
   useEffect(() => {
@@ -361,6 +381,7 @@ function SnapSlot({
     }
     if (windowMode) return;
     setAnimating(true);
+    setMs(snapDuration());
     let frame = 0;
     if (open) {
       setMounted(true);
@@ -373,7 +394,7 @@ function SnapSlot({
     const timer = setTimeout(() => {
       setAnimating(false);
       if (!open) setMounted(false);
-    }, SNAP_MS + 20);
+    }, snapDuration() + 20);
     return () => {
       cancelAnimationFrame(frame);
       clearTimeout(timer);
@@ -410,7 +431,7 @@ function SnapSlot({
       )}
       style={{
         width: shown ? width : 0,
-        transition: animating ? `width ${SNAP_MS}ms ${SNAP_EASE}` : undefined,
+        transition: animating ? `width ${ms}ms ${SNAP_EASE}` : undefined,
       }}
     >
       {children(width)}

@@ -52,7 +52,7 @@ describe("对话区（mock 事件流）", () => {
 
   it("附件只引用本地路径：选中后显示文件名，可移除，单独附件也能发送", async () => {
     render(<ChatPanel />);
-    fireEvent.click(screen.getByRole("button", { name: t.attach }));
+    fireEvent.click(await screen.findByRole("button", { name: t.attach }));
     expect(await screen.findByText("README.md")).toBeTruthy();
     expect(screen.getByText("main.ts")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: `${t.removeAttachment} main.ts` }));

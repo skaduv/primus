@@ -37,7 +37,7 @@ export function Switch({ ariaLabel, checked, onCheckedChange, disabled, classNam
       <span
         aria-hidden
         className={cn(
-          "absolute inset-0 rounded-full transition-colors duration-200",
+          "absolute inset-0 rounded-full transition-colors duration-200 motion-reduce:transition-none",
           "bg-black/[0.09] shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)] dark:bg-white/[0.12]",
           "peer-checked:bg-accent peer-checked:shadow-[inset_0_1px_2px_rgb(0_0_0/0.18)]",
           "peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40 peer-focus-visible:ring-offset-1",
@@ -47,7 +47,7 @@ export function Switch({ ariaLabel, checked, onCheckedChange, disabled, classNam
         aria-hidden
         className={cn(
           "glass-knob pointer-events-none absolute top-[2px] left-[2px] h-[22px] w-[22px] rounded-full",
-          "transition-[transform,width] duration-300 ease-[cubic-bezier(0.3,1.5,0.6,1)]",
+          "transition-[transform,width] duration-300 ease-[cubic-bezier(0.3,1.5,0.6,1)] motion-reduce:transition-none",
           "peer-checked:translate-x-[20px]",
           "peer-enabled:peer-active:w-[28px] peer-checked:peer-enabled:peer-active:translate-x-[14px]",
         )}

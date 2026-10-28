@@ -40,6 +40,7 @@ import {
   AttachmentChips,
   PermissionPicker,
   permissionMeta,
+  useCanPickFiles,
   WorkspacePicker,
   withAttachments,
 } from "./composer-menus";
@@ -364,6 +365,8 @@ export function ChatPanel() {
     stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
   };
   const lastMessage = state.messages.at(-1);
+  const started = state.messages.length > 0;
+  const canPickFiles = useCanPickFiles();
   useEffect(() => {
     if (!lastMessage || !stickToBottom.current) return;
     const el = scrollRef.current;
@@ -470,17 +473,19 @@ export function ChatPanel() {
                 )}
               </div>
               <div className="flex items-center gap-3 text-xs text-muted">
-                {/* 附件：系统文件对话框选文件，只引用本地路径 */}
-                <GlassButton
-                  size={30}
-                  {...glass}
-                  aria-label={t.attach}
-                  title={t.attach}
-                  onClick={() => void pickFiles()}
-                  className={glassButtonClass}
-                >
-                  <Plus aria-hidden size={16} />
-                </GlassButton>
+                {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
+                {canPickFiles && (
+                  <GlassButton
+                    size={30}
+                    {...glass}
+                    aria-label={t.attach}
+                    title={t.attach}
+                    onClick={() => void pickFiles()}
+                    className={glassButtonClass}
+                  >
+                    <Plus aria-hidden size={16} />
+                  </GlassButton>
+                )}
                 <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
                   <GlassButton
                     variant="capsule"
@@ -505,22 +510,32 @@ export function ChatPanel() {
                     </span>
                   </GlassButton>
                 </PermissionPicker>
-                {workspace && (
-                  <WorkspacePicker current={workspace} onPicked={setWorkspace}>
-                    <GlassButton
-                      variant="capsule"
-                      size={30}
-                      {...glass}
-                      title={`${t.currentWorkspace}：${workspace.path}`}
-                      className={glassButtonClass}
+                {workspace &&
+                  (started ? (
+                    // 会话已绑定到开始时的工作区，之后不能切换，避免界面与 Core 实际工作区不一致
+                    <span
+                      title={`${t.currentWorkspace}：${workspace.path}\n${t.workspaceLocked}`}
+                      className="flex h-[30px] items-center gap-1.5 px-2 text-muted"
                     >
                       <Folder aria-hidden size={14} />
-                      <span className="max-w-40 truncate text-[12px] font-normal">
-                        {workspace.name}
-                      </span>
-                    </GlassButton>
-                  </WorkspacePicker>
-                )}
+                      <span className="max-w-40 truncate text-[12px]">{workspace.name}</span>
+                    </span>
+                  ) : (
+                    <WorkspacePicker current={workspace} onPicked={setWorkspace}>
+                      <GlassButton
+                        variant="capsule"
+                        size={30}
+                        {...glass}
+                        title={`${t.currentWorkspace}：${workspace.path}`}
+                        className={glassButtonClass}
+                      >
+                        <Folder aria-hidden size={14} />
+                        <span className="max-w-40 truncate text-[12px] font-normal">
+                          {workspace.name}
+                        </span>
+                      </GlassButton>
+                    </WorkspacePicker>
+                  ))}
                 <span className="flex-1" />
                 <ContextRing percent={0} />
                 {state.running ? (

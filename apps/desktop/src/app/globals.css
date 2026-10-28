@@ -19,6 +19,9 @@
   --color-danger: #d70015;
   --color-warning: #c93400;
   --color-success: #248a3d;
+  /* Windows 11 标题栏关闭按钮（系统红），浅深色一致 */
+  --color-caption-close: #e81123;
+  --color-caption-close-pressed: #f1707a;
   /* 西文：界面 Inter，标题与助手回复 Source Serif 4（均为 OFL 开源、本地打包）；中文回落系统黑体 */
   --font-sans:
     "Inter Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
@@ -151,6 +154,15 @@ html.window-effects.glass-clear body {
   .glass-pop[data-state] > * > *,
   .glass-fade[data-state] {
     animation: none;
+  }
+
+  /* 两个伪元素分开写：同一规则里出现不认识的伪元素会整条失效 */
+  .ui-range::-webkit-slider-thumb {
+    transition: none;
+  }
+
+  .ui-range::-moz-range-thumb {
+    transition: none;
   }
 }
 

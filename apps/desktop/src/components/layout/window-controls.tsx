@@ -38,7 +38,7 @@ function CaptionButton({
         "flex h-9 w-[46px] items-center justify-center text-fg transition-colors duration-100",
         "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
         danger
-          ? "hover:bg-[#e81123] hover:text-white active:bg-[#f1707a] active:text-white"
+          ? "hover:bg-caption-close hover:text-white active:bg-caption-close-pressed active:text-white"
           : "hover:bg-hover active:bg-[var(--color-border)]",
         className,
       )}

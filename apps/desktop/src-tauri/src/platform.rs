@@ -1,7 +1,7 @@
 //! 平台差异集中在此（Windows / macOS / Linux）。第 20 章。
 
 /// 一次性设置窗口外框位置与尺寸（物理像素）。
-/// Windows 上用一次 `SetWindowPos` 原子更新：侧栏向左伸缩时窗口左边缘和宽度同时变，右边缘不跳。
+/// Windows 上用一次 `SetWindowPos` 原子更新。前端侧栏伸缩时原点（左边缘）保持不变，只改宽度，右边缘随之移动。
 #[cfg(windows)]
 pub fn set_window_bounds(
     window: &tauri::WebviewWindow,

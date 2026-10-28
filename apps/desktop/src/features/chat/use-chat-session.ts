@@ -69,9 +69,8 @@ export function useChatSession(): ChatSession {
     if (conn.current) return Promise.resolve();
     opening.current ??= (async () => {
       const platform = await getPlatform();
-      // 优先用输入框上方选中的工作区；未选择时退回最近的工作区（可为空，直接对话）
-      const chosen = useAppStore.getState().workspace?.path;
-      const path = chosen ?? (await platform.workspaceList())[0]?.path ?? "";
+      // 用输入框上方选中的工作区；未选择时直接对话，不隐式绑定最近的工作区（会话开始后工作区锁定）
+      const path = useAppStore.getState().workspace?.path ?? "";
       const { sessionKey } = await platform.sessionOpen(path, undefined, onBatch);
       if (disposed.current) {
         // 打开期间组件已卸载：立即关闭，避免会话泄漏

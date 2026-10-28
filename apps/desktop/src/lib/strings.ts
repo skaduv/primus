@@ -91,6 +91,7 @@ export const strings = {
     noMatchingWorkspaces: "没有匹配的工作区",
     noRecentWorkspaces: "还没有打开过工作区",
     currentWorkspace: "当前工作区",
+    workspaceLocked: "会话开始后不能切换工作区，请新建会话",
     contextDetail: "当前会话占用的上下文窗口比例。",
     welcomeSubtitle: "乾元可以阅读和修改你的项目、运行命令，并在需要时先征求你的确认。",
     suggestions: ["解释这个项目的结构", "找出并修复失败的测试", "为 README 补充安装说明"],

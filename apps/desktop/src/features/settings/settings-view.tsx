@@ -140,7 +140,7 @@ export function SettingsView() {
   const [group, setGroup] = useState<SettingsGroup>("general");
 
   return (
-    <div className="flex h-screen min-h-[640px] min-w-[960px] flex-col overflow-hidden px-2 pb-2 text-fg">
+    <div className="flex h-screen w-screen flex-col overflow-hidden px-2 pb-2 text-fg">
       {/* 主窗口没有系统标题栏：顶部细条可拖动窗口，窗口按钮贴在右上角（浏览器预览中只留上边距） */}
       <WindowTitleBar className="-mx-2 mb-1" />
       <div className="flex min-h-0 flex-1">

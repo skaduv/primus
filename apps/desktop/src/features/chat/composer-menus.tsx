@@ -13,13 +13,13 @@ import {
   X,
 } from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   GlassPopover,
   GlassPopoverContent,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
-import { getPlatform } from "@/lib/platform";
+import { canPickFiles, getPlatform } from "@/lib/platform";
 import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -40,6 +40,14 @@ export function baseName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+/** 当前平台是否能弹系统文件对话框（首帧为 false） */
+export function useCanPickFiles(): boolean {
+  const [can, setCan] = useState(false);
+  // 只在客户端判断运行环境，避免水合不一致
+  useEffect(() => setCan(canPickFiles()), []);
+  return can;
+}
+
 /**
  * 选择工作区：顶部搜索、最近工作区列表（当前项打勾）、底部"打开文件夹…"调用系统对话框。
  */
@@ -54,6 +62,7 @@ export function WorkspacePicker({
 }) {
   const [items, setItems] = useState<WorkspaceInfo[]>([]);
   const [query, setQuery] = useState("");
+  const canPick = useCanPickFiles();
 
   const onOpenChange = (open: boolean) => {
     if (!open) return;
@@ -130,14 +139,18 @@ export function WorkspacePicker({
             ))
           )}
         </div>
-        <div className={separatorClass} />
-        <Menu.Item
-          className={cn(rowClass, "text-muted data-[highlighted]:text-fg")}
-          onSelect={() => void browse()}
-        >
-          <Plus aria-hidden size={15} strokeWidth={1.75} className="shrink-0" />
-          <span>{strings.layout.openFolder}</span>
-        </Menu.Item>
+        {canPick && (
+          <>
+            <div className={separatorClass} />
+            <Menu.Item
+              className={cn(rowClass, "text-muted data-[highlighted]:text-fg")}
+              onSelect={() => void browse()}
+            >
+              <Plus aria-hidden size={15} strokeWidth={1.75} className="shrink-0" />
+              <span>{strings.layout.openFolder}</span>
+            </Menu.Item>
+          </>
+        )}
       </GlassPopoverContent>
     </GlassPopover>
   );
