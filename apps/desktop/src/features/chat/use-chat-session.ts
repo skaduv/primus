@@ -24,7 +24,8 @@ export interface ChatSession {
   state: SessionState;
   /** 打开会话或发送命令时的错误 */
   error?: string;
-  send: (message: string) => Promise<void>;
+  /** 发送成功返回 true；失败时设置 error 并返回 false */
+  send: (message: string) => Promise<boolean>;
   abort: () => Promise<void>;
 }
 
@@ -102,13 +103,15 @@ export function useChatSession(): ChatSession {
   }, []);
 
   const send = useCallback(
-    async (message: string) => {
+    async (message: string): Promise<boolean> => {
       setError(undefined);
       try {
         await ensureOpen();
         await command("prompt", { message });
+        return true;
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+        return false;
       }
     },
     [ensureOpen, command],

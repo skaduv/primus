@@ -19,7 +19,7 @@ import {
   GlassPopoverContent,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
-import { canPickFiles, getPlatform } from "@/lib/platform";
+import { canPickFiles, canUseWorkspaces, getPlatform } from "@/lib/platform";
 import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -45,6 +45,13 @@ export function useCanPickFiles(): boolean {
   const [can, setCan] = useState(false);
   // 只在客户端判断运行环境，避免水合不一致
   useEffect(() => setCan(canPickFiles()), []);
+  return can;
+}
+
+/** 当前平台是否能列出/打开工作区（首帧为 false） */
+export function useCanUseWorkspaces(): boolean {
+  const [can, setCan] = useState(false);
+  useEffect(() => setCan(canUseWorkspaces()), []);
   return can;
 }
 

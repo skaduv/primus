@@ -41,6 +41,7 @@ import {
   PermissionPicker,
   permissionMeta,
   useCanPickFiles,
+  useCanUseWorkspaces,
   WorkspacePicker,
   withAttachments,
 } from "./composer-menus";
@@ -367,6 +368,7 @@ export function ChatPanel() {
   const lastMessage = state.messages.at(-1);
   const started = state.messages.length > 0;
   const canPickFiles = useCanPickFiles();
+  const canUseWorkspaces = useCanUseWorkspaces();
   useEffect(() => {
     if (!lastMessage || !stickToBottom.current) return;
     const el = scrollRef.current;
@@ -377,11 +379,14 @@ export function ChatPanel() {
     e?.preventDefault();
     const text = draft.trim();
     if ((!text && attachments.length === 0) || state.running) return;
-    setDraft("");
-    setAttachments([]);
-    setExpanded(false);
     stickToBottom.current = true;
-    void send(withAttachments(text, attachments));
+    // 发送成功后才清空输入，失败时保留草稿和附件以便重试
+    void send(withAttachments(text, attachments)).then((sent) => {
+      if (!sent) return;
+      setDraft("");
+      setAttachments([]);
+      setExpanded(false);
+    });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -427,7 +432,7 @@ export function ChatPanel() {
       <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
         <div className="pointer-events-auto mx-auto max-w-3xl">
           <WorkspaceBar
-            visible={!workspace && state.messages.length === 0}
+            visible={canUseWorkspaces && !workspace && state.messages.length === 0}
             current={workspace}
             onPicked={setWorkspace}
           />

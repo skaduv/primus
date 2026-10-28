@@ -33,7 +33,8 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.change(input, { target: { value: "你好" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect((input as HTMLTextAreaElement).value).toBe("");
+    // 发送成功后才清空输入
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
     await screen.findByRole("article", { name: t.you });
     await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
     expect(screen.getByText(/工具：read/)).toBeTruthy();

@@ -17,6 +17,14 @@ export function canPickFiles(): boolean {
   return !isTauriRuntime();
 }
 
+/**
+ * 是否能列出/打开工作区。薄壳尚未注册 workspace_list / workspace_open，Tauri 内为 false，
+ * 界面隐藏工作区选择入口（会话以空路径打开）；浏览器预览走 mock。命令注册后改为恒 true。
+ */
+export function canUseWorkspaces(): boolean {
+  return !isTauriRuntime();
+}
+
 export function isTauriRuntime(): boolean {
   return (globalThis as { isTauri?: unknown }).isTauri === true;
 }
