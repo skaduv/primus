@@ -1,16 +1,7 @@
 "use client";
 
 import type { AgentMessage } from "@primus/protocol";
-import {
-  ArrowUp,
-  ChevronDown,
-  Folder,
-  FolderOpen,
-  Plus,
-  ShieldCheck,
-  Square,
-  Wrench,
-} from "lucide-react";
+import { ArrowUp, Folder, FolderOpen, Plus, ShieldCheck, Square, Wrench } from "lucide-react";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -251,63 +242,76 @@ function WorkspaceBar({
           blur={24}
           radius={18}
           {...glass}
-          className="-mb-5 pb-5 shadow-[0_6px_18px_-10px_rgb(0_0_0/0.25)] ring-1 ring-black/[0.06] dark:ring-white/[0.08]"
+          sheen={false}
+          className="-mb-5 pb-5 ring-1 ring-black/[0.06] dark:ring-white/[0.08]"
         >
-          <WorkspaceMenu onPicked={onPicked}>
-            <button
-              type="button"
-              className="flex h-10 w-full items-center gap-2.5 px-4 text-left text-[13px] outline-none"
-            >
-              <FolderOpen aria-hidden size={15} className="text-muted" />
-              <span className="font-medium">{t.chooseFolder}</span>
-              <span className="text-muted">{t.chooseFolderHint}</span>
-              <span className="flex-1" />
-              <ChevronDown aria-hidden size={14} className="text-muted" />
-            </button>
-          </WorkspaceMenu>
+          <div className="flex h-10 items-center px-4">
+            <WorkspaceMenu onPicked={onPicked}>
+              <button
+                type="button"
+                className="flex items-center gap-2 text-[13px] text-muted outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
+              >
+                <FolderOpen aria-hidden size={15} />
+                <span className="font-medium">{t.chooseFolder}</span>
+              </button>
+            </WorkspaceMenu>
+          </div>
         </GlassSurface>
       </div>
     </div>
   );
 }
 
-/** 上下文占用：小圆环 + 百分比 */
+/** 上下文占用：只显示小圆环，点击展开详情 */
 function ContextRing({ percent }: { percent: number }) {
   const r = 7;
   const c = 2 * Math.PI * r;
   return (
-    <span title={t.context} className="flex items-center gap-1.5 px-1 text-[12px] text-muted">
-      <svg aria-hidden width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
-        <circle
-          cx="9"
-          cy="9"
-          r={r}
-          fill="none"
-          strokeWidth="2.25"
-          className="stroke-black/10 dark:stroke-white/15"
-        />
-        <circle
-          cx="9"
-          cy="9"
-          r={r}
-          fill="none"
-          strokeWidth="2.25"
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - percent / 100)}
-          className="stroke-accent"
-        />
-      </svg>
-      {t.context} {percent}%
-    </span>
+    <GlassPopover>
+      <GlassPopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${t.context} ${percent}%`}
+          className="grid size-8 place-items-center rounded-full outline-none transition-colors hover:bg-hover data-[state=open]:bg-hover"
+        >
+          <svg aria-hidden width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
+            <circle
+              cx="9"
+              cy="9"
+              r={r}
+              fill="none"
+              strokeWidth="2.25"
+              className="stroke-black/10 dark:stroke-white/15"
+            />
+            <circle
+              cx="9"
+              cy="9"
+              r={r}
+              fill="none"
+              strokeWidth="2.25"
+              strokeLinecap="round"
+              strokeDasharray={c}
+              strokeDashoffset={c * (1 - percent / 100)}
+              className="stroke-accent"
+            />
+          </svg>
+        </button>
+      </GlassPopoverTrigger>
+      <GlassPopoverContent side="top" align="end" sideOffset={8} tint={0.75} minWidth={200}>
+        <div className="flex flex-col gap-1.5 px-4 py-1.5 text-[13px]">
+          <div className="flex items-baseline justify-between gap-6">
+            <span className="font-medium">{t.context}</span>
+            <span className="tabular-nums text-muted">{percent}%</span>
+          </div>
+          <div className="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/15">
+            <div className="h-full rounded-full bg-accent" style={{ width: `${percent}%` }} />
+          </div>
+          <p className="text-[12px] text-muted">{t.contextDetail}</p>
+        </div>
+      </GlassPopoverContent>
+    </GlassPopover>
   );
 }
-
-/** 发送 / 停止：强调色"水珠"，带上沿高光与内阴影 */
-const dropButtonClass =
-  "grid size-8 place-items-center rounded-full text-white transition-[transform,opacity] duration-200 active:scale-90 " +
-  "shadow-[inset_0_1px_0.5px_rgb(255_255_255/0.55),inset_0_-2px_4px_rgb(0_0_0/0.18),0_2px_6px_-1px_rgb(0_0_0/0.25)] " +
-  "bg-[radial-gradient(120%_90%_at_30%_20%,rgb(255_255_255/0.35),transparent_55%)]";
 
 /** 距底部小于该值视为"停在底部" */
 const STICK_THRESHOLD_PX = 48;
@@ -435,9 +439,9 @@ export function ChatPanel() {
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={onKeyDown}
                 rows={2}
-                className="max-h-48 min-h-11 w-full resize-none bg-transparent px-1 text-sm leading-relaxed outline-none placeholder:text-muted"
+                className="max-h-48 min-h-11 w-full resize-none bg-transparent px-1 text-sm leading-relaxed outline-none placeholder:text-muted/55"
               />
-              <div className="flex items-center gap-1.5 text-xs text-muted">
+              <div className="flex items-center gap-3 text-xs text-muted">
                 {/* 附件选择在后续任务接入，接入前禁用 */}
                 <GlassButton
                   size={30}
@@ -486,19 +490,16 @@ export function ChatPanel() {
                     type="button"
                     aria-label={t.stop}
                     onClick={() => void abort()}
-                    className={cn(dropButtonClass, "bg-fg text-surface")}
+                    className="grid size-8 place-items-center rounded-full bg-fg text-surface"
                   >
-                    <Square aria-hidden size={11} fill="currentColor" />
+                    <Square aria-hidden size={12} fill="currentColor" />
                   </button>
                 ) : (
                   <button
                     type="submit"
                     aria-label={t.send}
                     disabled={!draft.trim()}
-                    className={cn(
-                      dropButtonClass,
-                      "bg-accent disabled:opacity-35 disabled:active:scale-100",
-                    )}
+                    className="grid size-8 place-items-center rounded-full bg-accent text-white transition-opacity disabled:opacity-30"
                   >
                     <ArrowUp aria-hidden size={16} strokeWidth={2.5} />
                   </button>
