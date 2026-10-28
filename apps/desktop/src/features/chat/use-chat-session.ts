@@ -4,6 +4,7 @@ import type { CoreBatch, RpcCommand } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { getPlatform, type Platform } from "@/lib/platform";
+import { useAppStore } from "@/stores/app-store";
 import {
   applyBatches,
   createSessionStore,
@@ -68,8 +69,10 @@ export function useChatSession(): ChatSession {
     if (conn.current) return Promise.resolve();
     opening.current ??= (async () => {
       const platform = await getPlatform();
-      const [workspace] = await platform.workspaceList();
-      const { sessionKey } = await platform.sessionOpen(workspace?.path ?? "", undefined, onBatch);
+      // 优先用输入框上方选中的工作区；未选择时退回最近的工作区（可为空，直接对话）
+      const chosen = useAppStore.getState().workspace?.path;
+      const path = chosen ?? (await platform.workspaceList())[0]?.path ?? "";
+      const { sessionKey } = await platform.sessionOpen(path, undefined, onBatch);
       if (disposed.current) {
         // 打开期间组件已卸载：立即关闭，避免会话泄漏
         void platform.sessionClose(sessionKey).catch(() => {});

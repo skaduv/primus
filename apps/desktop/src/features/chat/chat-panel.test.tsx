@@ -50,11 +50,27 @@ describe("对话区（mock 事件流）", () => {
     expect(screen.queryByRole("article")).toBeNull();
   });
 
-  it("附件按钮在接入前禁用", () => {
+  it("附件只引用本地路径：选中后显示文件名，可移除，单独附件也能发送", async () => {
     render(<ChatPanel />);
-    expect((screen.getByRole("button", { name: t.attach }) as HTMLButtonElement).disabled).toBe(
-      true,
+    fireEvent.click(screen.getByRole("button", { name: t.attach }));
+    expect(await screen.findByText("README.md")).toBeTruthy();
+    expect(screen.getByText("main.ts")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: `${t.removeAttachment} main.ts` }));
+    expect(screen.queryByText("main.ts")).toBeNull();
+    expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(
+      false,
     );
+  });
+
+  it("权限模式菜单切换到完全访问", async () => {
+    render(<ChatPanel />);
+    const trigger = screen.getByRole("button", { name: new RegExp(t.permissionMode) });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    fireEvent.click(
+      await screen.findByRole("menuitemradio", { name: new RegExp(t.permissions.full.label) }),
+    );
+    await waitFor(() => expect(useAppStore.getState().permissionMode).toBe("full"));
+    expect(screen.getByRole("button", { name: new RegExp(t.permissions.full.label) })).toBeTruthy();
   });
 
   it("运行中可以停止", async () => {

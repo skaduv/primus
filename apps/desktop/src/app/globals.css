@@ -17,6 +17,8 @@
   --color-hover: rgb(0 0 0 / 0.05);
   --color-accent: #0a84ff;
   --color-danger: #d70015;
+  --color-warning: #c93400;
+  --color-success: #248a3d;
   /* 西文：界面 Inter，标题与助手回复 Source Serif 4（均为 OFL 开源、本地打包）；中文回落系统黑体 */
   --font-sans:
     "Inter Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
@@ -43,6 +45,8 @@
   --color-hover: rgb(255 255 255 / 0.08);
   --color-accent: #0a84ff;
   --color-danger: #ff453a;
+  --color-warning: #ff9f0a;
+  --color-success: #30d158;
   /* 浏览器预览用的纯色底（不用渐变） */
   --wallpaper: #0b0b0e;
   --window-tint: rgb(8 8 10 / 0.45);
@@ -54,6 +58,8 @@ html,
 body {
   height: 100%;
   font-family: var(--font-sans);
+  /* 桌面应用：窗口本身不滚动，只有时间线等内部区域滚动（避免右侧/底部出现整页滚动条） */
+  overflow: hidden;
 }
 
 body {
