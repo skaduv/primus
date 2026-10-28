@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
 import * as cr from "./cr-prereview.mjs";
 
-const { decide, formatFinding, isRateLimit, parseLine, reviewArgs, summarize } = cr;
+const { decide, formatFinding, isRateLimit, parseLine, prePushPlan, reviewArgs, summarize } = cr;
 
 const finding = (severity: string, extra: Record<string, unknown> = {}) => ({
   type: "finding",
@@ -32,7 +32,10 @@ describe("CodeRabbit 本地预审", () => {
 
   it("只有 minor / trivial 时放行", () => {
     const s = summarize([finding("minor"), finding("trivial"), done()]);
-    expect(decide(s)).toEqual({ block: false, reason: "未发现 critical / major 问题" });
+    expect(decide(s)).toEqual({
+      block: false,
+      reason: "未发现 critical / major 问题",
+    });
   });
 
   it("没有改动时放行", () => {
@@ -79,5 +82,36 @@ describe("CodeRabbit 本地预审", () => {
       "abc123",
     ]);
     expect(reviewArgs("")).toEqual(["review", "--agent", "--committed"]);
+  });
+
+  it("CLI 非零退出视为未完整结束，不单独阻塞", () => {
+    const s = summarize([finding("minor"), done()], 2);
+    expect(s.incomplete).toBe(true);
+    expect(decide(s)).toEqual({
+      block: false,
+      reason: "审查未完整结束（CLI 退出码 2），本次不阻塞推送",
+    });
+    expect(decide(summarize([finding("major"), done()], 2)).block).toBe(true);
+  });
+
+  it("pre-push 只审查当前 HEAD，其他引用拒绝，纯删除不审查", () => {
+    const head = "a".repeat(40);
+    const zero = "0".repeat(40);
+    const other = "b".repeat(40);
+    expect(prePushPlan(`refs/heads/dev ${head} refs/heads/dev ${other}\n`, head)).toEqual({
+      review: true,
+      rejected: [],
+    });
+    expect(
+      prePushPlan(
+        `refs/heads/dev ${head} refs/heads/dev ${zero}\nrefs/heads/x ${other} refs/heads/x ${zero}\n`,
+        head,
+      ),
+    ).toEqual({ review: true, rejected: ["refs/heads/x"] });
+    expect(prePushPlan(`(delete) ${zero} refs/heads/old ${other}\n`, head)).toEqual({
+      review: false,
+      rejected: [],
+    });
+    expect(prePushPlan("", head)).toEqual({ review: false, rejected: [] });
   });
 });
