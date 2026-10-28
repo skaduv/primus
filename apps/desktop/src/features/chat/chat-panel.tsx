@@ -328,6 +328,9 @@ export function ChatPanel() {
   const permissionMode = useAppStore((s) => s.permissionMode);
   const setPermissionMode = useAppStore((s) => s.setPermissionMode);
   const [attachments, setAttachments] = useState<string[]>([]);
+  // 提交中（等待会话打开与 prompt 响应）：阻止重复提交，并锁定输入，避免成功后清掉期间新增的内容
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const PermissionIcon = permissionMeta[permissionMode].icon;
 
   // 输入框随内容伸缩：最少 2 行、最多 6 行；超出后可展开编辑（更高），仍超出则在框内滚动（不显示滚动条）
@@ -378,15 +381,22 @@ export function ChatPanel() {
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const text = draft.trim();
-    if ((!text && attachments.length === 0) || state.running) return;
+    if ((!text && attachments.length === 0) || state.running || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
     stickToBottom.current = true;
     // 发送成功后才清空输入，失败时保留草稿和附件以便重试
-    void send(withAttachments(text, attachments)).then((sent) => {
-      if (!sent) return;
-      setDraft("");
-      setAttachments([]);
-      setExpanded(false);
-    });
+    void send(withAttachments(text, attachments))
+      .then((sent) => {
+        if (!sent) return;
+        setDraft("");
+        setAttachments([]);
+        setExpanded(false);
+      })
+      .finally(() => {
+        submittingRef.current = false;
+        setSubmitting(false);
+      });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -441,7 +451,9 @@ export function ChatPanel() {
             <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
               <AttachmentChips
                 paths={attachments}
-                onRemove={(p) => setAttachments((prev) => prev.filter((x) => x !== p))}
+                onRemove={(p) => {
+                  if (!submittingRef.current) setAttachments((prev) => prev.filter((x) => x !== p));
+                }}
               />
               <div className="relative">
                 <textarea
@@ -449,6 +461,8 @@ export function ChatPanel() {
                   aria-label={t.inputLabel}
                   placeholder={t.inputPlaceholder}
                   value={draft}
+                  readOnly={submitting}
+                  aria-busy={submitting}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={onKeyDown}
                   rows={1}
@@ -485,6 +499,7 @@ export function ChatPanel() {
                     {...glass}
                     aria-label={t.attach}
                     title={t.attach}
+                    disabled={submitting}
                     onClick={() => void pickFiles()}
                     className={glassButtonClass}
                   >
@@ -556,7 +571,7 @@ export function ChatPanel() {
                   <button
                     type="submit"
                     aria-label={t.send}
-                    disabled={!draft.trim() && attachments.length === 0}
+                    disabled={submitting || (!draft.trim() && attachments.length === 0)}
                     className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                   >
                     <ArrowUp aria-hidden size={16} strokeWidth={2.5} />

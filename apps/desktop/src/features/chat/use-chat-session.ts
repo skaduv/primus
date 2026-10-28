@@ -1,6 +1,6 @@
 "use client";
 
-import type { CoreBatch, RpcCommand } from "@primus/protocol";
+import type { CoreBatch, RpcCommand, RpcResponse } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { getPlatform, type Platform } from "@/lib/platform";
@@ -20,6 +20,9 @@ const nextFrame: (cb: () => void) => void =
     ? (cb) => requestAnimationFrame(() => cb())
     : (cb) => setTimeout(cb, 16);
 
+/** 等待命令响应的上限；prompt 的响应在 Core 接受后立即返回，不等回答结束 */
+const RESPONSE_TIMEOUT_MS = 30_000;
+
 export interface ChatSession {
   state: SessionState;
   /** 打开会话或发送命令时的错误 */
@@ -38,10 +41,21 @@ export function useChatSession(): ChatSession {
 
   const conn = useRef<{ platform: Platform; sessionKey: string; nextId: number }>(null);
   const pending = useRef<CoreBatch[]>([]);
+  const waiters = useRef(new Map<string, (r: RpcResponse) => void>());
   const frameQueued = useRef(false);
 
   const onBatch = useCallback(
     (batch: CoreBatch) => {
+      // 按命令 id 交付等待中的响应（send 据此判断 Core 是否接受了 prompt）
+      for (const r of batch.records) {
+        if (r.type !== "response") continue;
+        const res = r as RpcResponse;
+        const w = res.id ? waiters.current.get(res.id) : undefined;
+        if (w) {
+          waiters.current.delete(res.id as string);
+          w(res);
+        }
+      }
       pending.current.push(batch);
       if (frameQueued.current) return;
       frameQueued.current = true;
@@ -61,6 +75,33 @@ export function useChatSession(): ChatSession {
     const record: RpcCommand = { id: `${c.sessionKey}-${c.nextId++}`, type, ...fields };
     await c.platform.coreSend(c.sessionKey, record);
   }, []);
+
+  /** 发送命令并等待同 id 的响应；超时或会话未打开时抛错 */
+  const request = useCallback(
+    async (type: string, fields: Record<string, unknown> = {}): Promise<RpcResponse> => {
+      const c = conn.current;
+      if (!c) throw new Error("会话未打开");
+      const id = `${c.sessionKey}-${c.nextId++}`;
+      const response = new Promise<RpcResponse>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          waiters.current.delete(id);
+          reject(new Error(`${type} 响应超时`));
+        }, RESPONSE_TIMEOUT_MS);
+        waiters.current.set(id, (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        });
+      });
+      try {
+        await c.platform.coreSend(c.sessionKey, { id, type, ...fields } satisfies RpcCommand);
+      } catch (e) {
+        waiters.current.delete(id);
+        throw e;
+      }
+      return response;
+    },
+    [],
+  );
 
   // 正在打开的会话：并发的 send 复用同一个 Promise，避免重复 sessionOpen 泄漏 Core 进程
   const opening = useRef<Promise<void>>(null);
@@ -107,14 +148,15 @@ export function useChatSession(): ChatSession {
       setError(undefined);
       try {
         await ensureOpen();
-        await command("prompt", { message });
-        return true;
+        // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
+        const res = await request("prompt", { message });
+        return res.success;
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         return false;
       }
     },
-    [ensureOpen, command],
+    [ensureOpen, request],
   );
 
   const abort = useCallback(async () => {

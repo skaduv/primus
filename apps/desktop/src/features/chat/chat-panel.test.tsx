@@ -1,3 +1,4 @@
+import type { CoreBatch } from "@primus/protocol";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPlatformForTesting } from "@/lib/platform";
@@ -39,6 +40,40 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
     expect(screen.getByText(/工具：read/)).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+  });
+
+  it("Core 拒绝 prompt 时显示错误并保留草稿", async () => {
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    let deliver: ((b: CoreBatch) => void) | undefined;
+    setPlatformForTesting({
+      ...base,
+      sessionOpen: async (_path, _model, onBatch) => {
+        deliver = onBatch;
+        return { sessionKey: "k" } as Awaited<ReturnType<typeof base.sessionOpen>>;
+      },
+      coreSend: async (sessionKey, record) => {
+        deliver?.({
+          sessionKey,
+          seq: 1,
+          dropped: 0,
+          records: [
+            {
+              type: "response",
+              id: record.id,
+              command: record.type,
+              success: false,
+              error: "拒绝",
+            },
+          ],
+        });
+      },
+    });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect((input as HTMLTextAreaElement).value).toBe("你好");
   });
 
   it("Shift+Enter 不发送；空内容不能发送", () => {
