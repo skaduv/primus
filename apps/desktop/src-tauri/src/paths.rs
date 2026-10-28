@@ -2,7 +2,8 @@
 //!
 //! - 定位规则（第 4.1 节）：`--data-dir <path>` > 开发模式（debug 构建）仓库下 `.dev-data/` >
 //!   `<Primus.exe 所在目录>/data`。**任何情况下都不回退到 `%APPDATA%` 或用户主目录**（约束 C2）。
-//! - 目录布局见第 4.2 节；每个 Windows 用户一份 `users/<SID>/`，创建时 ACL 设为仅当前用户与 SYSTEM（第 4.3 节）。
+//! - 目录布局见第 4.2 节；每个 Windows 用户一份 `users/<SID>/`，创建时 ACL 设为仅当前用户与 SYSTEM（第 4.3 节）；
+//!   已存在的 `users/<SID>` 必须归当前用户所有且不是重解析点，防止其他本地用户预先创建或做成 junction。
 //! - `data` 不可写时由 [`prepare_or_guide`] 弹出修复引导（第 3.7 节），平台相关部分在 `platform` 模块。
 //! - 数据版本与迁移（第 4.5 节，`install.json`）属于开发计划第 17 周，不在本模块当前范围内。
 
@@ -272,7 +273,7 @@ impl DataPaths {
     }
 }
 
-/// 在 `root` 下创建目录布局：先检查根目录可写，再创建 `users/<SID>`、收紧 ACL，最后创建各子目录。
+/// 在 `root` 下创建目录布局：先检查根目录可写，再安全地创建 `users/<SID>`（受限 ACL），最后创建各子目录。
 pub(crate) fn prepare_at(root: DataRoot, user_id: &str) -> Result<DataPaths, PathsError> {
     let paths = DataPaths::new(root, user_id);
     create_dir(paths.root())?;
@@ -282,10 +283,17 @@ pub(crate) fn prepare_at(root: DataRoot, user_id: &str) -> Result<DataPaths, Pat
         create_dir(&dir)?;
     }
 
+    // data 对 Users 组可写，其他本地用户可能抢先创建 users 或 users/<SID>（SID 不是秘密）：
+    // users 不能是链接 / 重解析点；users/<SID> 新建时直接带受限 DACL，已存在时须为当前用户所有且不是重解析点
+    let users_dir = paths.root().join("users");
+    create_dir(&users_dir)?;
+    platform::ensure_not_link(&users_dir).map_err(|source| PathsError::Acl {
+        path: users_dir.clone(),
+        source,
+    })?;
     let user_dir = paths.user_dir();
-    create_dir(&user_dir)?;
     // 每次启动都重设：幂等，且能纠正被手工放宽的权限；子目录随继承规则自动生效
-    platform::restrict_to_current_user(&user_dir).map_err(|source| PathsError::Acl {
+    platform::secure_user_dir(&user_dir).map_err(|source| PathsError::Acl {
         path: user_dir.clone(),
         source,
     })?;
@@ -630,6 +638,65 @@ mod tests {
         let paths = prepare_at(root_at(&tmp.0), "u").unwrap();
         let mode = fs::metadata(paths.user_dir()).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_user_dir_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new();
+        let user = tmp.0.join("users").join("u");
+        fs::create_dir_all(&user).unwrap();
+        fs::set_permissions(&user, fs::Permissions::from_mode(0o777)).unwrap();
+        let paths = prepare_at(root_at(&tmp.0), "u").unwrap();
+        let mode = fs::metadata(paths.user_dir()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn user_dir_symlink_is_rejected() {
+        let tmp = TempDir::new();
+        let target = tmp.0.join("elsewhere");
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(tmp.0.join("users")).unwrap();
+        std::os::unix::fs::symlink(&target, tmp.0.join("users").join("u")).unwrap();
+        let err = prepare_at(root_at(&tmp.0), "u").unwrap_err();
+        assert!(matches!(err, PathsError::Acl { .. }), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn users_dir_symlink_is_rejected() {
+        let tmp = TempDir::new();
+        let target = tmp.0.join("elsewhere");
+        fs::create_dir_all(&target).unwrap();
+        std::os::unix::fs::symlink(&target, tmp.0.join("users")).unwrap();
+        let err = prepare_at(root_at(&tmp.0), "u").unwrap_err();
+        assert!(matches!(err, PathsError::Acl { .. }), "{err}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn existing_user_dir_acl_is_tightened() {
+        let tmp = TempDir::new();
+        let user = platform::current_user_id().unwrap();
+        let dir = tmp.0.join("users").join(&user);
+        fs::create_dir_all(&dir).unwrap();
+        prepare_at(root_at(&tmp.0), &user).unwrap();
+        let (protected, aces) = platform::dacl_summary(&dir).unwrap();
+        assert!(protected);
+        assert_eq!(aces, 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn grant_users_modify_adds_an_ace() {
+        let tmp = TempDir::new();
+        let (_, before) = platform::dacl_summary(&tmp.0).unwrap();
+        platform::grant_users_modify(&tmp.0).unwrap();
+        let (_, after) = platform::dacl_summary(&tmp.0).unwrap();
+        assert!(after > before, "应追加 Users 组 ACE：{before} -> {after}");
     }
 
     #[cfg(windows)]
