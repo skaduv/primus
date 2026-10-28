@@ -223,7 +223,6 @@ export function PermissionPicker({
                     )}
                   >
                     {p.hint}
-                    {!PERMISSION_READY.has(m) && `（${t.permissionPending}）`}
                   </span>
                 </span>
                 <Menu.ItemIndicator className="mt-0.5 shrink-0">
