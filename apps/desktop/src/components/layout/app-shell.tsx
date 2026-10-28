@@ -19,10 +19,7 @@ import { GlassPanel } from "./glass-panel";
 import { InspectorPanel } from "./inspector-panel";
 import {
   BOTTOM_DRAWER,
-  CENTER_MIN_HEIGHT,
-  CENTER_MIN_WIDTH,
   LEFT_PANEL,
-  MIN_WINDOW,
   minWindowWidth,
   RIGHT_PANEL,
   resolvePanelLayout,
@@ -58,21 +55,14 @@ export function AppShell() {
   });
 
   return (
-    <div
-      className="flex h-screen flex-col gap-2 overflow-hidden px-2 pb-2 text-fg"
-      style={{
-        minWidth: minWindowWidth(s.sessionsPanelOpen, s.inspectorPanelOpen),
-        minHeight: MIN_WINDOW.height,
-      }}
-    >
+    // 外框始终等于视口（窗口最小尺寸由 Tauri setMinWidth/minHeight 保证）：
+    // 页面本身不能比窗口大，否则 html/body 裁掉后右栏贴边、底边错位
+    <div className="flex h-screen w-screen flex-col gap-2 overflow-hidden px-2 pb-2 text-fg">
       {/* 不再有顶栏：顶部只留一条可拖动窗口的细标题栏，窗口按钮贴在右上角 */}
       <WindowTitleBar className="-mx-2 h-9" />
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <div
-          className="flex min-h-0 flex-1 overflow-hidden"
-          style={{ minHeight: CENTER_MIN_HEIGHT }}
-        >
+        <div className="flex min-h-0 flex-1 overflow-hidden">
           <SnapSlot
             side="left"
             open={s.sessionsPanelOpen}
@@ -103,7 +93,7 @@ export function AppShell() {
               center.lockedWidth == null ? "flex-1" : "flex-none",
             )}
             style={{
-              minWidth: CENTER_MIN_WIDTH,
+              minWidth: 0,
               width: center.lockedWidth ?? undefined,
               ...seamStyle(center.leftAttached, center.rightAttached, !center.windowMode),
             }}

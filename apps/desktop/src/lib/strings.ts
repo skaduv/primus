@@ -59,6 +59,8 @@ export const strings = {
     stop: "停止",
     attach: "添加附件",
     removeAttachment: "移除附件",
+    expandInput: "展开编辑",
+    collapseInput: "收起",
     attachmentsPrompt: "引用的本地文件（按路径读取，未复制）：",
     you: "你",
     assistant: "乾元",

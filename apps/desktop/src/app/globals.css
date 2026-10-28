@@ -78,24 +78,25 @@ html.window-effects body {
 }
 
 /* 浮层进出场（Radix 用 data-state 驱动；动画 scale 属性而不是 transform，避免和 translate 类冲突） */
+/*
+ * 弹出菜单只在外层做缩放；淡入淡出放到玻璃的每一层上。
+ * 外层 opacity < 1 会让 Chromium 把它当作 backdrop root，动画期间磨砂失效、菜单先透明再突然变实，
+ * 所以不能给外层做透明度动画。
+ */
 @keyframes glass-pop-in {
   from {
-    opacity: 0;
     scale: 0.85;
   }
   to {
-    opacity: 1;
     scale: 1;
   }
 }
 
 @keyframes glass-pop-out {
   from {
-    opacity: 1;
     scale: 1;
   }
   to {
-    opacity: 0;
     scale: 0.95;
   }
 }
@@ -124,6 +125,14 @@ html.window-effects body {
   animation: glass-pop-out 150ms ease-out forwards;
 }
 
+.glass-pop[data-state$="open"] > * > * {
+  animation: glass-fade-in 200ms ease-out;
+}
+
+.glass-pop[data-state="closed"] > * > * {
+  animation: glass-fade-out 150ms ease-out forwards;
+}
+
 .glass-fade[data-state="open"] {
   animation: glass-fade-in 300ms ease-out;
 }
@@ -134,9 +143,18 @@ html.window-effects body {
 
 @media (prefers-reduced-motion: reduce) {
   .glass-pop[data-state],
+  .glass-pop[data-state] > * > *,
   .glass-fade[data-state] {
     animation: none;
   }
+}
+
+/* 可滚动但不显示滚动条（输入框等小区域） */
+.scroll-none {
+  scrollbar-width: none;
+}
+.scroll-none::-webkit-scrollbar {
+  display: none;
 }
 
 /* 细滚动条，悬停才明显 */

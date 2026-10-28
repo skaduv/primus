@@ -1,8 +1,25 @@
 "use client";
 
 import type { AgentMessage } from "@primus/protocol";
-import { ArrowUp, Folder, FolderOpen, Plus, Square, Wrench } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, memo, useEffect, useRef, useState } from "react";
+import {
+  ArrowUp,
+  Folder,
+  FolderOpen,
+  Maximize2,
+  Minimize2,
+  Plus,
+  Square,
+  Wrench,
+} from "lucide-react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { LogoMark } from "@/components/brand/logo";
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
@@ -263,6 +280,10 @@ function ContextRing({ percent }: { percent: number }) {
 
 /** 距底部小于该值视为"停在底部" */
 const STICK_THRESHOLD_PX = 48;
+/** 输入框行高与行数范围 */
+const INPUT_LINE_PX = 22;
+const INPUT_MIN_LINES = 2;
+const INPUT_MAX_LINES = 6;
 /** 时间线底部在悬浮输入框之上再留出的间距 */
 const COMPOSER_GAP_PX = 16;
 /** 首帧（尚未量到输入框高度）时的底部留白，约等于两行输入框的静止高度 */
@@ -307,6 +328,23 @@ export function ChatPanel() {
   const [attachments, setAttachments] = useState<string[]>([]);
   const PermissionIcon = permissionMeta[permissionMode].icon;
 
+  // 输入框随内容伸缩：最少 2 行、最多 6 行；超出后可展开编辑（更高），仍超出则在框内滚动（不显示滚动条）
+  const [expanded, setExpanded] = useState(false);
+  const [overflowing, setOverflowing] = useState(false);
+  const [inputHeight, setInputHeight] = useState(INPUT_LINE_PX * INPUT_MIN_LINES);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 内容变化时重新测量
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const prev = el.style.height;
+    el.style.height = "0px";
+    const content = el.scrollHeight;
+    el.style.height = prev;
+    const max = expanded ? Math.round(window.innerHeight * 0.5) : INPUT_LINE_PX * INPUT_MAX_LINES;
+    setOverflowing(content > INPUT_LINE_PX * INPUT_MAX_LINES);
+    setInputHeight(Math.min(Math.max(content, INPUT_LINE_PX * INPUT_MIN_LINES), max));
+  }, [draft, expanded]);
+
   // 附件只取本地路径（不复制文件），去重后追加
   const pickFiles = () =>
     getPlatform()
@@ -338,6 +376,7 @@ export function ChatPanel() {
     if ((!text && attachments.length === 0) || state.running) return;
     setDraft("");
     setAttachments([]);
+    setExpanded(false);
     stickToBottom.current = true;
     void send(withAttachments(text, attachments));
   };
@@ -390,22 +429,46 @@ export function ChatPanel() {
             onPicked={setWorkspace}
           />
           {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
-          <div className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border">
-            <form onSubmit={submit} className="flex flex-col gap-1.5 px-3 pt-3 pb-2.5">
+          <div className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-shadow focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)]">
+            <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
               <AttachmentChips
                 paths={attachments}
                 onRemove={(p) => setAttachments((prev) => prev.filter((x) => x !== p))}
               />
-              <textarea
-                ref={inputRef}
-                aria-label={t.inputLabel}
-                placeholder={t.inputPlaceholder}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={onKeyDown}
-                rows={2}
-                className="max-h-48 min-h-11 w-full resize-none bg-transparent px-1 text-sm leading-relaxed outline-none placeholder:text-muted/55"
-              />
+              <div className="relative">
+                <textarea
+                  ref={inputRef}
+                  aria-label={t.inputLabel}
+                  placeholder={t.inputPlaceholder}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={onKeyDown}
+                  rows={1}
+                  style={{ height: inputHeight }}
+                  className={cn(
+                    "scroll-none block w-full resize-none bg-transparent px-1 text-[14px] leading-[22px] caret-accent outline-none placeholder:text-muted/55",
+                    (overflowing || expanded) && "pr-8",
+                  )}
+                />
+                {(overflowing || expanded) && (
+                  <button
+                    type="button"
+                    aria-label={expanded ? t.collapseInput : t.expandInput}
+                    title={expanded ? t.collapseInput : t.expandInput}
+                    onClick={() => {
+                      setExpanded((v) => !v);
+                      inputRef.current?.focus();
+                    }}
+                    className="absolute top-0 right-0 grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg"
+                  >
+                    {expanded ? (
+                      <Minimize2 aria-hidden size={14} />
+                    ) : (
+                      <Maximize2 aria-hidden size={14} />
+                    )}
+                  </button>
+                )}
+              </div>
               <div className="flex items-center gap-3 text-xs text-muted">
                 {/* 附件：系统文件对话框选文件，只引用本地路径 */}
                 <GlassButton
