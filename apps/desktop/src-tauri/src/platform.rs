@@ -58,20 +58,22 @@ mod windows_impl {
         TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{
-        ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid, GetTokenInformation,
-        InitializeSecurityDescriptor, OWNER_SECURITY_INFORMATION,
+        ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, CreateWellKnownSid, DACL_SECURITY_INFORMATION,
+        EqualSid, GetAce, GetSecurityDescriptorControl, GetTokenInformation,
+        InitializeSecurityDescriptor, NO_INHERITANCE, OWNER_SECURITY_INFORMATION,
         PROTECTED_DACL_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
         SECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
         SetSecurityDescriptorControl, SetSecurityDescriptorDacl, SetSecurityDescriptorOwner,
         TOKEN_QUERY, TOKEN_USER, TokenUser, WELL_KNOWN_SID_TYPE, WinBuiltinAdministratorsSid,
-        WinBuiltinUsersSid, WinLocalSystemSid,
+        WinBuiltinUsersSid, WinCreatorOwnerRightsSid, WinLocalSystemSid,
     };
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE, FILE_ALL_ACCESS,
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
-        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, GetFileInformationByHandle,
-        OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+        BY_HANDLE_FILE_INFORMATION, CreateDirectoryW, CreateFileW, DELETE, FILE_ADD_SUBDIRECTORY,
+        FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE,
+        FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+        FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+        GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
     };
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcessToken, WaitForSingleObject,
@@ -169,16 +171,33 @@ mod windows_impl {
         }
     }
 
+    /// 可继承到子目录与文件的 ACE。
     fn explicit_access(
         sid: PSID,
         permissions: u32,
         mode: i32,
         trustee_type: i32,
     ) -> EXPLICIT_ACCESS_W {
+        explicit_access_with(
+            sid,
+            permissions,
+            mode,
+            trustee_type,
+            SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        )
+    }
+
+    fn explicit_access_with(
+        sid: PSID,
+        permissions: u32,
+        mode: i32,
+        trustee_type: i32,
+        inheritance: u32,
+    ) -> EXPLICIT_ACCESS_W {
         EXPLICIT_ACCESS_W {
             grfAccessPermissions: permissions,
             grfAccessMode: mode,
-            grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+            grfInheritance: inheritance,
             Trustee: TRUSTEE_W {
                 TrusteeForm: TRUSTEE_IS_SID,
                 TrusteeType: trustee_type,
@@ -335,26 +354,30 @@ mod windows_impl {
         Ok(false)
     }
 
-    /// 路径不能是符号链接或 junction 等重解析点（用于 `data/users`）。
-    pub(crate) fn ensure_not_link(path: &Path) -> io::Result<()> {
-        open_dir_no_follow(path, READ_CONTROL).map(drop)
-    }
+    /// ACE 类型（winnt.h），windows-sys 中位于另一个 feature，这里直接定义。
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    const ACCESS_DENIED_ACE_TYPE: u8 = 1;
 
-    /// 安全地创建或收紧 `users/<SID>`（第 4.3 节）：
-    /// - 不存在：`CreateDirectoryW` 时直接带上“所有者 = 当前用户、受保护 DACL（仅当前用户与 SYSTEM）”，不存在先建后改的窗口；
-    /// - 已存在：以不跟随重解析点的句柄打开，拒绝重解析点，且所有者必须可信（见 `is_trusted_owner`，防止其他本地用户预先创建），
-    ///   再在同一句柄上重设受保护 DACL（幂等，能纠正被手工放宽的权限）。
-    pub(crate) fn secure_user_dir(dir: &Path) -> io::Result<()> {
-        let user = TokenUserBuf::current()?;
-        let acl = restricted_acl(&user)?;
+    /// `data/users` 上普通主体（Users 组、OWNER RIGHTS）允许拥有的全部权限：遍历、列出、新建子目录、读属性。
+    /// 不含 DELETE、FILE_DELETE_CHILD、WRITE_DAC、WRITE_OWNER，因此其他用户无法删除、重命名 `users` 或其中他人的目录，
+    /// 也无法改它的权限。
+    const USERS_ROOT_LIMITED: u32 = FILE_TRAVERSE
+        | FILE_LIST_DIRECTORY
+        | FILE_ADD_SUBDIRECTORY
+        | FILE_READ_ATTRIBUTES
+        | FILE_READ_EA
+        | READ_CONTROL
+        | SYNCHRONIZE;
 
+    /// 用给定 DACL（受保护）新建目录；`owner` 为 None 时用默认所有者。返回 `Ok(false)` 表示目录已存在。
+    fn create_dir_with_dacl(dir: &Path, acl: *const ACL, owner: Option<PSID>) -> io::Result<bool> {
         let mut sd = SECURITY_DESCRIPTOR::default();
         let psd: *mut core::ffi::c_void = (&mut sd as *mut SECURITY_DESCRIPTOR).cast();
-        // SAFETY: sd 为本地变量，acl 与 user 在 CreateDirectoryW 返回前有效
+        // SAFETY: sd 为本地变量，acl 与 owner 在 CreateDirectoryW 返回前有效
         let ok = unsafe {
             InitializeSecurityDescriptor(psd, SECURITY_DESCRIPTOR_REVISION) != 0
-                && SetSecurityDescriptorOwner(psd, user.sid(), 0) != 0
-                && SetSecurityDescriptorDacl(psd, 1, acl.0, 0) != 0
+                && owner.is_none_or(|o| SetSecurityDescriptorOwner(psd, o, 0) != 0)
+                && SetSecurityDescriptorDacl(psd, 1, acl, 0) != 0
                 && SetSecurityDescriptorControl(psd, SE_DACL_PROTECTED, SE_DACL_PROTECTED) != 0
         };
         if !ok {
@@ -368,14 +391,163 @@ mod windows_impl {
         let path = wide(dir);
         // SAFETY: path 以 NUL 结尾，attributes 有效
         if unsafe { CreateDirectoryW(path.as_ptr(), &attributes) } != 0 {
-            return Ok(());
+            return Ok(true);
         }
         // SAFETY: 紧接失败的 API 调用读取错误码
         let code = unsafe { GetLastError() };
-        if code != ERROR_ALREADY_EXISTS {
+        if code == ERROR_ALREADY_EXISTS {
+            Ok(false)
+        } else {
+            Err(win32_err(code))
+        }
+    }
+
+    /// `data/users` 的 DACL（受保护）：SYSTEM 与 Administrators 完全控制（可继承）；Users 组与 OWNER RIGHTS
+    /// 只有 [`USERS_ROOT_LIMITED`]（仅本目录）。OWNER RIGHTS 取消了创建者作为所有者隐含的 WRITE_DAC，
+    /// 所以先启动的用户也不能事后放宽它。
+    fn users_root_acl() -> io::Result<LocalBox<ACL>> {
+        let mut system = WellKnownSid::new(WinLocalSystemSid)?;
+        let mut admins = WellKnownSid::new(WinBuiltinAdministratorsSid)?;
+        let mut users = WellKnownSid::new(WinBuiltinUsersSid)?;
+        let mut owner_rights = WellKnownSid::new(WinCreatorOwnerRightsSid)?;
+        let entries = [
+            explicit_access(
+                system.psid(),
+                FILE_ALL_ACCESS,
+                SET_ACCESS,
+                TRUSTEE_IS_WELL_KNOWN_GROUP,
+            ),
+            explicit_access(
+                admins.psid(),
+                FILE_ALL_ACCESS,
+                SET_ACCESS,
+                TRUSTEE_IS_WELL_KNOWN_GROUP,
+            ),
+            explicit_access_with(
+                users.psid(),
+                USERS_ROOT_LIMITED,
+                SET_ACCESS,
+                TRUSTEE_IS_WELL_KNOWN_GROUP,
+                NO_INHERITANCE,
+            ),
+            explicit_access_with(
+                owner_rights.psid(),
+                USERS_ROOT_LIMITED,
+                SET_ACCESS,
+                TRUSTEE_IS_WELL_KNOWN_GROUP,
+                NO_INHERITANCE,
+            ),
+        ];
+        let mut acl: *mut ACL = null_mut();
+        // SAFETY: entries 中的 SID 在调用期间有效
+        let code =
+            unsafe { SetEntriesInAclW(entries.len() as u32, entries.as_ptr(), null(), &mut acl) };
+        if code != ERROR_SUCCESS {
             return Err(win32_err(code));
         }
+        Ok(LocalBox(acl))
+    }
 
+    /// 已存在的 `data/users` 的权限是否安全：DACL 受保护；除 SYSTEM、Administrators 外，任何允许 ACE 都不超出
+    /// [`USERS_ROOT_LIMITED`]；所有者若不是 SYSTEM / Administrators / 当前用户，必须有 OWNER RIGHTS ACE 取消其隐含权限。
+    fn users_root_is_safe(handle: &OwnedHandle, user: &TokenUserBuf) -> io::Result<bool> {
+        let (sd, owner, dacl) = get_security(
+            handle,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        )?;
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        // SAFETY: sd 有效
+        if unsafe { GetSecurityDescriptorControl(sd.0, &mut control, &mut revision) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if control & SE_DACL_PROTECTED == 0 || dacl.is_null() {
+            return Ok(false);
+        }
+        let mut system = WellKnownSid::new(WinLocalSystemSid)?;
+        let mut admins = WellKnownSid::new(WinBuiltinAdministratorsSid)?;
+        let mut owner_rights = WellKnownSid::new(WinCreatorOwnerRightsSid)?;
+        // SAFETY: 以下 SID 指针均有效（owner、dacl 指向 sd 内部）
+        let is = |a: PSID, b: PSID| unsafe { EqualSid(a, b) } != 0;
+        let mut has_owner_rights = false;
+        // SAFETY: dacl 非空且有效
+        let count = unsafe { (*dacl).AceCount };
+        for i in 0..u32::from(count) {
+            let mut ace = null_mut();
+            // SAFETY: i 小于 AceCount
+            if unsafe { GetAce(dacl, i, &mut ace) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: GetAce 返回指向 ACE 的有效指针，开头为 ACE_HEADER
+            let header = unsafe { *(ace as *const ACE_HEADER) };
+            match header.AceType {
+                ACCESS_DENIED_ACE_TYPE => continue,
+                ACCESS_ALLOWED_ACE_TYPE => {}
+                // 对象 ACE、回调 ACE 等不应出现在这里
+                _ => return Ok(false),
+            }
+            let allowed = ace as *const ACCESS_ALLOWED_ACE;
+            // SAFETY: ACCESS_ALLOWED_ACE 的 SID 紧随 Mask 存放在 SidStart 处
+            let (mask, sid) = unsafe {
+                (
+                    (*allowed).Mask,
+                    std::ptr::addr_of!((*allowed).SidStart) as PSID,
+                )
+            };
+            if is(sid, system.psid()) || is(sid, admins.psid()) {
+                continue;
+            }
+            if mask & !USERS_ROOT_LIMITED != 0 {
+                return Ok(false);
+            }
+            if is(sid, owner_rights.psid()) {
+                has_owner_rights = true;
+            }
+        }
+        let owner_ok = !owner.is_null()
+            && (is(owner, system.psid())
+                || is(owner, admins.psid())
+                || is(owner, user.sid())
+                || has_owner_rights);
+        Ok(owner_ok)
+    }
+
+    /// 安全地创建或校验 `data/users`：
+    /// - 不存在：带 [`users_root_acl`] 新建；
+    /// - 已存在：以不跟随重解析点的句柄打开（拒绝 symlink / junction），权限安全则直接使用；不安全时若所有者可信
+    ///   （见 [`is_trusted_owner`]）就在同一句柄上重设，否则报错——它可能被其他本地用户预先创建，需要管理员删除后重试。
+    pub(crate) fn secure_users_root(dir: &Path) -> io::Result<()> {
+        let acl = users_root_acl()?;
+        if create_dir_with_dacl(dir, acl.0, None)? {
+            return Ok(());
+        }
+        let user = TokenUserBuf::current()?;
+        let handle = open_dir_no_follow(dir, READ_CONTROL)?;
+        if users_root_is_safe(&handle, &user)? {
+            return Ok(());
+        }
+        let (_sd, owner, _) = get_security(&handle, OWNER_SECURITY_INFORMATION)?;
+        if !is_trusted_owner(owner, &user)? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "data\\users 的所有者与权限不可信（可能被其他用户预先创建），请让管理员删除该目录后重试",
+            ));
+        }
+        drop(handle);
+        let handle = open_dir_no_follow(dir, READ_CONTROL | WRITE_DAC)?;
+        set_dacl(&handle, acl.0, true)
+    }
+
+    /// 安全地创建或收紧 `users/<SID>`（第 4.3 节）：
+    /// - 不存在：`CreateDirectoryW` 时直接带上“所有者 = 当前用户、受保护 DACL（仅当前用户与 SYSTEM）”，不存在先建后改的窗口；
+    /// - 已存在：以不跟随重解析点的句柄打开，拒绝重解析点，且所有者必须可信（见 [`is_trusted_owner`]，防止其他本地用户预先创建），
+    ///   再在同一句柄上重设受保护 DACL（幂等，能纠正被手工放宽的权限）。
+    pub(crate) fn secure_user_dir(dir: &Path) -> io::Result<()> {
+        let user = TokenUserBuf::current()?;
+        let acl = restricted_acl(&user)?;
+        if create_dir_with_dacl(dir, acl.0, Some(user.sid()))? {
+            return Ok(());
+        }
         let handle = open_dir_no_follow(dir, READ_CONTROL | WRITE_DAC)?;
         let (_sd, owner, _) = get_security(&handle, OWNER_SECURITY_INFORMATION)?;
         if !is_trusted_owner(owner, &user)? {
@@ -498,7 +670,6 @@ mod windows_impl {
     /// 测试用：目录 DACL 是否受保护、ACE 条数。
     #[cfg(test)]
     pub(crate) fn dacl_summary(dir: &Path) -> io::Result<(bool, u16)> {
-        use windows_sys::Win32::Security::GetSecurityDescriptorControl;
         let handle = open_dir_no_follow(dir, READ_CONTROL)?;
         let (sd, _, dacl) = get_security(&handle, DACL_SECURITY_INFORMATION)?;
         let mut control = 0u16;
@@ -529,8 +700,9 @@ mod fallback_impl {
         Ok("local".to_owned())
     }
 
-    /// 路径不能是符号链接。
-    pub(crate) fn ensure_not_link(path: &Path) -> io::Result<()> {
+    /// 非 Windows：创建 `users`，并拒绝符号链接（多用户隔离的完整实现见 P3）。
+    pub(crate) fn secure_users_root(path: &Path) -> io::Result<()> {
+        std::fs::create_dir_all(path)?;
         if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,

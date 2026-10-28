@@ -283,11 +283,11 @@ pub(crate) fn prepare_at(root: DataRoot, user_id: &str) -> Result<DataPaths, Pat
         create_dir(&dir)?;
     }
 
-    // data 对 Users 组可写，其他本地用户可能抢先创建 users 或 users/<SID>（SID 不是秘密）：
-    // users 不能是链接 / 重解析点；users/<SID> 新建时直接带受限 DACL，已存在时须为当前用户所有且不是重解析点
+    // data 对 Users 组可写，其他本地用户可能抢先创建、重命名 users 或 users/<SID>（SID 不是秘密）：
+    // users 带受保护 DACL（普通用户只能新建子目录，不能删除、重命名或改权限），不能是重解析点；
+    // users/<SID> 新建时直接带受限 DACL，已存在时所有者须可信且不是重解析点
     let users_dir = paths.root().join("users");
-    create_dir(&users_dir)?;
-    platform::ensure_not_link(&users_dir).map_err(|source| PathsError::Acl {
+    platform::secure_users_root(&users_dir).map_err(|source| PathsError::Acl {
         path: users_dir.clone(),
         source,
     })?;
@@ -709,5 +709,14 @@ mod tests {
         let (protected, aces) = platform::dacl_summary(&paths.user_dir()).unwrap();
         assert!(protected, "DACL 应禁止继承上级权限");
         assert_eq!(aces, 2, "只应有当前用户与 SYSTEM 两条 ACE");
+        let (protected, aces) = platform::dacl_summary(&tmp.0.join("users")).unwrap();
+        assert!(
+            protected,
+            "users 的 DACL 应禁止继承 data 上的 Users 修改权限"
+        );
+        assert_eq!(
+            aces, 4,
+            "SYSTEM、Administrators、Users、OWNER RIGHTS 四条 ACE"
+        );
     }
 }
