@@ -1,15 +1,30 @@
+import type { CoreBatch } from "@primus/protocol";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
+import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel } from "./chat-panel";
 
 const t = strings.chat;
 
 describe("对话区（mock 事件流）", () => {
   beforeEach(() => setPlatformForTesting(createMockPlatform({ intervalMs: 1, batchSize: 50 })));
-  afterEach(() => setPlatformForTesting(undefined));
+  afterEach(() => {
+    setPlatformForTesting(undefined);
+    useAppStore.setState(initialAppState);
+  });
+
+  it("未选择工作区时输入框上方显示选择文件夹；选好后收起并在工具栏显示工作区", async () => {
+    render(<ChatPanel />);
+    const bar = screen.getByRole("button", { name: new RegExp(t.chooseFolder) });
+    fireEvent.keyDown(bar, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /示例工作区/ }));
+    await waitFor(() => expect(useAppStore.getState().workspace?.name).toBe("示例工作区"));
+    expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
+    expect(screen.getByRole("button", { name: /示例工作区/ })).toBeTruthy();
+  });
 
   it("发送消息后流式显示回答，结束后恢复发送按钮", async () => {
     render(<ChatPanel />);
@@ -19,11 +34,46 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.change(input, { target: { value: "你好" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect((input as HTMLTextAreaElement).value).toBe("");
+    // 发送成功后才清空输入
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
     await screen.findByRole("article", { name: t.you });
     await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
     expect(screen.getByText(/工具：read/)).toBeTruthy();
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+  });
+
+  it("Core 拒绝 prompt 时显示错误并保留草稿", async () => {
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    let deliver: ((b: CoreBatch) => void) | undefined;
+    setPlatformForTesting({
+      ...base,
+      sessionOpen: async (_path, _model, onBatch) => {
+        deliver = onBatch;
+        return { sessionKey: "k" } as Awaited<ReturnType<typeof base.sessionOpen>>;
+      },
+      coreSend: async (sessionKey, record) => {
+        deliver?.({
+          sessionKey,
+          seq: 1,
+          dropped: 0,
+          records: [
+            {
+              type: "response",
+              id: record.id,
+              command: record.type,
+              success: false,
+              error: "拒绝",
+            },
+          ],
+        });
+      },
+    });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect((input as HTMLTextAreaElement).value).toBe("你好");
   });
 
   it("Shift+Enter 不发送；空内容不能发送", () => {
@@ -36,11 +86,28 @@ describe("对话区（mock 事件流）", () => {
     expect(screen.queryByRole("article")).toBeNull();
   });
 
-  it("附件按钮在接入前禁用", () => {
+  it("附件只引用本地路径：选中后显示文件名，可移除，单独附件也能发送", async () => {
     render(<ChatPanel />);
-    expect((screen.getByRole("button", { name: t.attach }) as HTMLButtonElement).disabled).toBe(
-      true,
+    fireEvent.click(await screen.findByRole("button", { name: t.attach }));
+    expect(await screen.findByText("README.md")).toBeTruthy();
+    expect(screen.getByText("main.ts")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: `${t.removeAttachment} main.ts` }));
+    expect(screen.queryByText("main.ts")).toBeNull();
+    expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(
+      false,
     );
+  });
+
+  it("权限菜单接入 Core 前只开放每次询问，其余档位禁用", async () => {
+    render(<ChatPanel />);
+    const trigger = screen.getByRole("button", { name: new RegExp(t.permissionMode) });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    const full = await screen.findByRole("menuitemradio", {
+      name: new RegExp(t.permissions.full.label),
+    });
+    expect(full.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(full);
+    expect(useAppStore.getState().permissionMode).toBe("ask");
   });
 
   it("运行中可以停止", async () => {

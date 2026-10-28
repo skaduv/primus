@@ -151,6 +151,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       return ws;
     },
     workspaceList: async () => [...workspaces.values()],
+    dialogPickFolder: async () => "C:\\Users\\mock\\新项目",
+    dialogPickFiles: async () => [
+      `${MOCK_WORKSPACE}\\README.md`,
+      `${MOCK_WORKSPACE}\\src\\main.ts`,
+    ],
     workspaceTrust: async (path, trusted) => {
       const ws = workspaces.get(path);
       if (ws) ws.trusted = trusted;

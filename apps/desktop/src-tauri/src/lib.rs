@@ -41,6 +41,7 @@ pub fn run() {
             }
         }))
         .manage(data_paths)
+        .invoke_handler(tauri::generate_handler![commands::window_set_bounds])
         .run(tauri::generate_context!())
         .expect("failed to run Primus");
 }

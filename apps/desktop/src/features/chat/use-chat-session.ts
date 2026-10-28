@@ -1,9 +1,10 @@
 "use client";
 
-import type { CoreBatch, RpcCommand } from "@primus/protocol";
+import type { CoreBatch, RpcCommand, RpcResponse } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { getPlatform, type Platform } from "@/lib/platform";
+import { useAppStore } from "@/stores/app-store";
 import {
   applyBatches,
   createSessionStore,
@@ -19,11 +20,15 @@ const nextFrame: (cb: () => void) => void =
     ? (cb) => requestAnimationFrame(() => cb())
     : (cb) => setTimeout(cb, 16);
 
+/** 等待命令响应的上限；prompt 的响应在 Core 接受后立即返回，不等回答结束 */
+const RESPONSE_TIMEOUT_MS = 30_000;
+
 export interface ChatSession {
   state: SessionState;
   /** 打开会话或发送命令时的错误 */
   error?: string;
-  send: (message: string) => Promise<void>;
+  /** 发送成功返回 true；失败时设置 error 并返回 false */
+  send: (message: string) => Promise<boolean>;
   abort: () => Promise<void>;
 }
 
@@ -36,10 +41,21 @@ export function useChatSession(): ChatSession {
 
   const conn = useRef<{ platform: Platform; sessionKey: string; nextId: number }>(null);
   const pending = useRef<CoreBatch[]>([]);
+  const waiters = useRef(new Map<string, (r: RpcResponse) => void>());
   const frameQueued = useRef(false);
 
   const onBatch = useCallback(
     (batch: CoreBatch) => {
+      // 按命令 id 交付等待中的响应（send 据此判断 Core 是否接受了 prompt）
+      for (const r of batch.records) {
+        if (r.type !== "response") continue;
+        const res = r as RpcResponse;
+        const w = res.id ? waiters.current.get(res.id) : undefined;
+        if (w) {
+          waiters.current.delete(res.id as string);
+          w(res);
+        }
+      }
       pending.current.push(batch);
       if (frameQueued.current) return;
       frameQueued.current = true;
@@ -60,6 +76,37 @@ export function useChatSession(): ChatSession {
     await c.platform.coreSend(c.sessionKey, record);
   }, []);
 
+  /** 发送命令并等待同 id 的响应；超时或会话未打开时抛错 */
+  const request = useCallback(
+    async (type: string, fields: Record<string, unknown> = {}): Promise<RpcResponse> => {
+      const c = conn.current;
+      if (!c) throw new Error("会话未打开");
+      const id = `${c.sessionKey}-${c.nextId++}`;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const response = new Promise<RpcResponse>((resolve, reject) => {
+        timer = setTimeout(() => {
+          waiters.current.delete(id);
+          reject(new Error(`${type} 响应超时`));
+        }, RESPONSE_TIMEOUT_MS);
+        waiters.current.set(id, (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        });
+      });
+      try {
+        await c.platform.coreSend(c.sessionKey, { id, type, ...fields } satisfies RpcCommand);
+      } catch (e) {
+        // 发送失败：撤销等待并停掉计时器，避免 30 秒后出现未处理的拒绝
+        waiters.current.delete(id);
+        clearTimeout(timer);
+        response.catch(() => {});
+        throw e;
+      }
+      return response;
+    },
+    [],
+  );
+
   // 正在打开的会话：并发的 send 复用同一个 Promise，避免重复 sessionOpen 泄漏 Core 进程
   const opening = useRef<Promise<void>>(null);
   const disposed = useRef(false);
@@ -68,8 +115,9 @@ export function useChatSession(): ChatSession {
     if (conn.current) return Promise.resolve();
     opening.current ??= (async () => {
       const platform = await getPlatform();
-      const [workspace] = await platform.workspaceList();
-      const { sessionKey } = await platform.sessionOpen(workspace?.path ?? "", undefined, onBatch);
+      // 用输入框上方选中的工作区；未选择时直接对话，不隐式绑定最近的工作区（会话开始后工作区锁定）
+      const path = useAppStore.getState().workspace?.path ?? "";
+      const { sessionKey } = await platform.sessionOpen(path, undefined, onBatch);
       if (disposed.current) {
         // 打开期间组件已卸载：立即关闭，避免会话泄漏
         void platform.sessionClose(sessionKey).catch(() => {});
@@ -100,16 +148,19 @@ export function useChatSession(): ChatSession {
   }, []);
 
   const send = useCallback(
-    async (message: string) => {
+    async (message: string): Promise<boolean> => {
       setError(undefined);
       try {
         await ensureOpen();
-        await command("prompt", { message });
+        // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
+        const res = await request("prompt", { message });
+        return res.success;
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
+        return false;
       }
     },
-    [ensureOpen, command],
+    [ensureOpen, request],
   );
 
   const abort = useCallback(async () => {

@@ -1,6 +1,14 @@
+// 字体随包本地打包（@fontsource，woff2 在构建产物里），不走任何在线资源
+import "@fontsource-variable/inter";
+import "@fontsource-variable/source-serif-4/opsz.css";
 import "./globals.css";
+import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { AppearanceController } from "@/components/theme/appearance-controller";
+import { strings } from "@/lib/strings";
+
+// 主界面去掉顶栏后，产品名只出现在文档标题里（任务栏与 CI 冒烟检查都读它）
+export const metadata: Metadata = { title: strings.appName };
 
 // 布局只放外壳；页面根组件一律 "use client"（第 16.1.1 节）
 export default function RootLayout({ children }: { children: ReactNode }) {
