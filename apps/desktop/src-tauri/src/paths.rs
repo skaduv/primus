@@ -29,7 +29,10 @@ pub(crate) const REPAIR_DATA_DIR_ARG: &str = "--repair-data-dir";
 /// 安装目录下数据目录的名称（与 `Primus.wxs` 中的 `DATADIR` 一致）。
 pub(crate) const DATA_DIR_NAME: &str = "data";
 
-/// 开发模式数据目录：仓库根下的 `.dev-data/`（`apps/desktop/src-tauri` 向上三级）。
+/// 仓库根目录（`apps/desktop/src-tauri` 向上三级），仅开发模式使用。
+const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../..");
+
+/// 开发模式数据目录：仓库根下的 `.dev-data/`。
 const DEV_DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../.dev-data");
 
 /// 可写性检查用的探测文件名前缀；检查完立即删除。
@@ -161,6 +164,11 @@ pub(crate) fn exe_dir() -> Result<PathBuf, PathsError> {
 /// 开发模式数据目录（仓库下 `.dev-data/`）。
 pub(crate) fn dev_data_dir() -> PathBuf {
     normalize(Path::new(DEV_DATA_DIR))
+}
+
+/// 仓库根目录（开发模式下 Core 构建产物在其 `dist/` 中）。
+pub(crate) fn repo_root() -> PathBuf {
+    normalize(Path::new(REPO_ROOT))
 }
 
 /// 去掉路径中的 `.` 与 `..`（不访问文件系统、不解析符号链接），让日志与界面上显示的路径更易读。
