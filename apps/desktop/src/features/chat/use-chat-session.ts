@@ -47,7 +47,12 @@ export function useChatSession(): ChatSession {
   const state = useStore(store);
   // 错误来源：超时与重建失败产生的错误在内核恢复或重建成功后自动清除，其他错误保留到下一次操作
   const [error, setErrorState] = useState<{ message: string; kind?: "timeout" | "resync" }>();
-  const [unresponsive, setUnresponsive] = useState(false);
+  const [unresponsive, setUnresponsiveState] = useState(false);
+  // 无响应的两个来源：有命令超时（等它的迟到响应或重启），或重启后重建失败（等之后的重建成功）
+  const lock = useRef({ timeout: false, restart: false });
+  const syncUnresponsive = useCallback(() => {
+    setUnresponsiveState(lock.current.timeout || lock.current.restart);
+  }, []);
   const setError = useCallback((message?: string, kind?: "timeout" | "resync") => {
     setErrorState(message === undefined ? undefined : { message, kind });
   }, []);
@@ -109,9 +114,13 @@ export function useChatSession(): ChatSession {
         sessionKey,
         send: (record) => platform.coreSend(sessionKey, record),
         onRecords: (records, { gap }) => enqueue({ records, gap }),
-        onUnresponsive: () => setUnresponsive(true),
+        onUnresponsive: () => {
+          lock.current.timeout = true;
+          syncUnresponsive();
+        },
         onResponsive: () => {
-          setUnresponsive(false);
+          lock.current.timeout = false;
+          syncUnresponsive();
           clearError("timeout");
         },
         onResyncError: (e) => {
@@ -122,8 +131,11 @@ export function useChatSession(): ChatSession {
           );
         },
         // 重建的两条 response 随批次排在帧队列里：等它们写入 store 之后再清除重建错误；
-        // 若这一帧之前又有一轮重建失败，保留新的失败提示
+        // 若这一帧之前又有一轮重建失败，保留新的失败提示。
+        // 重建成功即解除“重启后重建失败”造成的锁定；超时命令造成的锁定仍等其迟到响应
         onResynced: () => {
+          lock.current.restart = false;
+          syncUnresponsive();
           const failures = resyncFailures.current;
           nextFrame(() => {
             if (resyncFailures.current === failures) clearError("resync");
@@ -136,7 +148,7 @@ export function useChatSession(): ChatSession {
       opening.current = null;
     });
     return opening.current;
-  }, [enqueue, setError, clearError]);
+  }, [enqueue, setError, clearError, syncUnresponsive]);
 
   // 卸载时关闭会话
   useEffect(() => {
@@ -191,13 +203,15 @@ export function useChatSession(): ChatSession {
       await c.platform.coreRestart(c.client.sessionKey);
       // 旧进程上等待的命令不会再有响应；新进程按会话文件恢复后重建状态
       c.client.reset();
+      lock.current.timeout = false;
       // 重建成功前不解除发送限制：失败时保留重建错误与“重启内核”入口
       const ok = await c.client.resync();
-      setUnresponsive(!ok);
+      lock.current.restart = !ok;
+      syncUnresponsive();
     } catch (e) {
       fail(e);
     }
-  }, [setError, fail]);
+  }, [setError, fail, syncUnresponsive]);
 
   return { state, error: error?.message, unresponsive, send, abort, restart };
 }

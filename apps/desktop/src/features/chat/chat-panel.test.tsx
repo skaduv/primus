@@ -119,6 +119,69 @@ describe("对话区（mock 事件流）", () => {
     }
   });
 
+  it("重启后重建失败保持无响应，之后缺口触发的重建成功即解除锁定", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+      let deliver: ((b: CoreBatch) => void) | undefined;
+      let seq = 0;
+      let phase: "stall" | "failResync" | "ok" = "stall";
+      const respond = (sessionKey: string, id: string, command: string, success: boolean) => {
+        seq += 1;
+        deliver?.({
+          sessionKey,
+          seq,
+          dropped: 0,
+          records: [
+            success
+              ? { type: "response", id, command, success: true, data: {} }
+              : { type: "response", id, command, success: false, error: "未就绪" },
+          ] as CoreBatch["records"],
+        });
+      };
+      const coreRestart = vi.fn(async () => {
+        phase = "failResync";
+      });
+      setPlatformForTesting({
+        ...base,
+        coreRestart,
+        sessionOpen: async (_path, _model, onBatch) => {
+          deliver = onBatch;
+          return { sessionKey: "k" } as Awaited<ReturnType<typeof base.sessionOpen>>;
+        },
+        coreSend: async (sessionKey, record) => {
+          const { id, type } = record as { id: string; type: string };
+          if (phase === "stall") return;
+          queueMicrotask(() => respond(sessionKey, id, type, phase === "ok"));
+        },
+      });
+      render(<ChatPanel />);
+      const input = screen.getByRole("textbox", { name: t.inputLabel });
+      fireEvent.change(input, { target: { value: "你好" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await screen.findByText(t.unresponsive)).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
+      await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
+      // 重建失败：仍提示无响应，禁止发送
+      expect(await screen.findByText(new RegExp(t.resyncFailed))).toBeTruthy();
+      const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+      expect(screen.getByText(t.unresponsive)).toBeTruthy();
+      expect(sendButton.disabled).toBe(true);
+
+      // 之后出现缺口，重建成功：解除锁定并清除重建错误
+      phase = "ok";
+      seq += 5;
+      deliver?.({ sessionKey: "k", seq, dropped: 0, records: [] });
+      await waitFor(() => expect(screen.queryByText(t.unresponsive)).toBeNull());
+      await waitFor(() => expect(screen.queryByText(new RegExp(t.resyncFailed))).toBeNull());
+      expect(sendButton.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("Shift+Enter 不发送；空内容不能发送", () => {
     render(<ChatPanel />);
     const input = screen.getByRole("textbox", { name: t.inputLabel });
