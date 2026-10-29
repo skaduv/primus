@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  // 单测读取 agent-core/ 的文档（需要 node 类型），由 Vitest 运行，不在此检查
+  "exclude": ["src/**/*.test.ts"]
+}

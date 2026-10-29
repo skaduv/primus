@@ -1,6 +1,13 @@
 "use client";
 
-import type { CoreBatch, RpcCommand, RpcResponse } from "@primus/protocol";
+import type {
+  CoreBatch,
+  RpcCommand,
+  RpcCommandParams,
+  RpcCommandType,
+  RpcResponse,
+  RpcResponseFor,
+} from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { getPlatform, type Platform } from "@/lib/platform";
@@ -22,6 +29,12 @@ const nextFrame: (cb: () => void) => void =
 
 /** 等待命令响应的上限；prompt 的响应在 Core 接受后立即返回，不等回答结束 */
 const RESPONSE_TIMEOUT_MS = 30_000;
+
+/** 命令参数：没有必填字段的命令可以省略 */
+type OptionalParams<T extends RpcCommandType> =
+  Partial<RpcCommandParams<T>> extends RpcCommandParams<T>
+    ? [fields?: RpcCommandParams<T>]
+    : [fields: RpcCommandParams<T>];
 
 export interface ChatSession {
   state: SessionState;
@@ -69,32 +82,39 @@ export function useChatSession(): ChatSession {
     [store],
   );
 
-  const command = useCallback(async (type: string, fields: Record<string, unknown> = {}) => {
-    const c = conn.current;
-    if (!c) return;
-    const record: RpcCommand = { id: `${c.sessionKey}-${c.nextId++}`, type, ...fields };
-    await c.platform.coreSend(c.sessionKey, record);
-  }, []);
+  const command = useCallback(
+    async <T extends RpcCommandType>(type: T, ...[fields]: OptionalParams<T>) => {
+      const c = conn.current;
+      if (!c) return;
+      const record = { id: `${c.sessionKey}-${c.nextId++}`, type, ...fields } as RpcCommand;
+      await c.platform.coreSend(c.sessionKey, record);
+    },
+    [],
+  );
 
   /** 发送命令并等待同 id 的响应；超时或会话未打开时抛错 */
   const request = useCallback(
-    async (type: string, fields: Record<string, unknown> = {}): Promise<RpcResponse> => {
+    async <T extends RpcCommandType>(
+      type: T,
+      ...[fields]: OptionalParams<T>
+    ): Promise<RpcResponseFor<T>> => {
       const c = conn.current;
       if (!c) throw new Error("会话未打开");
       const id = `${c.sessionKey}-${c.nextId++}`;
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const response = new Promise<RpcResponse>((resolve, reject) => {
+      const response = new Promise<RpcResponseFor<T>>((resolve, reject) => {
         timer = setTimeout(() => {
           waiters.current.delete(id);
           reject(new Error(`${type} 响应超时`));
         }, RESPONSE_TIMEOUT_MS);
         waiters.current.set(id, (r) => {
           clearTimeout(timer);
-          resolve(r);
+          // 响应按 id 关联到本条命令，因此其 command 必为 T（或失败响应）
+          resolve(r as RpcResponseFor<T>);
         });
       });
       try {
-        await c.platform.coreSend(c.sessionKey, { id, type, ...fields } satisfies RpcCommand);
+        await c.platform.coreSend(c.sessionKey, { id, type, ...fields } as RpcCommand);
       } catch (e) {
         // 发送失败：撤销等待并停掉计时器，避免 30 秒后出现未处理的拒绝
         waiters.current.delete(id);
