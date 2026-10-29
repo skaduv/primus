@@ -71,13 +71,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     cmd: { id?: string; type: string },
     data?: unknown,
     error?: string,
-  ): RpcResponse => ({
-    type: "response",
-    id: cmd.id,
-    command: cmd.type,
-    success: error === undefined,
-    ...(error === undefined ? { data } : { error }),
-  });
+  ): RpcResponse =>
+    // mock 按命令动态拼装响应，data 的形状由调用处保证
+    (error === undefined
+      ? { type: "response", id: cmd.id, command: cmd.type, success: true, data }
+      : { type: "response", id: cmd.id, command: cmd.type, success: false, error }) as RpcResponse;
 
   const handle = (s: MockSession, cmd: RpcCommand) => {
     switch (cmd.type) {

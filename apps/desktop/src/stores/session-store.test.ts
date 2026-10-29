@@ -1,4 +1,4 @@
-import type { CoreBatch, CoreRecord } from "@primus/protocol";
+import type { AgentMessage, CoreBatch, CoreRecord } from "@primus/protocol";
 import { describe, expect, it } from "vitest";
 import { promptScenario, usage } from "@/lib/platform/mock/scenario";
 import { applyBatches, initialSessionState } from "./session-store";
@@ -10,6 +10,8 @@ const batch = (seq: number, records: CoreRecord[], dropped = 0): CoreBatch => ({
   dropped,
 });
 const u = usage(1, 1);
+/** 测试只关心部分字段的消息 */
+const msg = (m: Record<string, unknown>) => m as unknown as AgentMessage;
 const update = (assistantMessageEvent: unknown): CoreRecord =>
   ({ type: "message_update", usage: u, assistantMessageEvent }) as CoreRecord;
 
@@ -18,7 +20,7 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     const s = applyBatches(initialSessionState, [
       batch(1, [
         { type: "agent_start" },
-        { type: "message_start", message: { role: "assistant", content: [] } },
+        { type: "message_start", message: msg({ role: "assistant", content: [] }) },
         update({ type: "text_start", contentIndex: 0 }),
         update({ type: "text_delta", contentIndex: 0, delta: "你" }),
         update({ type: "text_delta", contentIndex: 0, delta: "好" }),
@@ -37,15 +39,15 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
   });
 
   it("message_end 整条替换为最终版本；agent_settled 才解锁", () => {
-    const final = {
+    const final = msg({
       role: "assistant",
       content: [{ type: "text", text: "最终" }],
       stopReason: "stop",
-    };
+    });
     const s = applyBatches(initialSessionState, [
       batch(1, [
         { type: "agent_start" },
-        { type: "message_start", message: { role: "assistant", content: [] } },
+        { type: "message_start", message: msg({ role: "assistant", content: [] }) },
         update({ type: "text_delta", contentIndex: 0, delta: "草稿" }),
         { type: "message_end", message: final },
         { type: "agent_end", messages: [], willRetry: false },
@@ -73,7 +75,7 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
   it("工具调用参数流式期间累积原始文本，结束时替换为完整调用", () => {
     const s = applyBatches(initialSessionState, [
       batch(1, [
-        { type: "message_start", message: { role: "assistant", content: [] } },
+        { type: "message_start", message: msg({ role: "assistant", content: [] }) },
         update({ type: "toolcall_start", contentIndex: 0, id: "c1", toolName: "read" }),
         update({ type: "toolcall_delta", contentIndex: 0, delta: '{"path":' }),
       ]),
@@ -95,7 +97,7 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(gap.seq).toBe(3);
     expect(applyBatches(s1, [batch(2, [], 5)]).needsResync).toBe(true);
 
-    const history = [{ role: "user", content: "hi", timestamp: 1 }];
+    const history: AgentMessage[] = [{ role: "user", content: "hi", timestamp: 1 }];
     const fixed = applyBatches(gap, [
       batch(4, [
         {

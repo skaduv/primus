@@ -52,6 +52,7 @@ jobs:
       - run: pnpm check:tauri-imports
       - run: pnpm test
       - run: pnpm --filter @primus/desktop typecheck
+      - run: pnpm --filter @primus/protocol typecheck # 协议类型与 Core 文档示例的编译期对照
       - run: pnpm --filter @primus/desktop build # 同时生成 Tauri 嵌入的 out/，Rust 单测需要
       - name: 检查静态导出（out/index.html 含首页）
         run: grep -q "乾元 Primus" apps/desktop/out/index.html

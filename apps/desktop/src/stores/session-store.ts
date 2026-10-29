@@ -56,6 +56,8 @@ export const initialSessionState: SessionState = {
 };
 
 function applyUpdate(content: TimelineContent[], e: AssistantMessageEvent): void {
+  // start / done / error 不作用于内容块（正常运行中由 message_start / message_end 承担）
+  if (!("contentIndex" in e)) return;
   const i = e.contentIndex;
   switch (e.type) {
     case "text_start":
@@ -103,9 +105,9 @@ function applyUpdate(content: TimelineContent[], e: AssistantMessageEvent): void
 function applyRecord(draft: SessionState, record: CoreRecord): void {
   switch (record.type) {
     case "response": {
-      const r = record as RpcResponse<{ messages?: AgentMessage[] }>;
+      const r: RpcResponse = record;
       if (!r.success) {
-        draft.lastError = r.error ?? `${r.command} 失败`;
+        draft.lastError = r.error || `${r.command} 失败`;
         return;
       }
       // get_messages 的结果是权威历史：用于打开已有会话和缺号后的重建
