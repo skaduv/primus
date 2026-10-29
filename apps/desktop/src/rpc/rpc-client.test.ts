@@ -87,6 +87,22 @@ describe("RPC 客户端", () => {
     expect(onResponsive).toHaveBeenCalledTimes(1);
   });
 
+  it("多个命令超时时，任一迟到的 response 即恢复（其余 response 可能已随丢弃的批次丢失）", async () => {
+    const { client, push, onUnresponsive, onResponsive } = setup();
+    const a = client.request("get_state").catch(() => {});
+    const b = client.request("get_messages").catch(() => {});
+    await vi.advanceTimersByTimeAsync(RESPONSE_TIMEOUT_MS);
+    await Promise.all([a, b]);
+    expect(onUnresponsive).toHaveBeenCalledTimes(2);
+    push([ok("s-2", "get_messages", { messages: [] })]);
+    expect(onResponsive).toHaveBeenCalledTimes(1);
+    // 非超时命令的 response 不触发恢复回调
+    const c = client.request("get_state");
+    push([ok("s-3", "get_state", {})]);
+    await c;
+    expect(onResponsive).toHaveBeenCalledTimes(1);
+  });
+
   it("bash 与 compact 等到操作完成才响应，不设超时", async () => {
     const { client, push, onUnresponsive } = setup();
     const r = client.request("bash", { command: "npm test" });
@@ -163,6 +179,19 @@ describe("RPC 客户端", () => {
     await vi.waitFor(() => expect(onResyncError).toHaveBeenCalledTimes(1));
     expect(String(onResyncError.mock.calls[0]?.[0])).toContain("get_messages 失败：忙");
     expect(onResynced).not.toHaveBeenCalled();
+  });
+
+  it("resync() 返回是否成功，供重启后决定是否解除发送限制", async () => {
+    const { client, push } = setup();
+    const failed = client.resync();
+    push([
+      ok("s-1", "get_messages", { messages: [] }),
+      { type: "response", id: "s-2", command: "get_state", success: false, error: "忙" },
+    ]);
+    await expect(failed).resolves.toBe(false);
+    const succeeded = client.resync();
+    push([ok("s-3", "get_messages", { messages: [] }), ok("s-4", "get_state", {})]);
+    await expect(succeeded).resolves.toBe(true);
   });
 
   it("重启后等待中的命令以 RpcClosedError 结束；关闭后忽略批次与请求", async () => {

@@ -84,7 +84,7 @@ export class RpcClient {
   private readonly pending = new Map<string, Pending>();
   /** 已超时、仍可能迟到的命令 id */
   private readonly timedOut = new Set<string>();
-  private resyncing: Promise<void> | null = null;
+  private resyncing: Promise<boolean> | null = null;
   private resyncAgain = false;
   private closed = false;
 
@@ -171,10 +171,10 @@ export class RpcClient {
 
   /**
    * 用 get_messages + get_state 重建会话状态。两条 response 随批次交给会话 store 应用；
-   * 进行中再次发现缺口时，本轮结束后再重建一次。
+   * 进行中再次发现缺口时，本轮结束后再重建一次。返回最后一轮是否成功（失败已回调 `onResyncError`）。
    */
-  resync(): Promise<void> {
-    if (this.closed) return Promise.resolve();
+  resync(): Promise<boolean> {
+    if (this.closed) return Promise.resolve(false);
     if (this.resyncing) {
       this.resyncAgain = true;
       return this.resyncing;
@@ -192,13 +192,15 @@ export class RpcClient {
             if (!r.success) throw new Error(`${r.command} 失败：${r.error}`);
           ok = true;
         } catch (error) {
-          if (this.closed) return;
+          if (this.closed) return false;
           ok = false;
           this.options.onResyncError?.(error);
           // 本轮失败但期间又发现了缺口：仍为新缺口再重建一轮（第 7.3 节），否则等下一个缺口
         }
       } while (this.resyncAgain && !this.closed);
-      if (ok && !this.closed) this.options.onResynced?.();
+      if (this.closed) return false;
+      if (ok) this.options.onResynced?.();
+      return ok;
     })().finally(() => {
       this.resyncing = null;
     });
@@ -230,7 +232,12 @@ export class RpcClient {
       entry.resolve(response);
       return;
     }
-    if (this.timedOut.delete(id) && this.timedOut.size === 0) this.options.onResponsive?.();
+    // 任何迟到的 response 都说明内核仍在响应：其余超时命令的 response 可能随丢弃的批次永久丢失，
+    // 不能等集合清空才解除无响应状态
+    if (this.timedOut.delete(id)) {
+      this.timedOut.clear();
+      this.options.onResponsive?.();
+    }
   }
 
   private timeout(id: string): void {

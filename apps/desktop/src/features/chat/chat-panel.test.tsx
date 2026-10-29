@@ -88,7 +88,8 @@ describe("对话区（mock 事件流）", () => {
       const coreRestart = vi.fn(async () => {
         stalled = false;
       });
-      setPlatformForTesting({ ...base, coreRestart });
+      const coreSend = vi.fn(base.coreSend);
+      setPlatformForTesting({ ...base, coreSend, coreRestart });
       render(<ChatPanel />);
       const input = screen.getByRole("textbox", { name: t.inputLabel });
       fireEvent.change(input, { target: { value: "你好" } });
@@ -100,8 +101,12 @@ describe("对话区（mock 事件流）", () => {
       // 超时的 prompt 可能已被受理：恢复前禁止重发
       const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
       expect(sendButton.disabled).toBe(true);
+      const sentBefore = coreSend.mock.calls.length;
       fireEvent.keyDown(input, { key: "Enter" });
-      expect(screen.queryAllByRole("article", { name: t.you })).toHaveLength(0);
+      fireEvent.click(sendButton);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(coreSend).toHaveBeenCalledTimes(sentBefore);
+      expect(coreSend.mock.calls.filter(([, r]) => r.type === "prompt")).toHaveLength(1);
 
       fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
       await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));

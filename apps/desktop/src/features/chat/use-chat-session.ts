@@ -29,7 +29,7 @@ export interface ChatSession {
   /** 打开会话或发送命令时的错误 */
   error?: string;
   /**
-   * 有命令超过 10 秒没有响应（第 7.5 节），界面提示“内核无响应”并提供重启。
+   * 有命令超过 10 秒没有响应（第 7.5 节），或重启后重建会话状态失败，界面提示“内核无响应”并提供重启。
    * 期间禁止发送：超时的 prompt 可能已被 Core 受理，重发会多跑一轮。
    */
   unresponsive: boolean;
@@ -117,7 +117,8 @@ export function useChatSession(): ChatSession {
             `${strings.chat.resyncFailed}：${e instanceof Error ? e.message : String(e)}`,
             "resync",
           ),
-        onResynced: () => clearError("resync"),
+        // 重建的两条 response 随批次排在帧队列里：等它们写入 store 之后再清除重建错误
+        onResynced: () => nextFrame(() => clearError("resync")),
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
@@ -144,7 +145,8 @@ export function useChatSession(): ChatSession {
 
   const send = useCallback(
     async (message: string): Promise<boolean> => {
-      setError(undefined);
+      // 重建失败的提示保留到重建成功为止
+      setErrorState((e) => (e?.kind === "resync" ? e : undefined));
       try {
         await ensureOpen();
         // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
@@ -158,7 +160,7 @@ export function useChatSession(): ChatSession {
         return false;
       }
     },
-    [ensureOpen, setError, fail],
+    [ensureOpen, fail],
   );
 
   const abort = useCallback(async () => {
@@ -179,8 +181,9 @@ export function useChatSession(): ChatSession {
       await c.platform.coreRestart(c.client.sessionKey);
       // 旧进程上等待的命令不会再有响应；新进程按会话文件恢复后重建状态
       c.client.reset();
-      setUnresponsive(false);
-      await c.client.resync();
+      // 重建成功前不解除发送限制：失败时保留重建错误与“重启内核”入口
+      const ok = await c.client.resync();
+      setUnresponsive(!ok);
     } catch (e) {
       fail(e);
     }
