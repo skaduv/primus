@@ -4,8 +4,10 @@
 //! - **写线程**：前端 `core_send` 的记录序列化为一行 JSON 放进有界队列，由写线程写入 stdin；
 //!   Core 读得慢时阻塞的是写线程，不是 invoke 调用方；队列满时返回 [`BridgeError::QueueFull`]。
 //! - **读线程**：持续读取 stdout（绝不因前端卡顿停读，否则 Core 因背压阻塞），[`LineFramer`] 分帧，
-//!   每帧校验为 JSON 后原样（不改字节）放进待推缓冲。缓冲超过上限（默认 64MB）时丢弃最旧的记录并计数；
-//!   单帧本身超过上限时丢弃该帧。
+//!   每帧校验为 JSON 后原样（不改字节）放进待推缓冲。待推缓冲与分帧器中未成帧的尾部**合计**不超过上限
+//!   （默认 64MB）：超出时丢弃最旧的已成帧记录并计数（未成帧的尾部是最新的数据，优先保留）；
+//!   单帧（含未成帧的尾部）本身超过上限时丢弃该帧。合批线程已取出、正在推送的那一批不在此列，
+//!   其大小受 [`MAX_BATCH_BYTES`] 约束。
 //! - **合批线程**：有记录到达后最多等 16ms，把缓冲中的记录打成一个 [`CoreBatch`]（第 7.3 节：`sessionKey`、
 //!   按会话单调递增的 `seq`、`records`、`dropped`）交给 [`BatchSink`]（Tauri `Channel`）。
 //!   `dropped` 非零时前端用 `get_messages` + `get_state` 重建会话状态。
@@ -205,19 +207,36 @@ impl Shared {
     fn push(&self, record: Box<RawValue>, limit: usize) {
         let len = record.get().len();
         let mut pending = self.pending();
-        while pending.bytes + len > limit {
+        self.evict_oldest(&mut pending, limit.saturating_sub(len));
+        pending.bytes += len;
+        pending.records.push_back(record);
+        drop(pending);
+        self.received.fetch_add(1, Ordering::Relaxed);
+        self.ready.notify_one();
+    }
+
+    /// 丢弃最旧的记录，直到待推缓冲不超过 `limit` 字节（为未成帧的尾部腾出空间）。
+    fn trim(&self, limit: usize) {
+        let mut pending = self.pending();
+        if self.evict_oldest(&mut pending, limit) {
+            drop(pending);
+            self.ready.notify_one();
+        }
+    }
+
+    /// 从队首丢弃记录直到 `bytes <= limit`；返回是否丢弃过。
+    fn evict_oldest(&self, pending: &mut Pending, limit: usize) -> bool {
+        let mut evicted = false;
+        while pending.bytes > limit {
             let Some(old) = pending.records.pop_front() else {
                 break;
             };
             pending.bytes -= old.get().len();
             pending.dropped += 1;
             self.dropped.fetch_add(1, Ordering::Relaxed);
+            evicted = true;
         }
-        pending.bytes += len;
-        pending.records.push_back(record);
-        drop(pending);
-        self.received.fetch_add(1, Ordering::Relaxed);
-        self.ready.notify_one();
+        evicted
     }
 
     /// 记一次丢弃（超长帧）。
@@ -355,13 +374,18 @@ fn read_loop<R: Read>(mut stdout: R, shared: &Shared, limit: usize) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
-        for frame in framer.push(&chunk[..n]) {
-            accept_frame(frame, shared, limit);
-        }
+        let frames = framer.push(&chunk[..n]);
+        // 未成帧的尾部本身超限：丢弃该帧
         if framer.pending_len() > limit {
             framer.discard_partial();
             shared.drop_one();
         }
+        // 待推缓冲 + 未成帧尾部合计不超过上限：尾部占用的部分从待推缓冲的额度中扣除
+        let budget = limit - framer.pending_len();
+        for frame in frames {
+            accept_frame(frame, shared, budget);
+        }
+        shared.trim(budget);
     }
     shared.close();
 }
@@ -691,6 +715,43 @@ mod tests {
     }
 
     #[test]
+    fn pending_and_partial_frame_share_one_limit() {
+        // 不启动合批线程（模拟前端停滞），直接驱动读循环
+        let shared = Shared {
+            pending: Mutex::new(Pending::default()),
+            ready: Condvar::new(),
+            received: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            invalid: AtomicU64::new(0),
+            batches: AtomicU64::new(0),
+            writer_closed: AtomicBool::new(false),
+        };
+        // 8 条 11 字节的记录（88 字节），随后是 60 字节、尚未收到 LF 的大帧
+        let mut records = String::new();
+        for i in 0..8 {
+            records.push_str(&format!("{{\"i\":\"{i:03}\"}}\n"));
+        }
+        let partial = vec![b'x'; 60];
+        let chunks = VecDeque::from([records.into_bytes(), partial]);
+        read_loop(Chunks(chunks), &shared, 100);
+
+        let pending = shared.pending();
+        assert!(
+            pending.bytes + 60 <= 100,
+            "待推 {} 字节 + 尾部 60 字节超限",
+            pending.bytes
+        );
+        let kept: Vec<&str> = pending.records.iter().map(|r| r.get()).collect();
+        // 丢的是最旧的记录，保留最新的 3 条
+        assert_eq!(
+            kept,
+            ["{\"i\":\"005\"}", "{\"i\":\"006\"}", "{\"i\":\"007\"}"]
+        );
+        assert_eq!(pending.dropped, 5);
+        assert_eq!(shared.dropped.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
     fn large_backlog_is_split_by_batch_bytes() {
         let sink = Collect::default();
         let line = format!("{{\"p\":\"{}\"}}\n", "x".repeat(1000));
@@ -713,12 +774,15 @@ mod tests {
         assert!(batches.len() >= 5);
         assert!(batches.iter().all(|b| b.1.len() <= 10));
         assert_eq!(batches.iter().map(|b| b.1.len()).sum::<usize>(), 50);
+        let seqs: Vec<u64> = batches.iter().map(|b| b.0).collect();
+        assert_eq!(seqs, (1..=seqs.len() as u64).collect::<Vec<_>>());
     }
 
     /// 回显 stdin 的每一行，并按要求输出大量记录。
     const ECHO_CORE: &str = r#"
-const rl = require("node:readline").createInterface({ input: process.stdin });
-rl.on("line", (line) => {
+// 只按 \n 分帧：readline 会把 U+2028/U+2029 当换行，切断含这些字符的命令
+let pending = "";
+const handle = (line) => {
   const cmd = JSON.parse(line);
   if (cmd.type === "flood") {
     const payload = "x".repeat(cmd.size);
@@ -735,8 +799,18 @@ rl.on("line", (line) => {
   } else {
     process.stdout.write(JSON.stringify({ type: "response", id: cmd.id, echo: cmd }) + "\n");
   }
+};
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  pending += chunk;
+  let nl;
+  while ((nl = pending.indexOf("\n")) >= 0) {
+    const line = pending.slice(0, nl).replace(/\r$/, "");
+    pending = pending.slice(nl + 1);
+    if (line) handle(line);
+  }
 });
-rl.on("close", () => process.exit(0));
+process.stdin.on("end", () => process.exit(0));
 "#;
 
     fn spawn_echo() -> std::process::Child {
