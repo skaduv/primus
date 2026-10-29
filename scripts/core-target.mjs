@@ -2,7 +2,8 @@
 //
 //   默认                     agent-core 构建目录里的 rpc-entry.js（当前 node）
 //   dist: true               组装好的 dist/agent-core（第 3.2 节安装布局）
-//   entry / node             指定入口与运行时；环境变量 PRIMUS_SMOKE_ENTRY / PRIMUS_SMOKE_NODE 等价（参数优先）
+//   entry / node             指定入口与运行时；环境变量 PRIMUS_SMOKE_ENTRY / PRIMUS_SMOKE_NODE 等价（参数优先）。
+//                            dist 与 entry（含 PRIMUS_SMOKE_ENTRY）互斥，同时指定时报错；dist 可另指 node
 //
 // dist 时先按 manifest.json 校验产物，再把 dist/agent-core 与 dist/runtime 复制到 sandbox 下一个
 // 含中文与空格的「安装目录」\resources\ 中运行：既模拟安装后的目录结构，也避免模块解析向上
@@ -27,6 +28,11 @@ export function prepareCoreTarget({ dist = false, entry, node, sandbox }) {
   let note;
 
   if (dist) {
+    // dist 的入口固定为复制后的 dist/agent-core/rpc-entry.js，不能再另指入口，以免静默忽略
+    if (entryPath)
+      throw new CoreTargetError(
+        `✗ dist 模式不能同时指定入口（${entry ? "--entry" : "PRIMUS_SMOKE_ENTRY"}=${entryPath}）：dist 固定运行 dist/agent-core/rpc-entry.js`,
+      );
     const distCore = join(repoRoot, "dist/agent-core");
     const manifestPath = join(distCore, MANIFEST_FILE);
     if (!existsSync(manifestPath))

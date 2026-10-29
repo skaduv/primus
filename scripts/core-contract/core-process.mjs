@@ -41,13 +41,17 @@ export class CoreProcess {
   /** 不是合法 JSON 的 stdout 行：协议要求 stdout 只有协议记录，出现即违反契约 */
   invalidLines = [];
   stderr = "";
+  /** 进程已退出（或运行时无法启动） */
   exited = false;
   exitCode = null;
+  /** stdout 已结束：之后不会再有新记录 */
+  stdoutEnded = false;
 
   #child;
   #nextId = 1;
   #waiters = new Set();
   #exitPromise;
+  #stdoutEndPromise;
 
   constructor({ nodeExe, entry, args = [], cwd, env }) {
     this.#child = spawn(nodeExe, [entry, ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -55,9 +59,19 @@ export class CoreProcess {
     this.#child.stdout.on("data", (chunk) => {
       for (const line of decoder.push(chunk)) this.#onLine(line);
     });
-    // 每条记录都必须以 LF 结尾：stdout 结束时的残余算作非法行
-    this.#child.stdout.on("end", () => {
-      if (decoder.pendingBytes > 0) this.invalidLines.push(decoder.flush());
+    // 每条记录都必须以 LF 结尾：stdout 结束时的残余算作非法行。
+    // exit 事件可能早于 stdout 读完（Node.js child_process 文档），所以等待者以「退出且 stdout 结束」为终点。
+    this.#stdoutEndPromise = new Promise((resolve) => {
+      const onEnd = () => {
+        if (this.stdoutEnded) return;
+        this.stdoutEnded = true;
+        if (decoder.pendingBytes > 0) this.invalidLines.push(decoder.flush());
+        this.#notify();
+        resolve();
+      };
+      this.#child.stdout.once("end", onEnd);
+      this.#child.stdout.once("close", onEnd);
+      this.#child.once("error", onEnd); // 运行时无法启动时 stdout 不会有数据
     });
     this.#child.stderr.setEncoding("utf8");
     this.#child.stderr.on("data", (d) => {
@@ -122,7 +136,8 @@ export class CoreProcess {
             return;
           }
         }
-        if (this.exited) {
+        // 进程退出后 stdout 里可能还有没读完的记录：等 stdout 也结束才判定等不到
+        if (this.exited && this.stdoutEnded) {
           done();
           reject(new Error(`等待 ${label} 时 Core 进程退出（退出码 ${this.exitCode}）`));
         }
@@ -149,13 +164,28 @@ export class CoreProcess {
     });
   }
 
-  /** 关闭 stdin 请求有序退出（rpc.md「Shutdown」）；超时后强制结束 */
-  async stop(timeoutMs = 5_000) {
-    if (this.exited) return this.exitCode;
-    this.#child.stdin.end();
-    const timer = setTimeout(() => this.#child.kill(), timeoutMs);
-    const code = await this.#exitPromise;
-    clearTimeout(timer);
-    return code;
+  /**
+   * 关闭 stdin 请求有序退出（rpc.md「Shutdown」），返回退出码；timeoutMs 内未退出则强制结束（退出码为 null）。
+   * 退出后再等 stdout 读完（最多 drainMs：Core 的子进程若仍持有管道，stdout 可能迟迟不结束），
+   * 这样残余行已计入 invalidLines。可重复调用，已退出时直接返回记录的退出码。
+   */
+  async stop({ timeoutMs = 5_000, drainMs = 2_000 } = {}) {
+    if (!this.exited) {
+      this.#child.stdin.end();
+      const timer = setTimeout(() => this.#child.kill(), timeoutMs);
+      await this.#exitPromise;
+      clearTimeout(timer);
+    }
+    if (!this.stdoutEnded) {
+      let timer;
+      await Promise.race([
+        this.#stdoutEndPromise,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, drainMs);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    return this.exitCode;
   }
 }

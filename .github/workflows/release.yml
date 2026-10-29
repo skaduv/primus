@@ -9,7 +9,8 @@
 # - 两个架构都构建并冒烟成功后才发布（发布作业 needs 整个矩阵）
 # - 工作流本身来自触发它的提交（手动触发时为 main），构建的源码一律 checkout 该标签；
 #   共用的 composite action 从工作流自身的提交另行取出。标签中须已有多架构打包脚本（scripts/build-nsis.mjs 等），
-#   更早的标签无法用本工作流构建
+#   更早的标签无法用本工作流构建；早于 RPC 契约测试的标签（package.json 无 contract:core:dist）可以构建，
+#   但跳过契约测试一步（RPC 冒烟照常运行）
 # - 未配置代码签名证书时安装包不签名，Release 正文的「已知限制」写明 SmartScreen 拦截
 name: Release
 
@@ -112,7 +113,17 @@ jobs:
         run: node scripts/build-core.mjs --platform win-${{ matrix.arch }}
       - name: Agent Core RPC 冒烟（dist/runtime/node.exe + dist/agent-core）
         run: pnpm smoke:core:dist
+      # 早于 RPC 契约测试的标签（package.json 没有 contract:core:dist）重建时跳过此步，冒烟照常运行
+      - name: 检查标签中含 RPC 契约测试
+        id: contract
+        shell: pwsh
+        run: |
+          $scripts = (Get-Content -Raw package.json | ConvertFrom-Json).scripts
+          $present = ($null -ne $scripts.PSObject.Properties['contract:core:dist']).ToString().ToLowerInvariant()
+          "present=$present" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ($present -ne 'true') { Write-Host "::notice::标签 $env:RELEASE_TAG 早于 RPC 契约测试（package.json 无 contract:core:dist），跳过契约测试" }
       - name: Agent Core RPC 契约测试（dist/runtime/node.exe + dist/agent-core）
+        if: steps.contract.outputs.present == 'true'
         run: pnpm contract:core:dist
       - name: 构建第一方扩展（primus-bundle.js）
         run: pnpm build:extensions

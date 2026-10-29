@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { CoreTargetError, prepareCoreTarget } from "../core-target.mjs";
 import { CoreProcess, JsonlDecoder } from "./core-process.mjs";
 import {
   DEFAULT_REPLY,
@@ -74,6 +75,40 @@ describe("CoreProcess", () => {
     );
   });
 
+  it("stop 返回退出码，可重复调用", async () => {
+    const core = fake(`process.stdin.resume(); process.stdin.on("end", () => process.exit(7));`);
+    expect(await core.stop()).toBe(7);
+    expect(await core.stop()).toBe(7);
+  });
+
+  it("关闭 stdin 后不退出时强制结束，退出码为 null", async () => {
+    const core = fake(`process.stdin.resume(); setInterval(() => {}, 1000);`);
+    expect(await core.stop({ timeoutMs: 300 })).toBeNull();
+    expect(core.exited).toBe(true);
+  });
+
+  it("进程退出前写出的记录仍能等到（等 stdout 读完才判定进程已退出）", async () => {
+    const core = fake(`
+      process.stdout.write(JSON.stringify({ type: "last", pad: "x".repeat(16_000) }) + "\\n");
+      process.exit(0);
+    `);
+    const r = await core.waitFor((x) => x.type === "last", { label: "last", timeoutMs: 10_000 });
+    expect(r.pad).toHaveLength(16_000);
+    expect(await core.stop()).toBe(0);
+    expect(core.invalidLines).toEqual([]);
+  });
+
+  it("子进程仍持有 stdout 时，stop 最多等 drainMs 就返回", async () => {
+    // 孙进程继承 stdout 并存活 3 秒，Core 本身立即退出：stdout 不会随 Core 退出而结束
+    const core = fake(`
+      require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 3000)"], { stdio: "inherit" });
+      process.exit(0);
+    `);
+    const t = Date.now();
+    expect(await core.stop({ drainMs: 300 })).toBe(0);
+    expect(Date.now() - t).toBeLessThan(2_500);
+  });
+
   it("运行时无法启动时报告失败", async () => {
     const core = new CoreProcess({
       nodeExe: "/不存在/node",
@@ -85,6 +120,14 @@ describe("CoreProcess", () => {
       "Core 进程退出",
     );
     expect(core.stderr).toContain("启动 Core 失败");
+  });
+});
+
+describe("prepareCoreTarget", () => {
+  it("dist 与 entry 同时指定时报错，不静默忽略 entry", () => {
+    expect(() => prepareCoreTarget({ dist: true, entry: "x.js", sandbox: "/nonexistent" })).toThrow(
+      CoreTargetError,
+    );
   });
 });
 

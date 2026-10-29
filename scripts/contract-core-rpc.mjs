@@ -67,9 +67,17 @@ function checkFauxRequests(faux) {
   );
 }
 
-/** 从 fromIndex 起检查记录类型都在协议定义之内，message_update 的增量类型也在定义之内 */
-function checkKnownRecords(core, fromIndex = 0) {
+/** stdout 只有协议记录：不得出现非 JSON 行或不以 LF 结尾的残余 */
+function checkNoInvalidLines(core) {
   check(core.invalidLines.length === 0, `stdout 出现非 JSON 行：${json(core.invalidLines[0])}`);
+}
+
+/**
+ * 从 fromIndex 起检查记录类型都在协议定义之内，message_update 的增量类型也在定义之内；
+ * text_delta 须带整数 contentIndex 与字符串 delta（桌面端流式重建按 contentIndex 定位文本块，缺失即丢弃增量）
+ */
+function checkKnownRecords(core, fromIndex = 0) {
+  checkNoInvalidLines(core);
   for (const record of core.records.slice(fromIndex)) {
     check(
       KNOWN_RECORD_TYPES.has(record.type),
@@ -78,6 +86,13 @@ function checkKnownRecords(core, fromIndex = 0) {
     if (record.type === "message_update") {
       const t = record.assistantMessageEvent?.type;
       check(KNOWN_DELTA_TYPES.has(t), `协议未定义的 message_update 增量类型 ${t}`);
+      if (t === "text_delta") {
+        const e = record.assistantMessageEvent;
+        check(
+          Number.isInteger(e.contentIndex) && typeof e.delta === "string",
+          `text_delta 缺少 contentIndex 或 delta：${json(record)}`,
+        );
+      }
     }
   }
 }
@@ -89,11 +104,16 @@ function assistantEnd(core, fromIndex) {
     .find((r) => r.type === "message_end" && r.message?.role === "assistant");
 }
 
-/** 本轮 text_delta 增量依次拼接的文本 */
+/** 本轮 text_delta 增量依次拼接的文本（只取 contentIndex 为 0 的文本块：Faux 回复只有这一个块） */
 function streamedText(core, fromIndex) {
   return core.records
     .slice(fromIndex)
-    .filter((r) => r.type === "message_update" && r.assistantMessageEvent?.type === "text_delta")
+    .filter(
+      (r) =>
+        r.type === "message_update" &&
+        r.assistantMessageEvent?.type === "text_delta" &&
+        r.assistantMessageEvent.contentIndex === 0,
+    )
     .map((r) => r.assistantMessageEvent.delta)
     .join("");
 }
@@ -166,6 +186,8 @@ const cases = {
       start !== -1 && end > start && settledAt > end,
       "事件顺序应为 agent_start → agent_end → agent_settled",
     );
+    // prompt 受理即回 response，不等本轮结束（waitFor 会找到已到达的 agent_settled，所以要单独查顺序）
+    check(core.records.indexOf(r) < settledAt, "prompt 的 response 应先于 agent_settled 到达");
 
     check(
       streamedText(core, from) === expected,
@@ -196,7 +218,10 @@ const cases = {
     const user = list.find((m) => m.role === "user");
     const assistant = list.findLast((m) => m.role === "assistant");
     check(
-      user && assistant && textOf(assistant) === expected,
+      user &&
+        lastUserText({ messages: [user] }) === "你好" &&
+        assistant &&
+        textOf(assistant) === expected,
       `get_messages 应包含本轮问答：${json(list)}`,
     );
 
@@ -242,6 +267,11 @@ const cases = {
       fromIndex: from,
     });
     check(settled.aborted === true, `中止的一轮 aborted 应为 true：${json(settled)}`);
+    // 会话空闲（agent_settled）之后才回 abort 的 response
+    check(
+      core.records.indexOf(settled) < abortAt,
+      "abort 的 response 应在 agent_settled 之后（会话空闲后才响应）",
+    );
 
     // 供应商请求应被取消（连接断开），而不是读完整个流
     const request = faux.requests.find((q) => lastUserText(q.body) === "请慢慢说");
@@ -260,44 +290,58 @@ const cases = {
 
 async function runCase(name, target) {
   const sandbox = mkdtempSync(join(tmpdir(), `primus-core-contract-${name}-`));
-  const coreDir = join(sandbox, "core");
-  const workDir = join(sandbox, "work");
-  mkdirSync(coreDir);
-  mkdirSync(workDir);
-  const faux = await startFauxModel();
-  writeFileSync(
-    join(coreDir, "models.json"),
-    JSON.stringify(fauxModelsJson(faux.baseUrl), null, 2),
-  );
-  const core = new CoreProcess({
-    ...target,
-    args: ["--offline", "--provider", FAUX_PROVIDER, "--model", FAUX_MODEL],
-    cwd: workDir,
-    // 本机 Faux 服务不能走代理：CI 或开发机配置的 HTTP(S)_PROXY 会让 127.0.0.1 的请求失败
-    env: {
-      ...coreEnv({ home: sandbox, coreDir }),
-      NO_PROXY: "127.0.0.1,localhost",
-      no_proxy: "127.0.0.1,localhost",
-    },
-  });
+  let faux;
+  let core;
   const started = Date.now();
   try {
+    const coreDir = join(sandbox, "core");
+    const workDir = join(sandbox, "work");
+    mkdirSync(coreDir);
+    mkdirSync(workDir);
+    faux = await startFauxModel();
+    writeFileSync(
+      join(coreDir, "models.json"),
+      JSON.stringify(fauxModelsJson(faux.baseUrl), null, 2),
+    );
+    core = new CoreProcess({
+      ...target,
+      args: ["--offline", "--provider", FAUX_PROVIDER, "--model", FAUX_MODEL],
+      cwd: workDir,
+      // 本机 Faux 服务不能走代理：CI 或开发机配置的 HTTP(S)_PROXY 会让 127.0.0.1 的请求失败
+      env: {
+        ...coreEnv({ home: sandbox, coreDir }),
+        NO_PROXY: "127.0.0.1,localhost",
+        no_proxy: "127.0.0.1,localhost",
+      },
+    });
     await cases[name]({ core, faux });
+    // 有序退出：关闭 stdin 后 Core 应以 0 退出；stdout 读完后不得有非法行（含不以 LF 结尾的残余）
+    const code = await core.stop();
+    check(
+      code === 0,
+      `关闭 stdin 后 Core 应以 0 退出，实际 ${code ?? "未在时限内退出，已强制结束"}`,
+    );
+    checkNoInvalidLines(core);
     console.log(`✓ ${name}（${Date.now() - started} ms）`);
     return true;
   } catch (err) {
     console.error(`✗ ${name}：${err.message}`);
     if (!(err instanceof ContractError)) console.error(err.stack);
-    console.error(`--- Core stderr ---\n${core.stderr}`);
+    if (core) console.error(`--- Core stderr ---\n${core.stderr}`);
     return false;
   } finally {
-    await core.stop();
-    await faux.close();
-    try {
-      rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    } catch (err) {
-      console.warn(`⚠ 临时目录清理失败（不影响结果）：${sandbox}：${err.message}`);
-    }
+    await core?.stop();
+    await faux?.close();
+    removeDir(sandbox);
+  }
+}
+
+/** 删除临时目录；Windows 上刚退出的进程可能仍短暂占用文件，重试后仍失败只告警 */
+function removeDir(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (err) {
+    console.warn(`⚠ 临时目录清理失败（不影响结果）：${dir}：${err.message}`);
   }
 }
 
@@ -319,7 +363,7 @@ try {
     sandbox: targetSandbox,
   });
 } catch (err) {
-  rmSync(targetSandbox, { recursive: true, force: true });
+  removeDir(targetSandbox);
   if (err instanceof CoreTargetError) {
     console.error(err.message);
     process.exit(1);
@@ -329,9 +373,12 @@ try {
 if (target.note) console.log(`· dist 契约测试：${target.note}`);
 
 let failed = 0;
-for (const name of selected)
-  if (!(await runCase(name, { entry: target.entry, nodeExe: target.nodeExe }))) failed++;
-rmSync(targetSandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+try {
+  for (const name of selected)
+    if (!(await runCase(name, { entry: target.entry, nodeExe: target.nodeExe }))) failed++;
+} finally {
+  removeDir(targetSandbox);
+}
 
 if (failed) {
   console.error(`✗ RPC 契约测试：${failed}/${selected.length} 条用例失败`);
