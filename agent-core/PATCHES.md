@@ -20,7 +20,7 @@
 ```bash
 git subtree pull --prefix=agent-core https://github.com/earendil-works/pi.git <新标签> --squash
 # 按下方登记逐条重新应用改动 → 更新本文件“当前上游版本”
-pnpm build:core && pnpm smoke:core   # 构建 + RPC 冒烟
+pnpm build:core && pnpm smoke:core && pnpm contract:core   # 构建 + RPC 冒烟 + RPC 契约测试
 # 再跑 RPC 协议回归、会话格式兼容、第一方扩展 API 检查、裁剪依赖检查（第 6.1 节）
 ```
 

@@ -12,6 +12,8 @@
     "build:core": "node scripts/build-core.mjs",
     "smoke:core": "node scripts/smoke-core-rpc.mjs",
     "smoke:core:dist": "node scripts/smoke-core-rpc.mjs --dist",
+    "contract:core": "node scripts/contract-core-rpc.mjs",
+    "contract:core:dist": "node scripts/contract-core-rpc.mjs --dist",
     "build:extensions": "pnpm --filter @primus/extensions build",
     "build:sbom": "node scripts/generate-sbom.mjs",
     "build:msi": "node scripts/build-msi.mjs",
