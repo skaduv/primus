@@ -315,7 +315,7 @@ function useElementHeight<T extends HTMLElement>() {
 }
 
 export function ChatPanel() {
-  const { state, error, send, abort } = useChatSession();
+  const { state, error, unresponsive, send, abort, restarting, restart } = useChatSession();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -381,7 +381,13 @@ export function ChatPanel() {
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const text = draft.trim();
-    if ((!text && attachments.length === 0) || state.running || submittingRef.current) return;
+    if (
+      (!text && attachments.length === 0) ||
+      state.running ||
+      unresponsive ||
+      submittingRef.current
+    )
+      return;
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
@@ -430,6 +436,25 @@ export function ChatPanel() {
             state.messages.map((m) => (
               <MessageItem key={messageKey(m)} message={m} toolRuns={state.toolRuns} />
             ))
+          )}
+          {unresponsive && (
+            <div
+              role="alert"
+              className="flex items-center gap-3 rounded-xl border border-danger/40 px-3 py-2 text-xs"
+            >
+              <div className="flex-1">
+                <p className="font-medium text-danger">{t.unresponsive}</p>
+                <p className="text-muted">{t.unresponsiveHint}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void restart()}
+                disabled={restarting}
+                className="rounded-full bg-hover px-3 py-1 font-medium disabled:opacity-50"
+              >
+                {t.restartCore}
+              </button>
+            </div>
           )}
           {shownError && (
             <p role="alert" className="text-xs text-danger">
@@ -571,7 +596,9 @@ export function ChatPanel() {
                   <button
                     type="submit"
                     aria-label={t.send}
-                    disabled={submitting || (!draft.trim() && attachments.length === 0)}
+                    disabled={
+                      submitting || unresponsive || (!draft.trim() && attachments.length === 0)
+                    }
                     className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                   >
                     <ArrowUp aria-hidden size={16} strokeWidth={2.5} />

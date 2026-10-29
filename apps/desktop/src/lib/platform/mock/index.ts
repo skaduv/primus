@@ -12,6 +12,10 @@ export interface MockOptions {
   batchSize?: number;
   /** 时钟（测试可注入） */
   now?: () => number;
+  /** 模拟薄壳与前端之间丢失批次：返回 true 的批次照常占用序号但不推送（测试缺口重建） */
+  dropBatch?: (seq: number, records: readonly CoreRecord[]) => boolean;
+  /** 模拟内核卡死：返回 true 的命令不回 response（测试超时） */
+  stallCommand?: (cmd: RpcCommand) => boolean;
 }
 
 interface MockSession {
@@ -53,7 +57,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     const records = s.queue.splice(0, batchSize);
     if (records.some((r) => r.type === "agent_settled")) s.streaming = false;
     s.seq += 1;
-    s.onBatch({ sessionKey: s.key, seq: s.seq, records, dropped: 0 });
+    if (!options.dropBatch?.(s.seq, records))
+      s.onBatch({ sessionKey: s.key, seq: s.seq, records, dropped: 0 });
     schedule(s);
   };
 
@@ -78,6 +83,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       : { type: "response", id: cmd.id, command: cmd.type, success: false, error }) as RpcResponse;
 
   const handle = (s: MockSession, cmd: RpcCommand) => {
+    if (options.stallCommand?.(cmd)) return;
     switch (cmd.type) {
       case "prompt": {
         if (s.streaming) {
@@ -112,7 +118,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
             model: { provider: "mock", id: "mock-model", name: "Mock 模型" },
             thinkingLevel: "medium",
             isStreaming: s.streaming,
+            isCompacting: false,
+            steeringMode: "one-at-a-time",
+            followUpMode: "one-at-a-time",
             sessionId: s.key,
+            autoCompactionEnabled: true,
             messageCount: s.messages.length,
             pendingMessageCount: 0,
           }),

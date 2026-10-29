@@ -2,7 +2,6 @@ import type {
   AgentMessage,
   AssistantContent,
   AssistantMessageEvent,
-  CoreBatch,
   CoreRecord,
   RpcResponse,
   ToolResult,
@@ -10,7 +9,7 @@ import type {
 import { produce } from "immer";
 import { createStore } from "zustand/vanilla";
 
-// 每会话 store（第 16.4 节）：按 seq 合并薄壳推来的批次，按第 7.4 节重建流式消息。
+// 每会话 store（第 16.4 节）：按顺序合并 RPC 客户端交付的记录，按第 7.4 节重建流式消息。
 
 /** 流式中的工具调用块：参数 JSON 尚未完整时先累积原始文本 */
 export interface StreamingToolCall {
@@ -31,9 +30,7 @@ export interface ToolRun {
 }
 
 export interface SessionState {
-  /** 已处理的最后一个批次序号 */
-  seq: number;
-  /** 发现序号不连续或有丢弃，需要用 get_messages + get_state 重建 */
+  /** RPC 客户端发现批次缺口，正在用 get_messages + get_state 重建；收到 get_messages 结果后清除 */
   needsResync: boolean;
   /** 时间线消息；最后一条可能仍在流式输出 */
   messages: AgentMessage[];
@@ -47,7 +44,6 @@ export interface SessionState {
 }
 
 export const initialSessionState: SessionState = {
-  seq: 0,
   needsResync: false,
   messages: [],
   streamingMessage: false,
@@ -110,11 +106,17 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
         draft.lastError = r.error || `${r.command} 失败`;
         return;
       }
-      // get_messages 的结果是权威历史：用于打开已有会话和缺号后的重建
+      // get_messages 的结果是权威历史：用于打开已有会话和缺号后的重建。
+      // 它不含正在流式输出的消息，因此结束流式状态：之后的增量在下一个 message_start 前忽略，
+      // 那条消息由它的 message_end 补上。
       if (r.command === "get_messages" && Array.isArray(r.data?.messages)) {
         draft.messages = r.data.messages;
         draft.streamingMessage = false;
         draft.needsResync = false;
+      }
+      // get_state 校正运行状态（缺号时可能错过了 agent_start / agent_settled）
+      if (r.command === "get_state" && r.data) {
+        draft.running = r.data.isStreaming || r.data.isCompacting;
       }
       return;
     }
@@ -136,6 +138,7 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
     }
     case "message_update": {
       const { assistantMessageEvent } = record as { assistantMessageEvent: AssistantMessageEvent };
+      if (!draft.streamingMessage) return;
       const last = draft.messages.at(-1) as { role: string; content?: unknown } | undefined;
       if (last?.role !== "assistant" || !Array.isArray(last.content)) return;
       applyUpdate(last.content as TimelineContent[], assistantMessageEvent);
@@ -180,18 +183,19 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
   }
 }
 
-/**
- * 合并若干批次（纯函数）。重复或过期的批次忽略；
- * 发现缺号或薄壳丢弃过记录时标记 needsResync（仍继续合并后续批次），
- * 由调用方发送 get_messages，收到其响应后用完整历史覆盖并清除标记。
- */
-export function applyBatches(state: SessionState, batches: readonly CoreBatch[]): SessionState {
+/** RPC 客户端交付的一段记录（一个批次去重后的内容） */
+export interface RecordChunk {
+  records: readonly CoreRecord[];
+  /** 这段之前有记录丢失：标记重建，由 RPC 客户端发出 get_messages + get_state */
+  gap: boolean;
+}
+
+/** 按顺序合并若干段记录（纯函数）。批次去重与缺口检测由 RPC 客户端负责（src/rpc） */
+export function applyChunks(state: SessionState, chunks: readonly RecordChunk[]): SessionState {
   return produce(state, (draft) => {
-    for (const batch of batches) {
-      if (batch.seq <= draft.seq) continue;
-      if (batch.seq !== draft.seq + 1 || batch.dropped > 0) draft.needsResync = true;
-      draft.seq = batch.seq;
-      for (const record of batch.records) applyRecord(draft, record);
+    for (const chunk of chunks) {
+      if (chunk.gap) draft.needsResync = true;
+      for (const record of chunk.records) applyRecord(draft, record);
     }
   });
 }
