@@ -106,9 +106,24 @@ function Get-ShortcutTarget([string] $Path) {
 
 function ConvertTo-PsLiteral([string] $Value) { return "'" + ($Value -replace "'", "''") + "'" }
 
+# 与卸载程序删除文件同样的访问检查：请求 DELETE 访问并允许其他句柄读、写、删除共享。
+# 不用独占 ReadWrite 打开：别的进程以 FILE_SHARE_DELETE 持有文件时卸载仍能删除，独占打开却会一直失败。
+Add-Type -Namespace PrimusSmoke -Name Native -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+'@
+
+function Test-DeleteAccess([string] $Path) {
+  $DELETE = 0x00010000
+  $FILE_SHARE_ALL = 0x7          # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+  $OPEN_EXISTING = 3
+  $handle = [PrimusSmoke.Native]::CreateFileW($Path, $DELETE, $FILE_SHARE_ALL, [IntPtr]::Zero, $OPEN_EXISTING, 0, [IntPtr]::Zero)
+  try { return -not $handle.IsInvalid } finally { $handle.Dispose() }
+}
+
 # 卸载前等安装目录中的文件不再被占用：Core RPC 冒烟刚用 resources\runtime\node.exe 跑过 Core，
 # 进程退出后映像文件的句柄可能还要片刻才释放（杀毒扫描等）。NSIS 卸载程序遇到被占用的文件会静默跳过，
-# 留下 resources 目录（ARM64 Runner 上偶发）。先等从安装目录启动的进程全部退出，再确认 resources 下的文件都能独占打开。
+# 留下 resources 目录（ARM64 Runner 上偶发）。先等从安装目录启动的进程全部退出，再确认 resources 下的文件都能以删除访问打开。
 function Wait-InstallDirReleased([int] $TimeoutSeconds = 30) {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   $prefix = $InstallDir.TrimEnd('\') + '\'
@@ -120,9 +135,7 @@ function Wait-InstallDirReleased([int] $TimeoutSeconds = 30) {
     $locked = @()
     if ($running.Count -eq 0) {
       $locked = @(Get-ChildItem -LiteralPath (Join-Path $InstallDir 'resources') -Recurse -File -Force -ErrorAction SilentlyContinue |
-          Where-Object {
-            try { [IO.File]::Open($_.FullName, 'Open', 'ReadWrite', 'None').Dispose(); $false } catch { $true }
-          })
+          Where-Object { -not (Test-DeleteAccess $_.FullName) })
     }
     if ($running.Count -eq 0 -and $locked.Count -eq 0) { return }
     if ((Get-Date) -gt $deadline) {

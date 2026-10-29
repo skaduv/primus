@@ -315,7 +315,7 @@ function useElementHeight<T extends HTMLElement>() {
 }
 
 export function ChatPanel() {
-  const { state, error, unresponsive, send, abort, restart } = useChatSession();
+  const { state, error, unresponsive, send, abort, restarting, restart } = useChatSession();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -449,7 +449,8 @@ export function ChatPanel() {
               <button
                 type="button"
                 onClick={() => void restart()}
-                className="rounded-full bg-hover px-3 py-1 font-medium"
+                disabled={restarting}
+                className="rounded-full bg-hover px-3 py-1 font-medium disabled:opacity-50"
               >
                 {t.restartCore}
               </button>

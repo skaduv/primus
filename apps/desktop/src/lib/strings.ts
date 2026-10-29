@@ -75,6 +75,8 @@ export const strings = {
       "命令超过 10 秒没有回应，恢复前暂停发送。可以继续等待，或重启内核：已完成的消息会保留，正在生成的回复会中断。",
     restartCore: "重启内核",
     resyncFailed: "重建会话状态失败",
+    responseTimeout: "内核超过 10 秒没有回应",
+    sessionNotOpen: "会话未打开",
     permissionMode: "权限模式",
     permissions: {
       ask: { label: "每次询问", short: "询问", hint: "修改文件、运行命令和联网前都先征求你的同意" },

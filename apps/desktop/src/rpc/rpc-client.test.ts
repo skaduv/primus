@@ -2,7 +2,13 @@ import type { CoreBatch, CoreRecord, RpcResponse, StdinRecord } from "@primus/pr
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { applyChunks, initialSessionState, type RecordChunk } from "@/stores/session-store";
-import { RESPONSE_TIMEOUT_MS, RpcClient, RpcClosedError, RpcTimeoutError } from "./rpc-client";
+import {
+  RESPONSE_TIMEOUT_MS,
+  RpcClient,
+  RpcClosedError,
+  RpcResponseError,
+  RpcTimeoutError,
+} from "./rpc-client";
 
 function setup(options: { send?: (r: StdinRecord) => Promise<void> } = {}) {
   const sent: StdinRecord[] = [];
@@ -180,8 +186,24 @@ describe("RPC 客户端", () => {
       ok("s-2", "get_state", {}),
     ]);
     await vi.waitFor(() => expect(onResyncError).toHaveBeenCalledTimes(1));
-    expect(String(onResyncError.mock.calls[0]?.[0])).toContain("get_messages 失败：忙");
+    const error = onResyncError.mock.calls[0]?.[0];
+    expect(error).toBeInstanceOf(RpcResponseError);
+    expect(error).toMatchObject({ command: "get_messages", reason: "忙" });
     expect(onResynced).not.toHaveBeenCalled();
+  });
+
+  it("重启 reset() 中止进行中的重建不算失败；随后的 resync() 接着重建并报告结果", async () => {
+    const { client, sent, push, onResyncError, onResynced } = setup();
+    push([], { dropped: 1 }); // 自动重建：s-1、s-2
+    expect(sent).toHaveLength(2);
+    client.reset();
+    const r = client.resync(); // 重启方在 reset 后立即重建
+    await vi.waitFor(() => expect(sent).toHaveLength(4));
+    expect(onResyncError).not.toHaveBeenCalled();
+    push([ok("s-3", "get_messages", { messages: [] }), ok("s-4", "get_state", {})]);
+    await expect(r).resolves.toBe(true);
+    expect(onResyncError).not.toHaveBeenCalled();
+    expect(onResynced).toHaveBeenCalledTimes(1);
   });
 
   it("resync() 返回是否成功，供重启后决定是否解除发送限制", async () => {

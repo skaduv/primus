@@ -97,6 +97,8 @@ describe("对话区（mock 事件流）", () => {
 
       await vi.advanceTimersByTimeAsync(10_000);
       expect(await screen.findByText(t.unresponsive)).toBeTruthy();
+      // 超时提示来自集中管理的文案，不显示原始命令名
+      expect(screen.getByText(t.responseTimeout)).toBeTruthy();
       expect((input as HTMLTextAreaElement).value).toBe("你好"); // 保留草稿
       // 超时的 prompt 可能已被受理：恢复前禁止重发
       const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
@@ -114,6 +116,50 @@ describe("对话区（mock 事件流）", () => {
       // 重启不留下错误提示，可以再次发送
       expect(screen.queryByRole("alert")).toBeNull();
       expect(sendButton.disabled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("重启进行中按钮禁用，连点只重启一次", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let stalled = true;
+      const base = createMockPlatform({
+        intervalMs: 1,
+        batchSize: 50,
+        stallCommand: (cmd) => stalled && cmd.type === "prompt",
+      });
+      let finishRestart: (() => void) | undefined;
+      const coreRestart = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            finishRestart = () => {
+              stalled = false;
+              resolve();
+            };
+          }),
+      );
+      setPlatformForTesting({ ...base, coreRestart });
+      render(<ChatPanel />);
+      const input = screen.getByRole("textbox", { name: t.inputLabel });
+      fireEvent.change(input, { target: { value: "你好" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const restartButton = (await screen.findByRole("button", {
+        name: t.restartCore,
+      })) as HTMLButtonElement;
+
+      fireEvent.click(restartButton);
+      fireEvent.click(restartButton);
+      await waitFor(() => expect(restartButton.disabled).toBe(true));
+      fireEvent.click(restartButton);
+      expect(coreRestart).toHaveBeenCalledTimes(1);
+
+      finishRestart?.();
+      await waitFor(() => expect(screen.queryByText(t.unresponsive)).toBeNull());
+      expect(coreRestart).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("alert")).toBeNull();
     } finally {
       vi.useRealTimers();
     }

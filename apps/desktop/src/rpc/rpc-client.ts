@@ -34,18 +34,31 @@ export type OptionalParams<T extends RpcCommandType> =
     ? [params?: RpcCommandParams<T>]
     : [params: RpcCommandParams<T>];
 
+// 错误类只携带结构化字段，message 仅供日志与调试；界面文案由调用方用 strings 生成（AGENTS.md：文案集中管理）
+
 export class RpcTimeoutError extends Error {
   constructor(
     readonly id: string,
     readonly command: RpcCommandType,
   ) {
-    super(`${command} 响应超时`);
+    super(`RPC timeout: ${command} (${id})`);
     this.name = "RpcTimeoutError";
   }
 }
 
+/** 重建时 Core 对 get_messages / get_state 返回失败；`reason` 是 Core 给出的原因 */
+export class RpcResponseError extends Error {
+  constructor(
+    readonly command: string,
+    readonly reason: string,
+  ) {
+    super(`RPC ${command} failed: ${reason}`);
+    this.name = "RpcResponseError";
+  }
+}
+
 export class RpcClosedError extends Error {
-  constructor(reason = "会话已关闭") {
+  constructor(reason = "session closed") {
     super(reason);
     this.name = "RpcClosedError";
   }
@@ -189,12 +202,13 @@ export class RpcClient {
             this.request("get_state"),
           ]);
           for (const r of [messages, state])
-            if (!r.success) throw new Error(`${r.command} 失败：${r.error}`);
+            if (!r.success) throw new RpcResponseError(r.command, r.error);
           ok = true;
         } catch (error) {
           if (this.closed) return false;
           ok = false;
-          this.options.onResyncError?.(error);
+          // reset()（重启）中止的重建不算失败：重启方会随后再调 resync()，由下一轮给出结果
+          if (!(error instanceof RpcClosedError)) this.options.onResyncError?.(error);
           // 本轮失败但期间又发现了缺口：仍为新缺口再重建一轮（第 7.3 节），否则等下一个缺口
         }
       } while (this.resyncAgain && !this.closed);
@@ -211,7 +225,7 @@ export class RpcClient {
    * 内核重启后调用：等待中的命令都不会再有 response，统一以 RpcClosedError 结束；
    * 之后的批次序号由薄壳决定，因此不重置 seq，由缺口检测兜底。
    */
-  reset(reason = "内核已重启"): void {
+  reset(reason = "core restarted"): void {
     this.rejectAll(new RpcClosedError(reason));
     this.timedOut.clear();
   }

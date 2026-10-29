@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { getPlatform, type Platform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
-import { RpcClient, RpcClosedError, RpcTimeoutError } from "@/rpc/rpc-client";
+import { RpcClient, RpcClosedError, RpcResponseError, RpcTimeoutError } from "@/rpc/rpc-client";
 import { useAppStore } from "@/stores/app-store";
 import {
   applyChunks,
@@ -18,6 +18,13 @@ import {
 // 一个会话的生命周期：首次发送时打开会话（浏览器预览下由 mock 平台提供假 Core 事件流）。
 // 批次先交给 RPC 客户端（id 关联、超时、缺口重建），去重后的记录在 requestAnimationFrame 中
 // 一次性合并进 store（第 16.4 节）。
+
+/** 错误的界面文案：RPC 层的错误只带结构化字段，文案在这里由 strings 生成 */
+function describeError(e: unknown): string {
+  if (e instanceof RpcTimeoutError) return strings.chat.responseTimeout;
+  if (e instanceof RpcResponseError) return e.reason;
+  return e instanceof Error ? e.message : String(e);
+}
 
 const nextFrame: (cb: () => void) => void =
   typeof requestAnimationFrame === "function"
@@ -36,7 +43,9 @@ export interface ChatSession {
   /** 发送成功返回 true；失败时设置 error 并返回 false */
   send: (message: string) => Promise<boolean>;
   abort: () => Promise<void>;
-  /** 重启内核并重建会话状态 */
+  /** 正在重启内核：期间重启入口不可用，避免连点重复重启 */
+  restarting: boolean;
+  /** 重启内核并重建会话状态；进行中再次调用会被忽略 */
   restart: () => Promise<void>;
 }
 
@@ -63,8 +72,7 @@ export function useChatSession(): ChatSession {
   const fail = useCallback(
     (e: unknown) => {
       if (e instanceof RpcClosedError) return;
-      if (e instanceof RpcTimeoutError) setError(e.message, "timeout");
-      else setError(e instanceof Error ? e.message : String(e));
+      setError(describeError(e), e instanceof RpcTimeoutError ? "timeout" : undefined);
     },
     [setError],
   );
@@ -108,7 +116,7 @@ export function useChatSession(): ChatSession {
       if (disposed.current) {
         // 打开期间组件已卸载：立即关闭，避免会话泄漏
         void platform.sessionClose(sessionKey).catch(() => {});
-        throw new Error("会话已关闭");
+        throw new RpcClosedError();
       }
       client = new RpcClient({
         sessionKey,
@@ -125,10 +133,7 @@ export function useChatSession(): ChatSession {
         },
         onResyncError: (e) => {
           resyncFailures.current += 1;
-          setError(
-            `${strings.chat.resyncFailed}：${e instanceof Error ? e.message : String(e)}`,
-            "resync",
-          );
+          setError(`${strings.chat.resyncFailed}：${describeError(e)}`, "resync");
         },
         // 重建的两条 response 随批次排在帧队列里：等它们写入 store 之后再清除重建错误；
         // 若这一帧之前又有一轮重建失败，保留新的失败提示。
@@ -173,7 +178,7 @@ export function useChatSession(): ChatSession {
         await ensureOpen();
         // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
         const c = conn.current;
-        if (!c) throw new Error("会话未打开");
+        if (!c) throw new Error(strings.chat.sessionNotOpen);
         const res = await c.client.request("prompt", { message });
         return res.success;
       } catch (e) {
@@ -195,9 +200,14 @@ export function useChatSession(): ChatSession {
     }
   }, [fail]);
 
+  // 同步的重入保护（state 要到下一次渲染才生效）；restarting 只用于界面禁用按钮
+  const restartingRef = useRef(false);
+  const [restarting, setRestarting] = useState(false);
   const restart = useCallback(async () => {
     const c = conn.current;
-    if (!c) return;
+    if (!c || restartingRef.current) return;
+    restartingRef.current = true;
+    setRestarting(true);
     setError(undefined);
     try {
       await c.platform.coreRestart(c.client.sessionKey);
@@ -210,8 +220,11 @@ export function useChatSession(): ChatSession {
       syncUnresponsive();
     } catch (e) {
       fail(e);
+    } finally {
+      restartingRef.current = false;
+      setRestarting(false);
     }
   }, [setError, fail, syncUnresponsive]);
 
-  return { state, error: error?.message, unresponsive, send, abort, restart };
+  return { state, error: error?.message, unresponsive, send, abort, restarting, restart };
 }
