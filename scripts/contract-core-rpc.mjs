@@ -104,13 +104,21 @@ function assistantEnd(core, fromIndex) {
     .find((r) => r.type === "message_end" && r.message?.role === "assistant");
 }
 
-/** 本轮所有 text_delta 增量依次拼接的文本（Faux 回复只有一个文本块，多出的块会让拼接结果不符） */
+/**
+ * 本轮所有 text_delta 增量依次拼接的文本。
+ * Faux 回复只有索引 0 的一个文本块，所以每个增量的 contentIndex 都须为 0
+ * （桌面端按 contentIndex 把增量写入对应文本块，索引偏移不会让拼接结果出错，须单独断言）。
+ */
 function streamedText(core, fromIndex) {
-  return core.records
+  const deltas = core.records
     .slice(fromIndex)
     .filter((r) => r.type === "message_update" && r.assistantMessageEvent?.type === "text_delta")
-    .map((r) => r.assistantMessageEvent.delta)
-    .join("");
+    .map((r) => r.assistantMessageEvent);
+  check(
+    deltas.every((e) => e.contentIndex === 0),
+    `text_delta 的 contentIndex 应全部为 0：${json(deltas.map((e) => e.contentIndex))}`,
+  );
+  return deltas.map((e) => e.delta).join("");
 }
 
 /** 记录在 fromIndex 之后首次出现的位置（未出现为 -1） */
