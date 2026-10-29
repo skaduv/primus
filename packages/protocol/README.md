@@ -27,6 +27,7 @@
 - Core 侧值为 `undefined` 的字段在 JSON 中直接缺省，因此写成可选字段（如 `BashResult.exitCode`、
   `SetStatusRequest.statusText`、`SessionInfoChangedEvent.name`、被取消时的 `fork` 响应没有 `text`）。
 - `message_update` 是线上格式：没有累积的 `message` 与 `partial` 快照，`toolcall_start` 额外带 `id`、`toolName`。
-- `AgentMessage`、`CoreRecord` 只列出已知成员。扩展可以增加消息角色、Core 升级可能增加记录类型，
-  消费方按 `role` / `type` 分派并在 default 分支忽略不认识的值（`isKnownAgentMessage` 可用于判断）。
+- `AgentMessage`、`CoreRecord` 是封闭联合，只列出锁定版本中的已知成员，不能通过声明合并扩展。
+  运行时仍可能出现新增的消息角色或记录类型（Core 内部扩展、Core 升级），消费方按 `role` / `type` 分派，
+  在 default 分支忽略不认识的值（`isKnownAgentMessage` 可用于判断消息）。
 - 工具执行结果（`ToolResult`）的形状由各工具决定，Core 侧类型为 `any`；内置与扩展工具遵循 `{ content, details }`。

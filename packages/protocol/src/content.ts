@@ -231,8 +231,9 @@ export interface CompactionSummaryMessage {
 }
 
 /**
- * Core 的消息联合。扩展可以通过声明合并增加角色，运行时可能遇到不在此列的 role，
- * 消费方应忽略不认识的角色（可用 {@link isKnownAgentMessage} 判断）。
+ * Core 的消息联合，只列出锁定版本中已知的角色（本类型是封闭联合，不能通过声明合并扩展）。
+ * 运行时仍可能出现不在此列的 role（Core 内部的扩展角色或升级新增的角色），
+ * 消费方按 role 分派并忽略不认识的角色（可用 {@link isKnownAgentMessage} 判断）。
  */
 export type AgentMessage =
   | SystemMessage
