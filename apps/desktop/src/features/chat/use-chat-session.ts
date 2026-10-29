@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { getPlatform, type Platform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
-import { RpcClient } from "@/rpc/rpc-client";
+import { RpcClient, RpcClosedError, RpcTimeoutError } from "@/rpc/rpc-client";
 import { useAppStore } from "@/stores/app-store";
 import {
   applyChunks,
@@ -28,7 +28,10 @@ export interface ChatSession {
   state: SessionState;
   /** 打开会话或发送命令时的错误 */
   error?: string;
-  /** 有命令超过 10 秒没有响应（第 7.5 节），界面提示“内核无响应”并提供重启 */
+  /**
+   * 有命令超过 10 秒没有响应（第 7.5 节），界面提示“内核无响应”并提供重启。
+   * 期间禁止发送：超时的 prompt 可能已被 Core 受理，重发会多跑一轮。
+   */
   unresponsive: boolean;
   /** 发送成功返回 true；失败时设置 error 并返回 false */
   send: (message: string) => Promise<boolean>;
@@ -42,8 +45,24 @@ export function useChatSession(): ChatSession {
   storeRef.current ??= createSessionStore();
   const store = storeRef.current;
   const state = useStore(store);
-  const [error, setError] = useState<string>();
+  // 错误来源：超时与重建失败产生的错误在内核恢复或重建成功后自动清除，其他错误保留到下一次操作
+  const [error, setErrorState] = useState<{ message: string; kind?: "timeout" | "resync" }>();
   const [unresponsive, setUnresponsive] = useState(false);
+  const setError = useCallback((message?: string, kind?: "timeout" | "resync") => {
+    setErrorState(message === undefined ? undefined : { message, kind });
+  }, []);
+  const clearError = useCallback((kind: "timeout" | "resync") => {
+    setErrorState((e) => (e?.kind === kind ? undefined : e));
+  }, []);
+  /** 命令失败时的统一处理；重启或关闭导致的 RpcClosedError 不算错误 */
+  const fail = useCallback(
+    (e: unknown) => {
+      if (e instanceof RpcClosedError) return;
+      if (e instanceof RpcTimeoutError) setError(e.message, "timeout");
+      else setError(e instanceof Error ? e.message : String(e));
+    },
+    [setError],
+  );
 
   const conn = useRef<{ platform: Platform; client: RpcClient }>(null);
   const pending = useRef<RecordChunk[]>([]);
@@ -89,9 +108,16 @@ export function useChatSession(): ChatSession {
         send: (record) => platform.coreSend(sessionKey, record),
         onRecords: (records, { gap }) => enqueue({ records, gap }),
         onUnresponsive: () => setUnresponsive(true),
-        onResponsive: () => setUnresponsive(false),
+        onResponsive: () => {
+          setUnresponsive(false);
+          clearError("timeout");
+        },
         onResyncError: (e) =>
-          setError(`${strings.chat.resyncFailed}：${e instanceof Error ? e.message : String(e)}`),
+          setError(
+            `${strings.chat.resyncFailed}：${e instanceof Error ? e.message : String(e)}`,
+            "resync",
+          ),
+        onResynced: () => clearError("resync"),
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
@@ -99,7 +125,7 @@ export function useChatSession(): ChatSession {
       opening.current = null;
     });
     return opening.current;
-  }, [enqueue]);
+  }, [enqueue, setError, clearError]);
 
   // 卸载时关闭会话
   useEffect(() => {
@@ -127,11 +153,12 @@ export function useChatSession(): ChatSession {
         const res = await c.client.request("prompt", { message });
         return res.success;
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        // 超时时 Core 可能已受理（它不按 id 去重）：保留草稿，但由界面在内核恢复或重启前禁止重发
+        fail(e);
         return false;
       }
     },
-    [ensureOpen],
+    [ensureOpen, setError, fail],
   );
 
   const abort = useCallback(async () => {
@@ -140,9 +167,9 @@ export function useChatSession(): ChatSession {
     try {
       await c.client.request("abort");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      fail(e);
     }
-  }, []);
+  }, [fail]);
 
   const restart = useCallback(async () => {
     const c = conn.current;
@@ -155,9 +182,9 @@ export function useChatSession(): ChatSession {
       setUnresponsive(false);
       await c.client.resync();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      fail(e);
     }
-  }, []);
+  }, [setError, fail]);
 
-  return { state, error, unresponsive, send, abort, restart };
+  return { state, error: error?.message, unresponsive, send, abort, restart };
 }

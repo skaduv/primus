@@ -71,7 +71,8 @@ export const strings = {
     toolError: "出错",
     previewBadge: "浏览器预览：使用模拟内核",
     unresponsive: "内核无响应",
-    unresponsiveHint: "命令超过 10 秒没有回应。可以继续等待，或重启内核（会话记录不会丢失）。",
+    unresponsiveHint:
+      "命令超过 10 秒没有回应，恢复前暂停发送。可以继续等待，或重启内核：已完成的消息会保留，正在生成的回复会中断。",
     restartCore: "重启内核",
     resyncFailed: "重建会话状态失败",
     permissionMode: "权限模式",

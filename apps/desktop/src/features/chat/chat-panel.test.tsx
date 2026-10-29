@@ -96,11 +96,19 @@ describe("对话区（mock 事件流）", () => {
 
       await vi.advanceTimersByTimeAsync(10_000);
       expect(await screen.findByText(t.unresponsive)).toBeTruthy();
-      expect((input as HTMLTextAreaElement).value).toBe("你好"); // 未受理，保留草稿
+      expect((input as HTMLTextAreaElement).value).toBe("你好"); // 保留草稿
+      // 超时的 prompt 可能已被受理：恢复前禁止重发
+      const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+      expect(sendButton.disabled).toBe(true);
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(screen.queryAllByRole("article", { name: t.you })).toHaveLength(0);
 
       fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
       await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
       await waitFor(() => expect(screen.queryByText(t.unresponsive)).toBeNull());
+      // 重启不留下错误提示，可以再次发送
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(sendButton.disabled).toBe(false);
     } finally {
       vi.useRealTimers();
     }

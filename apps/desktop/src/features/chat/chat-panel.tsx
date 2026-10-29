@@ -381,7 +381,13 @@ export function ChatPanel() {
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
     const text = draft.trim();
-    if ((!text && attachments.length === 0) || state.running || submittingRef.current) return;
+    if (
+      (!text && attachments.length === 0) ||
+      state.running ||
+      unresponsive ||
+      submittingRef.current
+    )
+      return;
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
@@ -589,7 +595,9 @@ export function ChatPanel() {
                   <button
                     type="submit"
                     aria-label={t.send}
-                    disabled={submitting || (!draft.trim() && attachments.length === 0)}
+                    disabled={
+                      submitting || unresponsive || (!draft.trim() && attachments.length === 0)
+                    }
                     className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                   >
                     <ArrowUp aria-hidden size={16} strokeWidth={2.5} />

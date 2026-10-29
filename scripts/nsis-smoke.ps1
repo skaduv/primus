@@ -106,6 +106,41 @@ function Get-ShortcutTarget([string] $Path) {
 
 function ConvertTo-PsLiteral([string] $Value) { return "'" + ($Value -replace "'", "''") + "'" }
 
+# 卸载前等安装目录中的文件不再被占用：Core RPC 冒烟刚用 resources\runtime\node.exe 跑过 Core，
+# 进程退出后映像文件的句柄可能还要片刻才释放（杀毒扫描等）。NSIS 卸载程序遇到被占用的文件会静默跳过，
+# 留下 resources 目录（ARM64 Runner 上偶发）。先等从安装目录启动的进程全部退出，再确认 resources 下的文件都能独占打开。
+function Wait-InstallDirReleased([int] $TimeoutSeconds = 30) {
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $prefix = $InstallDir.TrimEnd('\') + '\'
+  while ($true) {
+    $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $path = try { $_.Path } catch { $null }
+        $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+      })
+    $locked = @()
+    if ($running.Count -eq 0) {
+      $locked = @(Get-ChildItem -LiteralPath (Join-Path $InstallDir 'resources') -Recurse -File -Force -ErrorAction SilentlyContinue |
+          Where-Object {
+            try { [IO.File]::Open($_.FullName, 'Open', 'ReadWrite', 'None').Dispose(); $false } catch { $true }
+          })
+    }
+    if ($running.Count -eq 0 -and $locked.Count -eq 0) { return }
+    if ((Get-Date) -gt $deadline) {
+      $names = ($running | ForEach-Object { "$($_.ProcessName)($($_.Id))" }) -join '、'
+      $files = ($locked | ForEach-Object { $_.Name }) -join '、'
+      throw "✗ 等待 $TimeoutSeconds 秒后安装目录仍被占用（进程：$names；被占用的文件：$files）"
+    }
+    Start-Sleep -Milliseconds 500
+  }
+}
+
+# 列出安装目录中残留的文件（data 除外），用于卸载断言失败时定位
+function Get-Leftovers {
+  Get-ChildItem -LiteralPath $InstallDir -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { -not $_.FullName.StartsWith($DataDir + '\', [StringComparison]::OrdinalIgnoreCase) } |
+    ForEach-Object { $_.FullName.Substring($InstallDir.Length + 1) }
+}
+
 if (-not (Test-Administrator)) { throw '✗ 需要以管理员身份运行（按机器安装）' }
 if (Get-UninstallEntry) { throw "✗ 本机已安装 $ProductName，请先卸载或在干净环境中运行" }
 if (Test-Path -LiteralPath $InstallDir) { throw "✗ 安装目录已存在：$InstallDir（上次运行的残留？请先删除）" }
@@ -234,13 +269,22 @@ Write-Step '静默卸载（data 应保留）'
 $marker = Join-Path $DataDir 'users\nsis-smoke\keep.txt'
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $marker) | Out-Null
 Set-Content -LiteralPath $marker -Value 'keep'
+Wait-InstallDirReleased
+Write-Host '  · 安装目录中的进程均已退出，resources 下的文件未被占用'
 # 卸载程序默认把自己复制到临时目录再运行、立即返回；_?=<目录> 让它就地运行并等到卸载结束（须是最后一个参数），
 # 代价是 uninstall.exe 本身留在原处，结束后手动删除
 $code = Invoke-Nsis $uninstaller "/S _?=$InstallDir"
 Assert-True ($code -eq 0) "卸载程序退出码 0（实际 $code）"
 Remove-Item -LiteralPath $uninstaller -Force -ErrorAction SilentlyContinue
 Assert-True (-not (Test-Path -LiteralPath $mainExe)) '已移除 Primus.exe'
-Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'resources'))) '已移除 resources（runtime 与 agent-core 及其子目录）'
+$resourcesLeft = Test-Path -LiteralPath (Join-Path $InstallDir 'resources')
+if ($resourcesLeft) {
+  Write-Host '  · 卸载后残留：'
+  Get-Leftovers | ForEach-Object { Write-Host "    $_" }
+  Get-ChildItem -LiteralPath (Join-Path $InstallDir 'resources') -Recurse -Directory -Force -ErrorAction SilentlyContinue |
+    ForEach-Object { Write-Host "    [目录] $($_.FullName.Substring($InstallDir.Length + 1))" }
+}
+Assert-True (-not $resourcesLeft) '已移除 resources（runtime 与 agent-core 及其子目录）'
 Assert-True (-not (Test-Path -LiteralPath $ShortcutPath)) '已移除开始菜单快捷方式'
 Assert-True (-not (Test-Path -LiteralPath $DesktopShortcut)) '已移除桌面快捷方式（静默安装会创建）'
 Assert-True ($null -eq (Get-UninstallEntry)) '已清除卸载信息'

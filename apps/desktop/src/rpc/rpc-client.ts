@@ -63,6 +63,8 @@ export interface RpcClientOptions {
   onResponsive?: () => void;
   /** 重建请求失败（发送失败、超时或 Core 返回失败） */
   onResyncError?: (error: unknown) => void;
+  /** 重建完成：get_messages 与 get_state 均已成功 */
+  onResynced?: () => void;
   timeoutMs?: number;
 }
 
@@ -178,6 +180,7 @@ export class RpcClient {
       return this.resyncing;
     }
     this.resyncing = (async () => {
+      let ok = false;
       do {
         this.resyncAgain = false;
         try {
@@ -187,12 +190,15 @@ export class RpcClient {
           ]);
           for (const r of [messages, state])
             if (!r.success) throw new Error(`${r.command} 失败：${r.error}`);
+          ok = true;
         } catch (error) {
           if (this.closed) return;
+          ok = false;
           this.options.onResyncError?.(error);
-          return;
+          // 本轮失败但期间又发现了缺口：仍为新缺口再重建一轮（第 7.3 节），否则等下一个缺口
         }
       } while (this.resyncAgain && !this.closed);
+      if (ok && !this.closed) this.options.onResynced?.();
     })().finally(() => {
       this.resyncing = null;
     });

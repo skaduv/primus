@@ -10,6 +10,7 @@ function setup(options: { send?: (r: StdinRecord) => Promise<void> } = {}) {
   const onUnresponsive = vi.fn();
   const onResponsive = vi.fn();
   const onResyncError = vi.fn();
+  const onResynced = vi.fn();
   const client = new RpcClient({
     sessionKey: "s",
     send:
@@ -21,6 +22,7 @@ function setup(options: { send?: (r: StdinRecord) => Promise<void> } = {}) {
     onUnresponsive,
     onResponsive,
     onResyncError,
+    onResynced,
   });
   let seq = 0;
   const push = (records: CoreRecord[], extra: Partial<CoreBatch> = {}) =>
@@ -28,7 +30,17 @@ function setup(options: { send?: (r: StdinRecord) => Promise<void> } = {}) {
   const skip = (n = 1) => {
     seq += n;
   };
-  return { client, sent, chunks, push, skip, onUnresponsive, onResponsive, onResyncError };
+  return {
+    client,
+    sent,
+    chunks,
+    push,
+    skip,
+    onUnresponsive,
+    onResponsive,
+    onResyncError,
+    onResynced,
+  };
 }
 
 const ok = (id: string, command: string, data?: unknown) =>
@@ -115,7 +127,7 @@ describe("RPC 客户端", () => {
   });
 
   it("薄壳丢弃过记录（dropped > 0）同样重建；重建中再发现缺口时结束后再来一轮", async () => {
-    const { client, sent, push } = setup();
+    const { client, sent, push, onResynced } = setup();
     push([], { dropped: 3 });
     push([], { dropped: 1 });
     expect(sent).toHaveLength(2); // 第二个缺口不重复发送
@@ -123,10 +135,26 @@ describe("RPC 客户端", () => {
     await vi.waitFor(() => expect(sent).toHaveLength(4));
     push([ok("s-3", "get_messages", { messages: [] }), ok("s-4", "get_state", {})]);
     await vi.waitFor(() => expect(client.isResyncing).toBe(false));
+    expect(onResynced).toHaveBeenCalledTimes(1);
   });
 
-  it("重建失败时通知调用方", async () => {
-    const { push, onResyncError } = setup();
+  it("本轮重建失败但期间又发现缺口时，仍为新缺口再重建一轮", async () => {
+    const { client, sent, push, onResyncError, onResynced } = setup();
+    push([], { dropped: 1 });
+    push([], { dropped: 1 }); // 重建中的第二个缺口
+    push([
+      { type: "response", id: "s-1", command: "get_messages", success: false, error: "忙" },
+      ok("s-2", "get_state", {}),
+    ]);
+    await vi.waitFor(() => expect(sent).toHaveLength(4));
+    expect(onResyncError).toHaveBeenCalledTimes(1);
+    push([ok("s-3", "get_messages", { messages: [] }), ok("s-4", "get_state", {})]);
+    await vi.waitFor(() => expect(client.isResyncing).toBe(false));
+    expect(onResynced).toHaveBeenCalledTimes(1);
+  });
+
+  it("重建失败时通知调用方，不报告完成", async () => {
+    const { push, onResyncError, onResynced } = setup();
     push([], { dropped: 1 });
     push([
       { type: "response", id: "s-1", command: "get_messages", success: false, error: "忙" },
@@ -134,6 +162,7 @@ describe("RPC 客户端", () => {
     ]);
     await vi.waitFor(() => expect(onResyncError).toHaveBeenCalledTimes(1));
     expect(String(onResyncError.mock.calls[0]?.[0])).toContain("get_messages 失败：忙");
+    expect(onResynced).not.toHaveBeenCalled();
   });
 
   it("重启后等待中的命令以 RpcClosedError 结束；关闭后忽略批次与请求", async () => {
