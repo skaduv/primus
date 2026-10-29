@@ -1,48 +1,40 @@
 "use client";
 
-import type {
-  CoreBatch,
-  RpcCommand,
-  RpcCommandParams,
-  RpcCommandType,
-  RpcResponse,
-  RpcResponseFor,
-} from "@primus/protocol";
+import type { CoreBatch } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { getPlatform, type Platform } from "@/lib/platform";
+import { strings } from "@/lib/strings";
+import { RpcClient } from "@/rpc/rpc-client";
 import { useAppStore } from "@/stores/app-store";
 import {
-  applyBatches,
+  applyChunks,
   createSessionStore,
+  type RecordChunk,
   type SessionState,
   type SessionStore,
 } from "@/stores/session-store";
 
-// 一个会话的生命周期：首次发送时打开会话（浏览器预览下由 mock 平台提供假 Core 事件流），
-// 薄壳推来的批次先缓存，在 requestAnimationFrame 中一次性合并进 store（第 16.4 节）。
+// 一个会话的生命周期：首次发送时打开会话（浏览器预览下由 mock 平台提供假 Core 事件流）。
+// 批次先交给 RPC 客户端（id 关联、超时、缺口重建），去重后的记录在 requestAnimationFrame 中
+// 一次性合并进 store（第 16.4 节）。
 
 const nextFrame: (cb: () => void) => void =
   typeof requestAnimationFrame === "function"
     ? (cb) => requestAnimationFrame(() => cb())
     : (cb) => setTimeout(cb, 16);
 
-/** 等待命令响应的上限；prompt 的响应在 Core 接受后立即返回，不等回答结束 */
-const RESPONSE_TIMEOUT_MS = 30_000;
-
-/** 命令参数：没有必填字段的命令可以省略 */
-type OptionalParams<T extends RpcCommandType> =
-  Partial<RpcCommandParams<T>> extends RpcCommandParams<T>
-    ? [fields?: RpcCommandParams<T>]
-    : [fields: RpcCommandParams<T>];
-
 export interface ChatSession {
   state: SessionState;
   /** 打开会话或发送命令时的错误 */
   error?: string;
+  /** 有命令超过 10 秒没有响应（第 7.5 节），界面提示“内核无响应”并提供重启 */
+  unresponsive: boolean;
   /** 发送成功返回 true；失败时设置 error 并返回 false */
   send: (message: string) => Promise<boolean>;
   abort: () => Promise<void>;
+  /** 重启内核并重建会话状态 */
+  restart: () => Promise<void>;
 }
 
 export function useChatSession(): ChatSession {
@@ -51,80 +43,25 @@ export function useChatSession(): ChatSession {
   const store = storeRef.current;
   const state = useStore(store);
   const [error, setError] = useState<string>();
+  const [unresponsive, setUnresponsive] = useState(false);
 
-  const conn = useRef<{ platform: Platform; sessionKey: string; nextId: number }>(null);
-  const pending = useRef<CoreBatch[]>([]);
-  const waiters = useRef(new Map<string, (r: RpcResponse) => void>());
+  const conn = useRef<{ platform: Platform; client: RpcClient }>(null);
+  const pending = useRef<RecordChunk[]>([]);
   const frameQueued = useRef(false);
 
-  const onBatch = useCallback(
-    (batch: CoreBatch) => {
-      // 按命令 id 交付等待中的响应（send 据此判断 Core 是否接受了 prompt）
-      for (const r of batch.records) {
-        if (r.type !== "response") continue;
-        const res = r as RpcResponse;
-        const w = res.id ? waiters.current.get(res.id) : undefined;
-        if (w) {
-          waiters.current.delete(res.id as string);
-          w(res);
-        }
-      }
-      pending.current.push(batch);
+  const enqueue = useCallback(
+    (chunk: RecordChunk) => {
+      pending.current.push(chunk);
       if (frameQueued.current) return;
       frameQueued.current = true;
       nextFrame(() => {
         frameQueued.current = false;
-        const batches = pending.current;
+        const chunks = pending.current;
         pending.current = [];
-        store.setState((s) => applyBatches(s, batches), true);
+        store.setState((s) => applyChunks(s, chunks), true);
       });
     },
     [store],
-  );
-
-  const command = useCallback(
-    async <T extends RpcCommandType>(type: T, ...[fields]: OptionalParams<T>) => {
-      const c = conn.current;
-      if (!c) return;
-      const record = { id: `${c.sessionKey}-${c.nextId++}`, type, ...fields } as RpcCommand;
-      await c.platform.coreSend(c.sessionKey, record);
-    },
-    [],
-  );
-
-  /** 发送命令并等待同 id 的响应；超时或会话未打开时抛错 */
-  const request = useCallback(
-    async <T extends RpcCommandType>(
-      type: T,
-      ...[fields]: OptionalParams<T>
-    ): Promise<RpcResponseFor<T>> => {
-      const c = conn.current;
-      if (!c) throw new Error("会话未打开");
-      const id = `${c.sessionKey}-${c.nextId++}`;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const response = new Promise<RpcResponseFor<T>>((resolve, reject) => {
-        timer = setTimeout(() => {
-          waiters.current.delete(id);
-          reject(new Error(`${type} 响应超时`));
-        }, RESPONSE_TIMEOUT_MS);
-        waiters.current.set(id, (r) => {
-          clearTimeout(timer);
-          // 响应按 id 关联到本条命令，因此其 command 必为 T（或失败响应）
-          resolve(r as RpcResponseFor<T>);
-        });
-      });
-      try {
-        await c.platform.coreSend(c.sessionKey, { id, type, ...fields } as RpcCommand);
-      } catch (e) {
-        // 发送失败：撤销等待并停掉计时器，避免 30 秒后出现未处理的拒绝
-        waiters.current.delete(id);
-        clearTimeout(timer);
-        response.catch(() => {});
-        throw e;
-      }
-      return response;
-    },
-    [],
   );
 
   // 正在打开的会话：并发的 send 复用同一个 Promise，避免重复 sessionOpen 泄漏 Core 进程
@@ -137,23 +74,32 @@ export function useChatSession(): ChatSession {
       const platform = await getPlatform();
       // 用输入框上方选中的工作区；未选择时直接对话，不隐式绑定最近的工作区（会话开始后工作区锁定）
       const path = useAppStore.getState().workspace?.path ?? "";
+      // 批次可能在 sessionOpen 返回前到达：先缓存，客户端建好后按序交付
+      let client: RpcClient | undefined;
+      const early: CoreBatch[] = [];
+      const onBatch = (batch: CoreBatch) => (client ? client.receive(batch) : early.push(batch));
       const { sessionKey } = await platform.sessionOpen(path, undefined, onBatch);
       if (disposed.current) {
         // 打开期间组件已卸载：立即关闭，避免会话泄漏
         void platform.sessionClose(sessionKey).catch(() => {});
         throw new Error("会话已关闭");
       }
-      conn.current = { platform, sessionKey, nextId: 1 };
+      client = new RpcClient({
+        sessionKey,
+        send: (record) => platform.coreSend(sessionKey, record),
+        onRecords: (records, { gap }) => enqueue({ records, gap }),
+        onUnresponsive: () => setUnresponsive(true),
+        onResponsive: () => setUnresponsive(false),
+        onResyncError: (e) =>
+          setError(`${strings.chat.resyncFailed}：${e instanceof Error ? e.message : String(e)}`),
+      });
+      for (const batch of early) client.receive(batch);
+      conn.current = { platform, client };
     })().finally(() => {
       opening.current = null;
     });
     return opening.current;
-  }, [onBatch]);
-
-  // 缺号时用完整历史重建
-  useEffect(() => {
-    if (state.needsResync) void command("get_messages").catch(() => {});
-  }, [state.needsResync, command]);
+  }, [enqueue]);
 
   // 卸载时关闭会话
   useEffect(() => {
@@ -163,7 +109,10 @@ export function useChatSession(): ChatSession {
       opening.current = null;
       const c = conn.current;
       conn.current = null;
-      if (c) void c.platform.sessionClose(c.sessionKey).catch(() => {});
+      if (c) {
+        c.client.close();
+        void c.platform.sessionClose(c.client.sessionKey).catch(() => {});
+      }
     };
   }, []);
 
@@ -173,23 +122,42 @@ export function useChatSession(): ChatSession {
       try {
         await ensureOpen();
         // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
-        const res = await request("prompt", { message });
+        const c = conn.current;
+        if (!c) throw new Error("会话未打开");
+        const res = await c.client.request("prompt", { message });
         return res.success;
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         return false;
       }
     },
-    [ensureOpen, request],
+    [ensureOpen],
   );
 
   const abort = useCallback(async () => {
+    const c = conn.current;
+    if (!c) return;
     try {
-      await command("abort");
+      await c.client.request("abort");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [command]);
+  }, []);
 
-  return { state, error, send, abort };
+  const restart = useCallback(async () => {
+    const c = conn.current;
+    if (!c) return;
+    setError(undefined);
+    try {
+      await c.platform.coreRestart(c.client.sessionKey);
+      // 旧进程上等待的命令不会再有响应；新进程按会话文件恢复后重建状态
+      c.client.reset();
+      setUnresponsive(false);
+      await c.client.resync();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  return { state, error, unresponsive, send, abort, restart };
 }

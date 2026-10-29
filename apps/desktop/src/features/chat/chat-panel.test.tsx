@@ -76,6 +76,36 @@ describe("对话区（mock 事件流）", () => {
     expect((input as HTMLTextAreaElement).value).toBe("你好");
   });
 
+  it("命令 10 秒无响应时提示内核无响应，重启内核后恢复", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let stalled = true;
+      const base = createMockPlatform({
+        intervalMs: 1,
+        batchSize: 50,
+        stallCommand: (cmd) => stalled && cmd.type === "prompt",
+      });
+      const coreRestart = vi.fn(async () => {
+        stalled = false;
+      });
+      setPlatformForTesting({ ...base, coreRestart });
+      render(<ChatPanel />);
+      const input = screen.getByRole("textbox", { name: t.inputLabel });
+      fireEvent.change(input, { target: { value: "你好" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(await screen.findByText(t.unresponsive)).toBeTruthy();
+      expect((input as HTMLTextAreaElement).value).toBe("你好"); // 未受理，保留草稿
+
+      fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
+      await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(screen.queryByText(t.unresponsive)).toBeNull());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("Shift+Enter 不发送；空内容不能发送", () => {
     render(<ChatPanel />);
     const input = screen.getByRole("textbox", { name: t.inputLabel });

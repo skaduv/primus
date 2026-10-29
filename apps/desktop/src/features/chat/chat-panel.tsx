@@ -315,7 +315,7 @@ function useElementHeight<T extends HTMLElement>() {
 }
 
 export function ChatPanel() {
-  const { state, error, send, abort } = useChatSession();
+  const { state, error, unresponsive, send, abort, restart } = useChatSession();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -430,6 +430,24 @@ export function ChatPanel() {
             state.messages.map((m) => (
               <MessageItem key={messageKey(m)} message={m} toolRuns={state.toolRuns} />
             ))
+          )}
+          {unresponsive && (
+            <div
+              role="alert"
+              className="flex items-center gap-3 rounded-xl border border-danger/40 px-3 py-2 text-xs"
+            >
+              <div className="flex-1">
+                <p className="font-medium text-danger">{t.unresponsive}</p>
+                <p className="text-muted">{t.unresponsiveHint}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void restart()}
+                className="rounded-full bg-hover px-3 py-1 font-medium"
+              >
+                {t.restartCore}
+              </button>
+            </div>
           )}
           {shownError && (
             <p role="alert" className="text-xs text-danger">

@@ -70,6 +70,10 @@ export const strings = {
     toolDone: "完成",
     toolError: "出错",
     previewBadge: "浏览器预览：使用模拟内核",
+    unresponsive: "内核无响应",
+    unresponsiveHint: "命令超过 10 秒没有回应。可以继续等待，或重启内核（会话记录不会丢失）。",
+    restartCore: "重启内核",
+    resyncFailed: "重建会话状态失败",
     permissionMode: "权限模式",
     permissions: {
       ask: { label: "每次询问", short: "询问", hint: "修改文件、运行命令和联网前都先征求你的同意" },
