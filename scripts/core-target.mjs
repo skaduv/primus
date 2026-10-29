@@ -23,15 +23,18 @@ export class CoreTargetError extends Error {}
  * @returns {{ entry: string, nodeExe: string, note?: string }}
  */
 export function prepareCoreTarget({ dist = false, entry, node, sandbox }) {
-  let entryPath = entry ?? process.env.PRIMUS_SMOKE_ENTRY;
-  let nodeExe = node ?? process.env.PRIMUS_SMOKE_NODE;
+  // 显式传入的空字符串是调用方的错误，不能当作「未指定」静默改用默认值；空的环境变量视同未设置
+  if (entry === "") throw new CoreTargetError("✗ --entry 不能为空");
+  if (node === "") throw new CoreTargetError("✗ --node 不能为空");
+  let entryPath = entry ?? (process.env.PRIMUS_SMOKE_ENTRY || undefined);
+  let nodeExe = node ?? (process.env.PRIMUS_SMOKE_NODE || undefined);
   let note;
 
   if (dist) {
     // dist 的入口固定为复制后的 dist/agent-core/rpc-entry.js，不能再另指入口，以免静默忽略
-    if (entryPath)
+    if (entryPath !== undefined)
       throw new CoreTargetError(
-        `✗ dist 模式不能同时指定入口（${entry ? "--entry" : "PRIMUS_SMOKE_ENTRY"}=${entryPath}）：dist 固定运行 dist/agent-core/rpc-entry.js`,
+        `✗ dist 模式不能同时指定入口（${entry !== undefined ? "--entry" : "PRIMUS_SMOKE_ENTRY"}=${entryPath}）：dist 固定运行 dist/agent-core/rpc-entry.js`,
       );
     const distCore = join(repoRoot, "dist/agent-core");
     const manifestPath = join(distCore, MANIFEST_FILE);

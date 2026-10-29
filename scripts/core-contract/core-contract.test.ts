@@ -53,7 +53,7 @@ describe("CoreProcess", () => {
 
   it("按 id 关联 response，记录非 JSON 行与 stdout 结束时的残余", async () => {
     const core = fake(`
-      process.stdout.write("not json\\n");
+      process.stdout.write("not json\\n\\n  \\n");
       process.stdin.on("data", (d) => {
         for (const line of String(d).split("\\n").filter(Boolean)) {
           const c = JSON.parse(line);
@@ -65,7 +65,8 @@ describe("CoreProcess", () => {
     const r = await core.request({ type: "get_state" });
     expect(r).toMatchObject({ command: "get_state", success: true, data: { t: "a\u2028b" } });
     await core.stop();
-    expect(core.invalidLines).toEqual(["not json", '{"tail":1}']);
+    // 空行与仅含空白的行同样不是协议记录
+    expect(core.invalidLines).toEqual(["not json", "", "  ", '{"tail":1}']);
   });
 
   it("等待期间进程退出时立即失败，而不是等到超时", async () => {
@@ -85,6 +86,21 @@ describe("CoreProcess", () => {
     const core = fake(`process.stdin.resume(); setInterval(() => {}, 1000);`);
     expect(await core.stop({ timeoutMs: 300 })).toBeNull();
     expect(core.exited).toBe(true);
+  });
+
+  it("忽略 SIGTERM 时升级为 SIGKILL，不会无限等待", async () => {
+    const core = fake(`
+      process.on("SIGTERM", () => {});
+      process.stdin.resume();
+      setInterval(() => {}, 1000);
+      process.stdout.write('{"type":"ready"}\\n');
+    `);
+    // 等子进程装好 SIGTERM 空处理器再 stop，否则默认信号就能结束它
+    await core.waitFor((x) => x.type === "ready", { label: "ready", timeoutMs: 10_000 });
+    const t = Date.now();
+    expect(await core.stop({ timeoutMs: 200, killGraceMs: 300 })).toBeNull();
+    expect(core.exited).toBe(true);
+    expect(Date.now() - t).toBeLessThan(5_000);
   });
 
   it("进程退出前写出的记录仍能等到（等 stdout 读完才判定进程已退出）", async () => {
@@ -107,6 +123,7 @@ describe("CoreProcess", () => {
     const t = Date.now();
     expect(await core.stop({ drainMs: 300 })).toBe(0);
     expect(Date.now() - t).toBeLessThan(2_500);
+    expect(core.stdoutEnded).toBe(false); // 调用方据此判定非法行检查不完整
   });
 
   it("运行时无法启动时报告失败", async () => {
@@ -127,6 +144,21 @@ describe("prepareCoreTarget", () => {
   it("dist 与 entry 同时指定时报错，不静默忽略 entry", () => {
     expect(() => prepareCoreTarget({ dist: true, entry: "x.js", sandbox: "/nonexistent" })).toThrow(
       CoreTargetError,
+    );
+  });
+
+  it("dist 与显式空 entry 同时指定时也报错", () => {
+    expect(() => prepareCoreTarget({ dist: true, entry: "", sandbox: "/nonexistent" })).toThrow(
+      CoreTargetError,
+    );
+  });
+
+  it("显式传入空的 entry 或 node 时报错，不静默改用默认值", () => {
+    expect(() => prepareCoreTarget({ entry: "", sandbox: "/nonexistent" })).toThrow(
+      "--entry 不能为空",
+    );
+    expect(() => prepareCoreTarget({ node: "", sandbox: "/nonexistent" })).toThrow(
+      "--node 不能为空",
     );
   });
 });

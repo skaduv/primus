@@ -95,8 +95,8 @@ export class CoreProcess {
     this.#child.stdin.on("error", () => {}); // 进程提前退出时写入失败，由 exited 检查报告
   }
 
+  // 空行也按 JSON 解析（失败即记入 invalidLines）：协议要求 stdout 每行都是一条记录
   #onLine(line) {
-    if (line.trim() === "") return;
     let record;
     try {
       record = JSON.parse(line);
@@ -165,16 +165,21 @@ export class CoreProcess {
   }
 
   /**
-   * 关闭 stdin 请求有序退出（rpc.md「Shutdown」），返回退出码；timeoutMs 内未退出则强制结束（退出码为 null）。
+   * 关闭 stdin 请求有序退出（rpc.md「Shutdown」），返回退出码。timeoutMs 内未退出则发 SIGTERM，
+   * 再过 killGraceMs 仍未退出（如忽略了 SIGTERM）则发 SIGKILL；被强制结束时退出码为 null。
    * 退出后再等 stdout 读完（最多 drainMs：Core 的子进程若仍持有管道，stdout 可能迟迟不结束），
-   * 这样残余行已计入 invalidLines。可重复调用，已退出时直接返回记录的退出码。
+   * 这样残余行已计入 invalidLines；调用方据 stdoutEnded 判断非法行检查是否完整。
+   * 可重复调用，已退出时直接返回记录的退出码。
    */
-  async stop({ timeoutMs = 5_000, drainMs = 2_000 } = {}) {
+  async stop({ timeoutMs = 5_000, killGraceMs = 2_000, drainMs = 2_000 } = {}) {
     if (!this.exited) {
       this.#child.stdin.end();
-      const timer = setTimeout(() => this.#child.kill(), timeoutMs);
+      const timers = [
+        setTimeout(() => this.#child.kill("SIGTERM"), timeoutMs),
+        setTimeout(() => this.#child.kill("SIGKILL"), timeoutMs + killGraceMs),
+      ];
       await this.#exitPromise;
-      clearTimeout(timer);
+      for (const timer of timers) clearTimeout(timer);
     }
     if (!this.stdoutEnded) {
       let timer;

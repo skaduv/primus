@@ -74,7 +74,7 @@ function checkNoInvalidLines(core) {
 
 /**
  * 从 fromIndex 起检查记录类型都在协议定义之内，message_update 的增量类型也在定义之内；
- * text_delta 须带整数 contentIndex 与字符串 delta（桌面端流式重建按 contentIndex 定位文本块，缺失即丢弃增量）
+ * text_delta 须带非负整数 contentIndex 与字符串 delta（桌面端流式重建按 contentIndex 定位文本块，缺失或为负即丢弃增量）
  */
 function checkKnownRecords(core, fromIndex = 0) {
   checkNoInvalidLines(core);
@@ -89,8 +89,8 @@ function checkKnownRecords(core, fromIndex = 0) {
       if (t === "text_delta") {
         const e = record.assistantMessageEvent;
         check(
-          Number.isInteger(e.contentIndex) && typeof e.delta === "string",
-          `text_delta 缺少 contentIndex 或 delta：${json(record)}`,
+          Number.isInteger(e.contentIndex) && e.contentIndex >= 0 && typeof e.delta === "string",
+          `text_delta 的 contentIndex 或 delta 不合法：${json(record)}`,
         );
       }
     }
@@ -104,16 +104,11 @@ function assistantEnd(core, fromIndex) {
     .find((r) => r.type === "message_end" && r.message?.role === "assistant");
 }
 
-/** 本轮 text_delta 增量依次拼接的文本（只取 contentIndex 为 0 的文本块：Faux 回复只有这一个块） */
+/** 本轮所有 text_delta 增量依次拼接的文本（Faux 回复只有一个文本块，多出的块会让拼接结果不符） */
 function streamedText(core, fromIndex) {
   return core.records
     .slice(fromIndex)
-    .filter(
-      (r) =>
-        r.type === "message_update" &&
-        r.assistantMessageEvent?.type === "text_delta" &&
-        r.assistantMessageEvent.contentIndex === 0,
-    )
+    .filter((r) => r.type === "message_update" && r.assistantMessageEvent?.type === "text_delta")
     .map((r) => r.assistantMessageEvent.delta)
     .join("");
 }
@@ -215,13 +210,15 @@ const cases = {
     const messages = await core.request({ type: "get_messages" });
     check(messages.success === true, `get_messages 失败：${json(messages)}`);
     const list = messages.data?.messages ?? [];
-    const user = list.find((m) => m.role === "user");
-    const assistant = list.findLast((m) => m.role === "assistant");
+    // 锁定版本的 Core：新会话历史以一条 system 消息开头，随后恰好是本轮一条用户消息、一条助手消息
+    const roles = list.map((m) => m.role);
     check(
-      user &&
-        lastUserText({ messages: [user] }) === "你好" &&
-        assistant &&
-        textOf(assistant) === expected,
+      json(roles) === json(["system", "user", "assistant"]),
+      `get_messages 应恰好为 system → user → assistant 三条：${json(roles)}`,
+    );
+    const [, user, assistant] = list;
+    check(
+      lastUserText({ messages: [user] }) === "你好" && textOf(assistant) === expected,
       `get_messages 应包含本轮问答：${json(list)}`,
     );
 
@@ -315,13 +312,18 @@ async function runCase(name, target) {
       },
     });
     await cases[name]({ core, faux });
-    // 有序退出：关闭 stdin 后 Core 应以 0 退出；stdout 读完后不得有非法行（含不以 LF 结尾的残余）
+    // 有序退出：关闭 stdin 后 Core 应以 0 退出；stdout 须读完（否则残余未计入，检查不完整），
+    // 关闭阶段到达的记录同样要符合协议，且不得有非法行（含不以 LF 结尾的残余）
     const code = await core.stop();
     check(
       code === 0,
       `关闭 stdin 后 Core 应以 0 退出，实际 ${code ?? "未在时限内退出，已强制结束"}`,
     );
-    checkNoInvalidLines(core);
+    check(
+      core.stdoutEnded,
+      "Core 退出后 stdout 未在时限内结束（仍被子进程持有），无法确认没有非法行",
+    );
+    checkKnownRecords(core);
     console.log(`✓ ${name}（${Date.now() - started} ms）`);
     return true;
   } catch (err) {
