@@ -96,6 +96,9 @@ describe("RPC 客户端", () => {
     expect(onUnresponsive).toHaveBeenCalledTimes(2);
     push([ok("s-2", "get_messages", { messages: [] })]);
     expect(onResponsive).toHaveBeenCalledTimes(1);
+    // 同一恢复周期内，其余超时 id 的迟到 response 不再触发恢复回调
+    push([ok("s-1", "get_state", {})]);
+    expect(onResponsive).toHaveBeenCalledTimes(1);
     // 非超时命令的 response 不触发恢复回调
     const c = client.request("get_state");
     push([ok("s-3", "get_state", {})]);

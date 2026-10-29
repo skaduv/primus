@@ -86,6 +86,8 @@ export function useChatSession(): ChatSession {
   // 正在打开的会话：并发的 send 复用同一个 Promise，避免重复 sessionOpen 泄漏 Core 进程
   const opening = useRef<Promise<void>>(null);
   const disposed = useRef(false);
+  // 重建失败的代次：推迟的“重建成功”清除只在期间没有新的失败时生效，避免旧的成功清掉新失败的提示
+  const resyncFailures = useRef(0);
 
   const ensureOpen = useCallback((): Promise<void> => {
     if (conn.current) return Promise.resolve();
@@ -112,13 +114,21 @@ export function useChatSession(): ChatSession {
           setUnresponsive(false);
           clearError("timeout");
         },
-        onResyncError: (e) =>
+        onResyncError: (e) => {
+          resyncFailures.current += 1;
           setError(
             `${strings.chat.resyncFailed}：${e instanceof Error ? e.message : String(e)}`,
             "resync",
-          ),
-        // 重建的两条 response 随批次排在帧队列里：等它们写入 store 之后再清除重建错误
-        onResynced: () => nextFrame(() => clearError("resync")),
+          );
+        },
+        // 重建的两条 response 随批次排在帧队列里：等它们写入 store 之后再清除重建错误；
+        // 若这一帧之前又有一轮重建失败，保留新的失败提示
+        onResynced: () => {
+          const failures = resyncFailures.current;
+          nextFrame(() => {
+            if (resyncFailures.current === failures) clearError("resync");
+          });
+        },
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
