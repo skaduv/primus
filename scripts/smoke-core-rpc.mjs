@@ -8,20 +8,15 @@
 //   node scripts/smoke-core-rpc.mjs --entry <js> [--node <exe>]   指定入口与运行时
 //   环境变量 PRIMUS_SMOKE_ENTRY / PRIMUS_SMOKE_NODE 与 --entry / --node 等价（参数优先）。
 //
-// --dist 时先按 manifest.json 校验产物，再把 dist/agent-core 与 dist/runtime 复制到临时目录下一个
-// 含中文与空格的「安装目录」\resources\ 中运行：既模拟安装后的目录结构，也避免模块解析向上
-// 找到仓库里的 node_modules 而掩盖缺文件。运行时：Windows 上用 dist/runtime/node.exe，
-// 其他平台（node.exe 无法运行）或未下载运行时（--platform current）时用当前 node。
+// 入口与运行时的选择（含 --dist 的安装布局模拟）见 core-target.mjs。
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { MANIFEST_FILE, verifyManifest } from "./core-dist.mjs";
+import { CoreTargetError, coreEnv, prepareCoreTarget } from "./core-target.mjs";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
 const { values: args } = parseArgs({
   options: {
     dist: { type: "boolean", default: false },
@@ -31,8 +26,6 @@ const { values: args } = parseArgs({
 });
 
 const sandbox = mkdtempSync(join(tmpdir(), "primus-core-smoke-"));
-let entry = args.entry ?? process.env.PRIMUS_SMOKE_ENTRY;
-let nodeExe = args.node ?? process.env.PRIMUS_SMOKE_NODE;
 
 function bail(message) {
   console.error(message);
@@ -40,32 +33,15 @@ function bail(message) {
   process.exit(1);
 }
 
-if (args.dist) {
-  const distCore = join(root, "dist/agent-core");
-  const manifestPath = join(distCore, MANIFEST_FILE);
-  if (!existsSync(manifestPath)) bail(`✗ 未找到 ${manifestPath}，请先运行 pnpm build:core`);
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const problems = verifyManifest(distCore, manifest, { skip: ["extensions"] });
-  if (problems.length) bail(`✗ dist/agent-core 与 manifest 不符：\n  ${problems.join("\n  ")}`);
-
-  const resources = join(sandbox, "安装 目录", "resources");
-  cpSync(distCore, join(resources, "agent-core"), { recursive: true });
-  entry = join(resources, "agent-core", "rpc-entry.js");
-
-  const runtimeExe = join(root, "dist/runtime/node.exe");
-  if (!nodeExe && process.platform === "win32" && existsSync(runtimeExe)) {
-    cpSync(join(root, "dist/runtime"), join(resources, "runtime"), { recursive: true });
-    nodeExe = join(resources, "runtime", "node.exe");
-  }
-  console.log(
-    `· dist 冒烟：manifest 校验通过（${manifest.files.length} 个文件），运行时 ${nodeExe ? "dist/runtime/node.exe" : `当前 node ${process.version}`}`,
-  );
+let target;
+try {
+  target = prepareCoreTarget({ ...args, sandbox });
+} catch (err) {
+  if (err instanceof CoreTargetError) bail(err.message);
+  throw err;
 }
-
-entry = resolve(entry ?? join(root, "agent-core/packages/coding-agent/dist/bundle/rpc-entry.js"));
-nodeExe = nodeExe ? resolve(nodeExe) : process.execPath;
-if (!existsSync(entry)) bail(`✗ 未找到 ${entry}，请先运行 pnpm build:core`);
-if (!existsSync(nodeExe)) bail(`✗ 未找到运行时 ${nodeExe}`);
+const { entry, nodeExe } = target;
+if (target.note) console.log(`· dist 冒烟：${target.note}`);
 
 const coreDir = join(sandbox, "core");
 const workDir = join(sandbox, "work");
@@ -76,16 +52,8 @@ const timeoutMs = 30_000;
 // 会在 sandbox/.primus 下留下痕迹，下面据此判定失败。--offline 关闭一切联网。
 const child = spawn(nodeExe, [entry, "--offline"], {
   cwd: workDir,
-  env: {
-    ...process.env,
-    HOME: sandbox,
-    USERPROFILE: sandbox,
-    PRIMUS_CODING_AGENT_DIR: coreDir,
-    PRIMUS_CODING_AGENT_SESSION_DIR: join(coreDir, "sessions"),
-    PRIMUS_SKIP_VERSION_CHECK: "1",
-    PRIMUS_TELEMETRY: "0",
-    NODE_OPTIONS: "",
-  },
+  env: coreEnv({ home: sandbox, coreDir }),
+
   stdio: ["pipe", "pipe", "pipe"],
 });
 

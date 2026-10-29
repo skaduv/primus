@@ -91,6 +91,7 @@ pnpm dev:web            # 浏览器预览（mock 平台）
 pnpm dev                # Tauri 开发模式
 pnpm build:core         # 构建 Agent Core
 pnpm smoke:core         # Agent Core RPC 冒烟（get_state）
+pnpm contract:core      # Agent Core RPC 契约测试（真实 Core + Faux 模型服务；--dist 版为 contract:core:dist）
 pnpm build:extensions   # 构建 primus-bundle.js
 pnpm lint && pnpm test  # Biome + Vitest
 pnpm test:e2e           # 端到端冒烟（仅 Windows：先 pnpm build，需 tauri-driver 与匹配 WebView2 的 msedgedriver）

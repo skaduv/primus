@@ -112,6 +112,8 @@ jobs:
         run: node scripts/build-core.mjs --platform win-${{ matrix.arch }}
       - name: Agent Core RPC 冒烟（dist/runtime/node.exe + dist/agent-core）
         run: pnpm smoke:core:dist
+      - name: Agent Core RPC 契约测试（dist/runtime/node.exe + dist/agent-core）
+        run: pnpm contract:core:dist
       - name: 构建第一方扩展（primus-bundle.js）
         run: pnpm build:extensions
       - name: 生成 SBOM（CycloneDX；只做检查，不作为 Release 附件）

@@ -1,0 +1,161 @@
+// RPC 契约测试的 Core 进程封装：按薄壳的方式拉起 Core（技术方案第 4.4 节），stdin 写命令，stdout 按 JSONL 读记录。
+//
+// 分帧与薄壳一致（AGENTS.md 第 5 节、rpc.md「Framing」）：只按 LF 切分并去掉行尾 CR；不用 readline，
+// 它会把 JSON 字符串里合法的 U+2028 / U+2029 当成换行。
+import { spawn } from "node:child_process";
+
+/** 增量 JSONL 解码：push 字节块，返回本次凑齐的完整行（已去掉行尾 CR，按 UTF-8 解码） */
+export class JsonlDecoder {
+  #pending = Buffer.alloc(0);
+
+  push(chunk) {
+    const data = this.#pending.length ? Buffer.concat([this.#pending, chunk]) : chunk;
+    const lines = [];
+    let start = 0;
+    for (let i = data.indexOf(0x0a); i !== -1; i = data.indexOf(0x0a, start)) {
+      let end = i;
+      if (end > start && data[end - 1] === 0x0d) end -= 1;
+      lines.push(data.toString("utf8", start, end));
+      start = i + 1;
+    }
+    this.#pending = data.subarray(start);
+    return lines;
+  }
+
+  /** 流结束时尚未以 LF 结尾的残余字节数（正常应为 0） */
+  get pendingBytes() {
+    return this.#pending.length;
+  }
+
+  /** 取出残余字节（按 UTF-8 解码）并清空 */
+  flush() {
+    const rest = this.#pending.toString("utf8");
+    this.#pending = Buffer.alloc(0);
+    return rest;
+  }
+}
+
+export class CoreProcess {
+  /** 收到的全部 stdout 记录（解析后的 JSON），按到达顺序 */
+  records = [];
+  /** 不是合法 JSON 的 stdout 行：协议要求 stdout 只有协议记录，出现即违反契约 */
+  invalidLines = [];
+  stderr = "";
+  exited = false;
+  exitCode = null;
+
+  #child;
+  #nextId = 1;
+  #waiters = new Set();
+  #exitPromise;
+
+  constructor({ nodeExe, entry, args = [], cwd, env }) {
+    this.#child = spawn(nodeExe, [entry, ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
+    const decoder = new JsonlDecoder();
+    this.#child.stdout.on("data", (chunk) => {
+      for (const line of decoder.push(chunk)) this.#onLine(line);
+    });
+    // 每条记录都必须以 LF 结尾：stdout 结束时的残余算作非法行
+    this.#child.stdout.on("end", () => {
+      if (decoder.pendingBytes > 0) this.invalidLines.push(decoder.flush());
+    });
+    this.#child.stderr.setEncoding("utf8");
+    this.#child.stderr.on("data", (d) => {
+      this.stderr += d;
+    });
+    this.#exitPromise = new Promise((resolve) => {
+      const onExit = (code) => {
+        if (this.exited) return;
+        this.exited = true;
+        this.exitCode = code;
+        this.#notify();
+        resolve(code);
+      };
+      this.#child.once("exit", onExit);
+      // 运行时无法启动（如路径错误）时不会有 exit 事件
+      this.#child.once("error", (err) => {
+        this.stderr += `启动 Core 失败：${err.message}\n`;
+        onExit(null);
+      });
+    });
+    this.#child.stdin.on("error", () => {}); // 进程提前退出时写入失败，由 exited 检查报告
+  }
+
+  #onLine(line) {
+    if (line.trim() === "") return;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      this.invalidLines.push(line);
+      return;
+    }
+    this.records.push(record);
+    this.#notify();
+  }
+
+  #notify() {
+    for (const check of [...this.#waiters]) check();
+  }
+
+  /** 写一条命令（自动分配 id），返回 id */
+  send(command) {
+    const id = command.id ?? `contract-${this.#nextId++}`;
+    this.#child.stdin.write(`${JSON.stringify({ ...command, id })}\n`);
+    return id;
+  }
+
+  /**
+   * 等到某条记录满足 predicate（含已经到达的记录，从 fromIndex 开始找），返回该记录。
+   * 超时或进程退出时抛错，错误信息带上 label 与 Core 的 stderr。
+   */
+  waitFor(predicate, { label, timeoutMs = 15_000, fromIndex = 0 } = {}) {
+    return new Promise((resolve, reject) => {
+      let index = fromIndex;
+      let timer;
+      const check = () => {
+        for (; index < this.records.length; index++) {
+          const record = this.records[index];
+          if (predicate(record)) {
+            done();
+            resolve(record);
+            return;
+          }
+        }
+        if (this.exited) {
+          done();
+          reject(new Error(`等待 ${label} 时 Core 进程退出（退出码 ${this.exitCode}）`));
+        }
+      };
+      const done = () => {
+        clearTimeout(timer);
+        this.#waiters.delete(check);
+      };
+      timer = setTimeout(() => {
+        done();
+        reject(new Error(`${timeoutMs / 1000} 秒内未等到 ${label}`));
+      }, timeoutMs);
+      this.#waiters.add(check);
+      check();
+    });
+  }
+
+  /** 发送命令并等待同 id 的 response */
+  async request(command, options = {}) {
+    const id = this.send(command);
+    return this.waitFor((r) => r.type === "response" && r.id === id, {
+      label: `${command.type} 的 response`,
+      ...options,
+    });
+  }
+
+  /** 关闭 stdin 请求有序退出（rpc.md「Shutdown」）；超时后强制结束 */
+  async stop(timeoutMs = 5_000) {
+    if (this.exited) return this.exitCode;
+    this.#child.stdin.end();
+    const timer = setTimeout(() => this.#child.kill(), timeoutMs);
+    const code = await this.#exitPromise;
+    clearTimeout(timer);
+    return code;
+  }
+}
