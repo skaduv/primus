@@ -1400,7 +1400,7 @@ setInterval(() => {{}}, 1000);
     }
 
     /// 进程是否仍存在（Windows 用 tasklist，其他平台 `kill -0`；已回收的进程视为不存在）。
-    fn pid_alive(pid: u32) -> bool {
+    pub(crate) fn pid_alive(pid: u32) -> bool {
         if cfg!(windows) {
             Command::new("tasklist")
                 .args(["/FI", &format!("PID eq {pid}"), "/NH"])

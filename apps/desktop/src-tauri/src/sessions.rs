@@ -172,8 +172,10 @@ impl<S: BatchSink + Clone> Sessions<S> {
             },
         );
         let result = self.launch(supervisor, &key, &opts, sink, 0);
-        if result.is_err() {
+        if let Err(e) = result {
+            // 打开失败：撤下登记并报告拉起的原因（如 LimitReached）
             self.entries().remove(&key);
+            return Err(e);
         }
         self.finish_launch(supervisor, &key, 0, result)
             .map(|()| key)
@@ -209,7 +211,14 @@ impl<S: BatchSink + Clone> Sessions<S> {
             return Err(SessionError::NotRunning(key.to_owned()));
         }
         if let Some(bridge) = &entry.bridge {
-            bridge.send(record)?;
+            match bridge.send(record) {
+                // 写线程已结束（Core 的 stdin 已断开，进程正在退出）：与进程已退出同样处理，标为未运行
+                Err(BridgeError::Closed) => {
+                    entry.evicted = true;
+                    return Err(SessionError::NotRunning(key.to_owned()));
+                }
+                r => r?,
+            }
         }
         Ok(())
     }
@@ -263,11 +272,13 @@ impl<S: BatchSink + Clone> Sessions<S> {
     ) -> Result<(), SessionError> {
         let mut entries = self.entries();
         let Some(entry) = entries.get_mut(key) else {
+            // 拉起期间会话已关闭：无论拉起成败都报告 NotFound；拉起成功的新进程在锁外结束
             drop(entries);
-            if result.is_ok() {
+            if let Ok(bridge) = result {
+                drop(bridge);
                 supervisor.stop(key);
             }
-            return result.and(Err(SessionError::NotFound(key.to_owned())));
+            return Err(SessionError::NotFound(key.to_owned()));
         };
         entry.restarting = false;
         entry.last_seq = last_seq;
@@ -383,7 +394,7 @@ fn new_session_id(n: u64) -> String {
 mod tests {
     use super::*;
     use crate::supervisor::CoreLayout;
-    use crate::supervisor::tests::{TempDir, data_paths, fake_layout, kill_core};
+    use crate::supervisor::tests::{TempDir, data_paths, fake_layout, kill_core, pid_alive};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -700,6 +711,18 @@ process.stdin.on("data", (chunk) => {
     }
 
     #[test]
+    fn finish_launch_after_close_reports_not_found() {
+        let tmp = TempDir::new();
+        let (supervisor, _paths, sessions) = setup(&tmp);
+        // 重启期间会话被关闭：拉起失败也报告 NotFound，而不是拉起的错误
+        let failed = Err(SessionError::Io(io::Error::other("拉起失败")));
+        assert!(matches!(
+            sessions.finish_launch(&supervisor, "gone", 0, failed),
+            Err(SessionError::NotFound(_))
+        ));
+    }
+
+    #[test]
     fn close_between_reservation_and_commit_is_not_registered() {
         let tmp = TempDir::new();
         let (supervisor, paths, sessions) = setup(&tmp);
@@ -711,6 +734,7 @@ process.stdin.on("data", (chunk) => {
         let mut gone = Evicted::default();
         let reservation = supervisor.reserve(&a, |_| false, &mut gone).unwrap();
         let process = reservation.launch(&test_opts()).unwrap();
+        let pid = process.pid();
         sessions.close(&supervisor, &a);
         // 登记前复查：不登记、结束新进程、归还名额
         assert!(matches!(
@@ -718,6 +742,7 @@ process.stdin.on("data", (chunk) => {
             Err(SessionError::NotFound(_))
         ));
         assert!(supervisor.running_keys().is_empty());
+        assert!(!pid_alive(pid), "未登记的新进程应已结束");
         // 名额已归还：同一会话可再次预留
         assert!(supervisor.reserve(&a, |_| false, &mut gone).is_ok());
     }

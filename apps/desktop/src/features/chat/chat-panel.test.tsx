@@ -153,7 +153,38 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() =>
       expect(coreSend.mock.calls.filter(([, r]) => r.type === "prompt")).toHaveLength(2),
     );
-    await waitFor(() => expect(screen.queryByText(t.coreStopped)).toBeNull());
+    // 重启后的发送才到达 mock：其回复应渲染到会话中
+    await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
+    expect(screen.queryByText(t.coreStopped)).toBeNull();
+  });
+
+  it("重启后重建时内核未运行：提示已停止而不是无响应，保留重启入口", async () => {
+    let stopped = true;
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    const coreSend = vi.fn(async (key: string, record: Parameters<typeof base.coreSend>[1]) => {
+      if (stopped) throw new PlatformError("会话的内核未运行，请重启内核：k", CORE_NOT_RUNNING);
+      return base.coreSend(key, record);
+    });
+    // 重启“成功”但新进程随即退出：重建请求仍得到 coreNotRunning
+    const coreRestart = vi.fn(async () => {});
+    setPlatformForTesting({ ...base, coreSend, coreRestart });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText(t.coreStopped)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
+    await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(coreSend.mock.calls.some(([, r]) => r.type === "get_messages")).toBe(true),
+    );
+    await waitFor(() => expect(screen.getByText(t.coreStopped)).toBeTruthy());
+    expect(screen.queryByText(t.unresponsive)).toBeNull();
+    const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+    expect(screen.getByRole("button", { name: t.restartCore })).toBeTruthy();
+    stopped = false;
   });
 
   it("其他发送错误只显示错误文案，不锁定发送", async () => {

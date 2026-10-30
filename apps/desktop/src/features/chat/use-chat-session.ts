@@ -145,6 +145,11 @@ export function useChatSession(): ChatSession {
         },
         onResyncError: (e) => {
           resyncFailures.current += 1;
+          // 重建时发现内核未运行（如重启后新进程随即退出）：按“内核已停止”锁定并提供重启，而不是“无响应”
+          if (e instanceof PlatformError && e.code === CORE_NOT_RUNNING) {
+            lock.current.stopped = true;
+            syncUnresponsive();
+          }
           setError(`${strings.chat.resyncFailed}：${describeError(e)}`, "resync");
         },
         // 重建的两条 response 随批次排在帧队列里：等它们写入 store 之后再清除重建错误；

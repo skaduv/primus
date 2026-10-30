@@ -4,7 +4,7 @@ use tauri::State;
 use tauri::ipc::Channel;
 
 use crate::paths::DataPaths;
-use crate::rpc_bridge::CoreBatch;
+use crate::rpc_bridge::{BridgeError, CoreBatch};
 use crate::sessions::{AppSessions, SessionError};
 use crate::supervisor::Supervisor;
 
@@ -74,7 +74,9 @@ pub(crate) struct CoreCommandError {
 impl From<SessionError> for CoreCommandError {
     fn from(e: SessionError) -> Self {
         let code = match e {
-            SessionError::NotRunning(_) => Some("coreNotRunning"),
+            SessionError::NotRunning(_) | SessionError::Bridge(BridgeError::Closed) => {
+                Some("coreNotRunning")
+            }
             _ => None,
         };
         Self {
@@ -107,4 +109,23 @@ pub(crate) fn core_restart(
     sessions
         .restart(&supervisor, &session_key)
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_not_running_code_covers_closed_bridge() {
+        for e in [
+            SessionError::NotRunning("k".to_owned()),
+            SessionError::Bridge(BridgeError::Closed),
+        ] {
+            assert_eq!(CoreCommandError::from(e).code, Some("coreNotRunning"));
+        }
+        assert_eq!(
+            CoreCommandError::from(SessionError::NotFound("k".to_owned())).code,
+            None
+        );
+    }
 }
