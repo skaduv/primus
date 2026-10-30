@@ -496,11 +496,19 @@ const cases = {
       json(toolEnd.result?.content) === json([{ type: "text", text: fileText }]),
       `read 工具结果应为完整文件内容：${json(toolEnd.result)}`,
     );
-    const toolResults = faux.requests.flatMap((q) =>
+    // tool_result 只能出现在 user 消息里：Faux 不读请求体，放错角色也不会改变回复，须在此断言
+    const toolResultsByRole = faux.requests.flatMap((q) =>
       (q.body?.messages ?? []).flatMap((m) =>
-        Array.isArray(m.content) ? m.content.filter((c) => c.type === "tool_result") : [],
+        Array.isArray(m.content)
+          ? m.content.filter((c) => c.type === "tool_result").map((c) => ({ role: m.role, c }))
+          : [],
       ),
     );
+    check(
+      toolResultsByRole.every((x) => x.role === "user"),
+      `tool_result 只应出现在 user 消息中：${json(toolResultsByRole)}`,
+    );
+    const toolResults = toolResultsByRole.filter((x) => x.role === "user").map((x) => x.c);
     check(
       toolResults.length === 1 &&
         toolResults[0].tool_use_id === "toolu_faux_1" &&
