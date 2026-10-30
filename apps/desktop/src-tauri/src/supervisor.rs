@@ -507,21 +507,34 @@ impl Supervisor {
 
     /// 为会话 `key` 拉起 Core。成功后若超出上限，结束最久未使用的其他进程；该会话 1 分钟内已崩溃 3 次时拒绝。
     pub(crate) fn spawn(&self, key: &str, opts: &LaunchOptions) -> Result<u32, SupervisorError> {
+        self.spawn_evicting(key, opts).map(|(pid, _)| pid)
+    }
+
+    /// 同 [`Supervisor::spawn`]，另外返回因超出上限被结束的会话，调用方据此把它们标为未运行。
+    pub(crate) fn spawn_evicting(
+        &self,
+        key: &str,
+        opts: &LaunchOptions,
+    ) -> Result<(u32, Vec<String>), SupervisorError> {
         self.layout.check()?;
         let mut evicted = Vec::new();
         let result = self.spawn_locked(key, opts, &mut evicted);
         // 被淘汰的进程在锁外结束
-        for process in evicted {
-            process.kill();
-        }
-        result
+        let keys = evicted
+            .into_iter()
+            .map(|(key, process)| {
+                process.kill();
+                key
+            })
+            .collect();
+        result.map(|pid| (pid, keys))
     }
 
     fn spawn_locked(
         &self,
         key: &str,
         opts: &LaunchOptions,
-        evicted: &mut Vec<CoreProcess>,
+        evicted: &mut Vec<(String, CoreProcess)>,
     ) -> Result<u32, SupervisorError> {
         let mut state = self.state();
         if state.procs.contains_key(key) {
@@ -549,7 +562,7 @@ impl Supervisor {
                 break;
             };
             if let Some(process) = state.procs.remove(&lru) {
-                evicted.push(process);
+                evicted.push((lru, process));
             }
         }
         Ok(pid)
@@ -614,6 +627,26 @@ impl Supervisor {
     pub(crate) fn stop(&self, key: &str) -> Option<Vec<String>> {
         let process = self.state().procs.remove(key)?;
         Some(process.kill())
+    }
+
+    /// 重启（重新连接）前结束会话的进程。进程已自行退出时按崩溃计数（第 5.5 节），
+    /// 之后的 [`Supervisor::spawn`] 因而同样受“1 分钟内 3 次”的限制；返回退出状态（仍在运行则为 None）。
+    pub(crate) fn stop_for_restart(&self, key: &str) -> Option<ExitStatus> {
+        let (process, exited) = {
+            let mut state = self.state();
+            let mut process = state.procs.remove(key)?;
+            let exited = process.try_wait().ok().flatten();
+            if exited.is_some() {
+                state
+                    .crashes
+                    .entry(key.to_owned())
+                    .or_default()
+                    .record(Instant::now());
+            }
+            (process, exited)
+        };
+        process.kill();
+        exited
     }
 
     /// 收集意外退出的进程并计入崩溃次数；调用方据此在时间线标记“内核已退出”。
@@ -973,7 +1006,8 @@ process.stderr.write("line one\nline two\r\nline three\n");
             supervisor.spawn("a", &opts(&tmp.0)),
             Err(SupervisorError::AlreadyRunning(_))
         ));
-        supervisor.spawn("b", &opts(&tmp.0)).unwrap();
+        let (_, evicted) = supervisor.spawn_evicting("b", &opts(&tmp.0)).unwrap();
+        assert_eq!(evicted, vec!["a".to_owned()], "返回被淘汰的会话");
         assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
 
         // 拉起失败（工作目录不存在）不淘汰已有会话
@@ -1038,6 +1072,39 @@ process.stderr.write("line one\nline two\r\nline three\n");
             supervisor.spawn("c", &opts(&tmp.0)),
             Err(SupervisorError::CrashLoop(_))
         ));
+    }
+
+    #[test]
+    fn stop_for_restart_counts_exited_core_as_crash() {
+        let tmp = TempDir::new();
+        let supervisor =
+            Supervisor::new(fake_layout(&tmp.0, "process.exit(3);"), data_paths(&tmp.0)).unwrap();
+        for _ in 0..CRASH_LIMIT {
+            supervisor.spawn("c", &opts(&tmp.0)).unwrap();
+            // 等进程自行退出（不经 reap_exited），再由“重新连接”结束
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while supervisor
+                .with_process("c", |p| p.try_wait().ok().flatten().is_none())
+                .unwrap_or(false)
+            {
+                assert!(Instant::now() < deadline, "进程未退出");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let status = supervisor.stop_for_restart("c").expect("已退出");
+            assert_eq!(status.code(), Some(3));
+        }
+        assert!(matches!(
+            supervisor.spawn("c", &opts(&tmp.0)),
+            Err(SupervisorError::CrashLoop(_))
+        ));
+
+        // 仍在运行的进程被重新连接结束，不算崩溃
+        let idle = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        for _ in 0..=CRASH_LIMIT {
+            idle.spawn("d", &opts(&tmp.0)).unwrap();
+            assert!(idle.stop_for_restart("d").is_none());
+        }
+        assert!(idle.stop_for_restart("d").is_none());
     }
 
     /// 拉起一个继承 stderr 的常驻孙进程并打印其 pid；`exit` 为真时 Core 随即退出。

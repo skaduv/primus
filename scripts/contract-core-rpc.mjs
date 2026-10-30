@@ -290,6 +290,12 @@ function checkStoreReplay(records, history) {
 
 // ---------- 用例 ----------
 
+/** 薄壳为新会话预先指定的会话 ID（`--session-id`），重启时用同一 ID 恢复 */
+const RESUME_SESSION_ID = "primus-contract-resume";
+
+/** 个别用例的额外启动参数 */
+const CASE_ARGS = { resume: ["--session-id", RESUME_SESSION_ID] };
+
 const cases = {
   /** get_state：新会话的状态快照，模型为 Faux，未在运行 */
   async get_state({ core }) {
@@ -439,6 +445,74 @@ const cases = {
     checkKnownRecords(core);
   },
 
+  /**
+   * resume：模拟薄壳的 core_restart。新会话以 --session-id 启动，一轮之后结束进程，
+   * 用同一 ID 重新拉起：历史从会话文件恢复，下一轮的模型上下文仍含重启前的问答
+   */
+  async resume({ core, faux, startCore }) {
+    faux.enqueue({ chunks: ["记住了。"] });
+    const from = core.records.length;
+    const r = await core.request({ type: "prompt", message: "记住：乾元" });
+    check(r.success === true, `prompt 响应异常：${json(r)}`);
+    await core.waitFor((x) => x.type === "agent_settled", {
+      label: "agent_settled",
+      fromIndex: from,
+    });
+    const state = await core.request({ type: "get_state" });
+    check(
+      state.data?.sessionId === RESUME_SESSION_ID,
+      `会话 ID 应为 --session-id 指定的 ${RESUME_SESSION_ID}：${json(state.data?.sessionId)}`,
+    );
+    const code = await core.stop();
+    check(code === 0, `关闭 stdin 后 Core 应以 0 退出，实际 ${code}`);
+
+    const resumed = startCore(["--session-id", RESUME_SESSION_ID]);
+    try {
+      const messages = await resumed.request({ type: "get_messages" });
+      check(messages.success === true, `get_messages 失败：${json(messages)}`);
+      const history = messages.data.messages
+        .filter((m) => m.role !== "system")
+        .map((m) => [m.role, requestText(m)]);
+      check(
+        json(history) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+          ]),
+        `重启后 get_messages 应恢复重启前的问答：${json(history)}`,
+      );
+
+      faux.enqueue({ chunks: ["是乾元。"] });
+      const next = resumed.records.length;
+      const p = await resumed.request({ type: "prompt", message: "刚才记的是什么？" });
+      check(p.success === true, `重启后 prompt 响应异常：${json(p)}`);
+      await resumed.waitFor((x) => x.type === "agent_settled", {
+        label: "重启后的 agent_settled",
+        fromIndex: next,
+      });
+      const request = faux.requests.find((q) => lastUserText(q.body) === "刚才记的是什么？");
+      check(request, "Faux 模型服务未收到重启后的请求");
+      const sent = request.body.messages.map((m) => [m.role, requestText(m)]);
+      check(
+        json(sent) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+            ["user", "刚才记的是什么？"],
+          ]),
+        `重启后的模型上下文应含重启前的问答：${json(sent)}`,
+      );
+      checkKnownRecords(resumed);
+    } catch (err) {
+      console.error(`--- 重启后的 Core stderr ---\n${resumed.stderr}`);
+      throw err;
+    } finally {
+      const resumedCode = await resumed.stop();
+      check(resumedCode === 0, `重启后的 Core 关闭 stdin 应以 0 退出，实际 ${resumedCode}`);
+    }
+    checkFauxRequests(faux);
+  },
+
   /** abort：运行中中止，等会话空闲后才回 response；助手消息 stopReason 为 aborted，供应商请求被取消 */
   async abort({ core, faux }) {
     const chunks = Array.from({ length: 200 }, (_, i) => `第${i}段。`);
@@ -453,9 +527,9 @@ const cases = {
     );
 
     // 停止生效 < 1 秒（第 16.5 节）：abort 的 response 在会话空闲后才回，往返时间即停止生效的时间
-    const abortSent = Date.now();
+    const abortSent = performance.now();
     const a = await core.request({ type: "abort" });
-    const stopMs = Date.now() - abortSent;
+    const stopMs = Math.round(performance.now() - abortSent);
     check(a.command === "abort" && a.success === true, `abort 响应异常：${json(a)}`);
     check(stopMs < STOP_LATENCY_MS, `停止应在 ${STOP_LATENCY_MS}ms 内生效，实际 ${stopMs}ms`);
     // abort 等会话空闲后才响应：此时本轮的助手消息已经结束
@@ -617,18 +691,20 @@ async function runCase(name, target) {
       join(coreDir, "models.json"),
       JSON.stringify(fauxModelsJson(faux.baseUrl), null, 2),
     );
-    core = new CoreProcess({
-      ...target,
-      args: ["--offline", "--provider", FAUX_PROVIDER, "--model", FAUX_MODEL],
-      cwd: workDir,
-      // 本机 Faux 服务不能走代理：CI 或开发机配置的 HTTP(S)_PROXY 会让 127.0.0.1 的请求失败
-      env: {
-        ...coreEnv({ home: sandbox, coreDir }),
-        NO_PROXY: "127.0.0.1,localhost",
-        no_proxy: "127.0.0.1,localhost",
-      },
-    });
-    await cases[name]({ core, faux, workDir });
+    const startCore = (extraArgs = []) =>
+      new CoreProcess({
+        ...target,
+        args: ["--offline", "--provider", FAUX_PROVIDER, "--model", FAUX_MODEL, ...extraArgs],
+        cwd: workDir,
+        // 本机 Faux 服务不能走代理：CI 或开发机配置的 HTTP(S)_PROXY 会让 127.0.0.1 的请求失败
+        env: {
+          ...coreEnv({ home: sandbox, coreDir }),
+          NO_PROXY: "127.0.0.1,localhost",
+          no_proxy: "127.0.0.1,localhost",
+        },
+      });
+    core = startCore(CASE_ARGS[name] ?? []);
+    await cases[name]({ core, faux, workDir, startCore });
     // 有序退出：关闭 stdin 后 Core 应以 0 退出；stdout 须读完（否则残余未计入，检查不完整），
     // 关闭阶段到达的记录同样要符合协议，且不得有非法行（含不以 LF 结尾的残余）
     const code = await core.stop();

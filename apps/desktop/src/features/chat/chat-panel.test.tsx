@@ -291,14 +291,19 @@ describe("对话区（mock 事件流）", () => {
     await screen.findByRole("article", { name: t.assistant });
     const started = performance.now();
     fireEvent.click(stopButton);
-    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy(), {
-      timeout: 1000,
-    });
+    // 先填好下一条：停止生效即发送按钮可用（不只是出现）
+    fireEvent.change(input, { target: { value: "继续" } });
+    await waitFor(
+      () =>
+        expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(
+          false,
+        ),
+      { timeout: 1000 },
+    );
     expect(performance.now() - started).toBeLessThan(1000);
     expect(screen.getByText(t.stopped)).toBeTruthy();
     expect(screen.queryByText(/mock 平台/)).toBeNull();
 
-    fireEvent.change(input, { target: { value: "继续" } });
     fireEvent.keyDown(input, { key: "Enter" });
     await waitFor(() => expect(screen.getByText(/你刚才说：「继续」/)).toBeTruthy(), {
       timeout: 5000,

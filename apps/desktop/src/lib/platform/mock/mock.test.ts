@@ -103,6 +103,57 @@ describe("mock 平台", () => {
     ]);
   });
 
+  it("用户消息推送前就 abort：用户消息仍推送并留在历史里", async () => {
+    const platform = createMockPlatform({ batchSize: 1 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { id: "u-1", type: "prompt", message: "马上停" });
+    await platform.coreSend(sessionKey, { id: "u-2", type: "abort" });
+    await vi.runAllTimersAsync();
+    expect(types(records)).toEqual([
+      "response",
+      "agent_start",
+      "turn_start",
+      "message_start",
+      "message_end",
+      "agent_end",
+      "agent_settled",
+      "response",
+    ]);
+    records.length = 0;
+    await platform.coreSend(sessionKey, { id: "u-3", type: "get_messages" });
+    await vi.runAllTimersAsync();
+    const got = records[0] as { data: { messages: Array<{ role: string }> } };
+    expect(got.data.messages.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  it("get_messages 的快照包含排在它前面、尚未推送的已定稿消息，且不重复", async () => {
+    const platform = createMockPlatform({ batchSize: 1 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { id: "g-1", type: "prompt", message: "hi" });
+    // 一条都没推送就请求历史：响应排在整轮事件之后，应含整轮四条消息
+    await platform.coreSend(sessionKey, { id: "g-2", type: "get_messages" });
+    await vi.runAllTimersAsync();
+    const got = records.find((r) => "id" in r && r.id === "g-2") as {
+      data: { messages: Array<{ role: string }> };
+    };
+    expect(got.data.messages.map((m) => m.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+      "assistant",
+    ]);
+    records.length = 0;
+    await platform.coreSend(sessionKey, { id: "g-3", type: "get_messages" });
+    await vi.runAllTimersAsync();
+    expect((records[0] as typeof got).data.messages).toHaveLength(4);
+  });
+
   it("工具执行中 abort：未结束的工具以出错结束", async () => {
     const platform = createMockPlatform({ batchSize: 1 });
     const records: CoreRecord[] = [];
@@ -114,8 +165,12 @@ describe("mock 平台", () => {
       await vi.advanceTimersByTimeAsync(16);
     await platform.coreSend(sessionKey, { id: "t-2", type: "abort" });
     await vi.runAllTimersAsync();
+    const start = records.find((r) => r.type === "tool_execution_start") as Extract<
+      CoreRecord,
+      { type: "tool_execution_start" }
+    >;
     const end = records.find((r) => r.type === "tool_execution_end");
-    expect(end).toMatchObject({ isError: true });
+    expect(end).toMatchObject({ toolCallId: start.toolCallId, isError: true });
     expect(records.at(-2)).toEqual({ type: "agent_settled", aborted: true });
   });
 

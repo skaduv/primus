@@ -115,8 +115,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         return;
       }
       case "abort": {
-        // 与 Core 一致：丢弃尚未推送的事件，结束被中止的消息与工具，会话空闲（agent_settled）后才回 response
-        s.queue = s.queue.filter((r) => r.type === "response");
+        // 与 Core 一致：丢弃尚未推送的事件，结束被中止的消息与工具，会话空闲（agent_settled）后才回 response。
+        // 运行开始与用户消息在 Core 受理 prompt 时就已发生，保留它们（用户消息因此留在历史里）
+        s.queue = keptOnAbort(s.queue);
         if (s.streaming) emit(s, ...abortRecords(s.delivered, now()));
         emit(s, respond(cmd));
         return;
@@ -138,9 +139,12 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           }),
         );
         return;
-      case "get_messages":
-        emit(s, respond(cmd, { messages: s.messages.slice() }));
+      case "get_messages": {
+        // 响应排在队列里已有的事件之后：快照要算上这些事件中已定稿的消息（推送时才写入 s.messages）
+        const queued = s.queue.flatMap((r) => (r.type === "message_end" ? [r.message] : []));
+        emit(s, respond(cmd, { messages: [...s.messages, ...queued] }));
         return;
+      }
       default:
         emit(s, respond(cmd, undefined, `mock：未实现命令 ${cmd.type}`));
     }
@@ -262,6 +266,23 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       console[level === "debug" ? "log" : level](`[mock] ${message}`);
     },
   };
+}
+
+/**
+ * abort 时队列中保留的记录：全部响应，以及队首尚未推送的运行开始与用户消息（Core 受理 prompt 时就已发生）；
+ * 从第一条其他事件起（助手输出、工具、下一轮的 turn_start 等）全部丢弃
+ */
+function keptOnAbort(queue: readonly CoreRecord[]): CoreRecord[] {
+  let prefix = true;
+  return queue.filter((r) => {
+    if (r.type === "response") return true;
+    const opening =
+      r.type === "agent_start" ||
+      r.type === "turn_start" ||
+      ((r.type === "message_start" || r.type === "message_end") && r.message.role === "user");
+    prefix &&= opening;
+    return prefix;
+  });
 }
 
 /**

@@ -417,21 +417,24 @@ export function ChatPanel() {
       });
   };
 
-  // 停止：发出 abort 后到本轮结束（agent_settled）之间按钮显示“正在停止”，避免重复发送
+  // 停止：发出 abort 后到本轮结束（agent_settled）之间按钮显示“正在停止”，避免重复发送。
+  // 每次停止一个令牌：旧的 abort 迟到完成时不清除新一轮的停止状态。abort 失败（含超时）时恢复按钮以便重试
   const [stopping, setStopping] = useState(false);
-  const stoppingRef = useRef(false);
+  const stopToken = useRef<symbol | null>(null);
   const stop = () => {
-    if (!state.running || stoppingRef.current) return;
-    stoppingRef.current = true;
+    if (!state.running || stopToken.current) return;
+    const token = Symbol("stop");
+    stopToken.current = token;
     setStopping(true);
     void abort().finally(() => {
-      stoppingRef.current = false;
+      if (stopToken.current !== token) return;
+      stopToken.current = null;
       setStopping(false);
     });
   };
   useEffect(() => {
     if (state.running) return;
-    stoppingRef.current = false;
+    stopToken.current = null;
     setStopping(false);
   }, [state.running]);
 

@@ -5,8 +5,11 @@
 //!   未选工作区时在 `users/<SID>/chat` 下运行（约束 C2：不落到用户主目录）。
 //! - 发送：记录原样写入 stdin，薄壳不理解、不修改内容（第 5.1 节）。
 //! - 重启：结束旧进程、等旧桥把剩余批次推完，再用同样的启动参数拉起新进程（同一会话 ID / 文件，Core 从会话文件恢复）；
-//!   新桥的 `seq` 接着旧桥编号，前端据缺口检测与 `get_messages` 重建状态（第 7.3 节）。
+//!   新桥的 `seq` 接着旧桥编号，前端据缺口检测与 `get_messages` 重建状态（第 7.3 节）。旧进程已自行退出的按崩溃计数，
+//!   重新连接同样受“1 分钟内 3 次”限制（第 5.5 节）。重启期间会话留在表里（标记重启中）：发送得到 NotRunning，
+//!   并发的重启被拒绝；期间被关闭的会话，重启完成后立即结束新进程，不放回表中。
 //! - 关闭：结束进程，桥随 stdout EOF 自行收尾。
+//! - 拉起新进程超出进程上限时，被淘汰会话的桥随之移除，之后的发送得到 NotRunning（可重启恢复）。
 
 use std::collections::HashMap;
 use std::fmt;
@@ -32,8 +35,10 @@ pub(crate) enum SessionError {
     NotFound(String),
     /// 工作区不是一个已存在的目录
     Workspace(PathBuf),
-    /// 重启失败后会话暂无进程，需再次重启
+    /// 会话暂无进程（重启失败或因进程上限被淘汰），需重启内核
     NotRunning(String),
+    /// 会话正在重启
+    Restarting(String),
     Supervisor(SupervisorError),
     Bridge(BridgeError),
     Io(io::Error),
@@ -45,6 +50,7 @@ impl fmt::Display for SessionError {
             Self::NotFound(key) => write!(f, "会话不存在：{key}"),
             Self::Workspace(path) => write!(f, "工作区不存在：{}", path.display()),
             Self::NotRunning(key) => write!(f, "会话的内核未运行，请重启内核：{key}"),
+            Self::Restarting(key) => write!(f, "会话的内核正在重启：{key}"),
             Self::Supervisor(e) => write!(f, "{e}"),
             Self::Bridge(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
@@ -73,8 +79,12 @@ impl From<io::Error> for SessionError {
 }
 
 struct Entry<S> {
-    /// 重启失败后为 None：会话仍在表里，可以再次重启
+    /// 重启中、重启失败或被淘汰时为 None：会话仍在表里，可以（再次）重启
     bridge: Option<Bridge>,
+    /// 正在重启
+    restarting: bool,
+    /// 进程因进程上限被结束（重启可恢复）
+    evicted: bool,
     /// 下一座桥第一批之前的序号（重启失败时保留旧桥的最后序号）
     last_seq: u64,
     opts: LaunchOptions,
@@ -142,6 +152,8 @@ impl<S: BatchSink + Clone> Sessions<S> {
             key.clone(),
             Entry {
                 bridge: Some(bridge),
+                restarting: false,
+                evicted: false,
                 last_seq: 0,
                 opts,
                 sink,
@@ -165,6 +177,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             let bridge = entry
                 .bridge
                 .as_ref()
+                .filter(|_| !entry.evicted)
                 .ok_or_else(|| SessionError::NotRunning(key.to_owned()))?;
             bridge.send(record)?;
         }
@@ -183,27 +196,43 @@ impl<S: BatchSink + Clone> Sessions<S> {
 
     /// 重启会话的 Core：同一会话 ID / 文件，`seq` 接着编号。失败时会话保留在表里，可再次重启。
     pub(crate) fn restart(&self, supervisor: &Supervisor, key: &str) -> Result<(), SessionError> {
-        // 重启期间把会话移出表：其他会话的发送不被阻塞，同一会话的并发重启得到 NotFound
-        let mut entry = self
-            .entries()
-            .remove(key)
-            .ok_or_else(|| SessionError::NotFound(key.to_owned()))?;
-        supervisor.stop(key);
-        // 进程（连同整个作业）已结束，stdout EOF：等旧桥把剩余记录推完再接着编号，新旧批次不交错
-        if let Some(bridge) = entry.bridge.take() {
-            entry.last_seq = bridge.finish();
-        }
-        let result = self
-            .launch(
-                supervisor,
-                key,
-                &entry.opts,
+        // 取出旧桥并标记重启中；耗时的结束与拉起在锁外进行，不阻塞其他会话
+        let (old, opts, sink, last_seq) = {
+            let mut entries = self.entries();
+            let entry = entries
+                .get_mut(key)
+                .ok_or_else(|| SessionError::NotFound(key.to_owned()))?;
+            if entry.restarting {
+                return Err(SessionError::Restarting(key.to_owned()));
+            }
+            // 已淘汰的会话标记延后到拉起成功才清除，期间发送仍得到 NotRunning
+            entry.restarting = true;
+            (
+                entry.bridge.take(),
+                entry.opts.clone(),
                 entry.sink.clone(),
                 entry.last_seq,
             )
-            .map(|bridge| entry.bridge = Some(bridge));
-        self.entries().insert(key.to_owned(), entry);
-        result
+        };
+        // 旧进程已自行退出时计一次崩溃，随后的拉起受崩溃上限约束
+        supervisor.stop_for_restart(key);
+        // 进程（连同整个作业）已结束，stdout EOF：等旧桥把剩余记录推完再接着编号，新旧批次不交错
+        let last_seq = old.map_or(last_seq, Bridge::finish);
+        let result = self.launch(supervisor, key, &opts, sink, last_seq);
+
+        let mut entries = self.entries();
+        let Some(entry) = entries.get_mut(key) else {
+            // 重启期间会话被关闭：结束刚拉起的进程，不放回表中
+            drop(entries);
+            if result.is_ok() {
+                supervisor.stop(key);
+            }
+            return Err(SessionError::NotFound(key.to_owned()));
+        };
+        entry.restarting = false;
+        entry.evicted = false;
+        entry.last_seq = last_seq;
+        result.map(|bridge| entry.bridge = Some(bridge))
     }
 
     fn launch(
@@ -214,7 +243,8 @@ impl<S: BatchSink + Clone> Sessions<S> {
         sink: S,
         first_seq: u64,
     ) -> Result<Bridge, SessionError> {
-        supervisor.spawn(key, opts)?;
+        let (_, evicted) = supervisor.spawn_evicting(key, opts)?;
+        self.mark_evicted(&evicted);
         let pipes = supervisor.with_process(key, |p| (p.take_stdin(), p.take_stdout()));
         let Some((Some(stdin), Some(stdout))) = pipes else {
             supervisor.stop(key);
@@ -228,6 +258,22 @@ impl<S: BatchSink + Clone> Sessions<S> {
             supervisor.stop(key);
             e.into()
         })
+    }
+}
+
+impl<S> Sessions<S> {
+    /// 因进程上限被结束的会话：标为已淘汰，之后的发送得到 NotRunning。
+    /// 桥留在表里（进程已结束，线程随 EOF 退出），重启时照常 `finish` 取得最后序号接着编号
+    fn mark_evicted(&self, keys: &[String]) {
+        if keys.is_empty() {
+            return;
+        }
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        for key in keys {
+            if let Some(entry) = entries.get_mut(key) {
+                entry.evicted = true;
+            }
+        }
     }
 }
 
@@ -451,6 +497,42 @@ process.stdin.on("data", (chunk) => {
         assert_eq!(seqs[0], 1);
         assert_eq!(supervisor.running_keys(), vec![key.clone()]);
         sessions.close(&supervisor, &key);
+    }
+
+    #[test]
+    fn evicted_session_reports_not_running_until_restarted() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        supervisor.set_max_processes(1);
+        let first = Collect::default();
+        let a = sessions
+            .open(&supervisor, &paths, "", None, first.clone())
+            .unwrap();
+        sessions
+            .send(&supervisor, &a, &serde_json::json!({ "id": "a1" }))
+            .unwrap();
+        first.wait_for(1, |r| r["id"] == "a1");
+
+        // 第二个会话超出上限，淘汰第一个
+        let b = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        assert_eq!(supervisor.running_keys(), vec![b.clone()]);
+        assert!(matches!(
+            sessions.send(&supervisor, &a, &serde_json::json!({})),
+            Err(SessionError::NotRunning(_))
+        ));
+
+        // 重启恢复，seq 接着编号
+        sessions.restart(&supervisor, &a).unwrap();
+        sessions
+            .send(&supervisor, &a, &serde_json::json!({ "id": "a2" }))
+            .unwrap();
+        first.wait_for(1, |r| r["id"] == "a2");
+        let seqs = first.seqs();
+        assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+        sessions.close(&supervisor, &a);
+        sessions.close(&supervisor, &b);
     }
 
     #[test]
