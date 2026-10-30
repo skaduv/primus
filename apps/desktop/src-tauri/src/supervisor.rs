@@ -476,7 +476,7 @@ impl Reservation<'_> {
         if idle.len() < excess {
             return Err(Rejected {
                 max,
-                process: Some(process),
+                process: Some(Box::new(process)),
             });
         }
         // 最久未使用的先淘汰
@@ -497,13 +497,14 @@ impl Reservation<'_> {
 /// （不要在持锁时 drop）；转换成 [`SupervisorError::LimitReached`] 时同样结束。
 pub(crate) struct Rejected {
     max: usize,
-    process: Option<CoreProcess>,
+    /// 装箱：Windows 上 `CoreProcess` 带作业对象等句柄，体积大，避免 `Result` 的错误类型过大
+    process: Option<Box<CoreProcess>>,
 }
 
 impl Drop for Rejected {
     fn drop(&mut self) {
         if let Some(process) = self.process.take() {
-            process.kill();
+            (*process).kill();
         }
     }
 }
@@ -1226,8 +1227,21 @@ process.stderr.write("line one\nline two\r\nline three\n");
             supervisor.reserve("a", |_| false, &mut gone),
             Err(SupervisorError::AlreadyRunning(_))
         ));
-        // 创建进程不持监管器锁
-        let process = a.launch(&opts(&tmp.0)).unwrap();
+        // 创建进程不持监管器锁：本线程持锁期间，另一线程的 launch 仍能完成
+        let guard = supervisor.state();
+        let (tx, rx) = mpsc::channel();
+        let process = std::thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let process = a.launch(&opts(&tmp.0));
+                let _ = tx.send(());
+                process
+            });
+            let finished = rx.recv_timeout(Duration::from_secs(10)).is_ok();
+            drop(guard);
+            let process = handle.join().unwrap().unwrap();
+            assert!(finished, "创建进程期间不应等待监管器锁");
+            process
+        });
         assert!(supervisor.running_keys().is_empty());
         let (_, evicted) = a.commit(process, |_| false).ok().unwrap();
         assert!(evicted.keys().is_empty());
@@ -1257,11 +1271,15 @@ process.stderr.write("line one\nline two\r\nline three\n");
         // 预留 b 时 a 空闲，登记 b 时 a 已忙碌：不淘汰 a，拒绝 b 并结束其进程，不超出上限
         let b = supervisor.reserve("b", |_| false, &mut gone).unwrap();
         let process = b.launch(&opts(&tmp.0)).unwrap();
+        let rejected_pid = process.pid();
+        assert!(pid_alive(rejected_pid));
         let rejected = b.commit(process, |k| k == "a").err().unwrap();
         assert!(matches!(
             SupervisorError::from(rejected),
             SupervisorError::LimitReached(1)
         ));
+        // 被拒绝的进程未登记，转换（drop）时已结束并回收
+        assert!(!pid_alive(rejected_pid), "被拒绝的 Core 进程应已结束");
         assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
         assert!(supervisor.state().starting.is_empty());
         // a 空闲时登记 b 则淘汰 a
@@ -1381,17 +1399,29 @@ setInterval(() => {{}}, 1000);
         line.trim().parse().expect("孙进程 pid")
     }
 
+    /// 进程是否仍存在（Windows 用 tasklist，其他平台 `kill -0`；已回收的进程视为不存在）。
+    fn pid_alive(pid: u32) -> bool {
+        if cfg!(windows) {
+            Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+                .unwrap_or(false)
+        } else {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        }
+    }
+
     /// 孙进程收尾：Windows 上应已随作业结束；其他平台没有作业，测试自行清理。
     fn cleanup_grandchild(pid: u32) {
         if cfg!(windows) {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                let alive = Command::new("tasklist")
-                    .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-                    .unwrap_or(false);
-                if !alive {
+                if !pid_alive(pid) {
                     break;
                 }
                 assert!(Instant::now() < deadline, "孙进程应随 Core 的作业结束");

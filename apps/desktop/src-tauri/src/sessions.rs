@@ -24,7 +24,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::paths::DataPaths;
 use crate::rpc_bridge::{BatchSink, Bridge, BridgeConfig, BridgeError, CoreBatch};
-use crate::supervisor::{Evicted, LaunchOptions, Rejected, Supervisor, SupervisorError};
+use crate::supervisor::{
+    CoreProcess, Evicted, LaunchOptions, Rejected, Reservation, Supervisor, SupervisorError,
+};
 
 /// Tauri 中使用的会话表：批次经每个会话自己的 Channel 推给前端。
 pub(crate) type AppSessions = Sessions<tauri::ipc::Channel<CoreBatch>>;
@@ -276,6 +278,39 @@ impl<S: BatchSink + Clone> Sessions<S> {
         Ok(())
     }
 
+    /// 登记新创建的进程。登记前确认会话仍在（创建进程期间可能被关闭）：已关闭则不登记、不淘汰别的会话，
+    /// 锁外结束新进程并返回 NotFound。登记时腾不出位置（预留后空闲会话转为忙碌）则拒绝，新进程同样在锁外结束
+    /// （Rejected 的 drop）。
+    fn register(
+        &self,
+        key: &str,
+        reservation: Reservation<'_>,
+        process: CoreProcess,
+    ) -> Result<(), SessionError> {
+        let committed = {
+            let mut entries = self.entries();
+            if entries.contains_key(key) {
+                let committed = reservation.commit(process, |k| is_busy(&entries, k));
+                if let Ok((_, evicted)) = &committed {
+                    mark_gone(&mut entries, evicted);
+                }
+                Ok(committed)
+            } else {
+                Err(process)
+            }
+        };
+        let committed = match committed {
+            Ok(committed) => committed,
+            Err(process) => {
+                process.kill();
+                return Err(SessionError::NotFound(key.to_owned()));
+            }
+        };
+        let (_, evicted) = committed?;
+        drop(evicted);
+        Ok(())
+    }
+
     fn launch(
         &self,
         supervisor: &Supervisor,
@@ -301,29 +336,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
         let reservation = reservation?;
         // 失败时预留随 drop 归还，不影响其他会话
         let process = reservation.launch(opts)?;
-        // 登记前确认会话仍在（创建进程期间可能被关闭）：已关闭则不登记、不淘汰别的会话，锁外结束新进程。
-        // 登记时腾不出位置（预留后空闲会话转为忙碌）则拒绝，新进程同样在锁外结束（Rejected 的 drop）
-        let committed = {
-            let mut entries = self.entries();
-            if entries.contains_key(key) {
-                let committed = reservation.commit(process, |k| is_busy(&entries, k));
-                if let Ok((_, evicted)) = &committed {
-                    mark_gone(&mut entries, evicted);
-                }
-                Ok(committed)
-            } else {
-                Err(process)
-            }
-        };
-        let committed = match committed {
-            Ok(committed) => committed,
-            Err(process) => {
-                process.kill();
-                return Err(SessionError::NotFound(key.to_owned()));
-            }
-        };
-        let (_, evicted) = committed?;
-        drop(evicted);
+        self.register(key, reservation, process)?;
         let pipes = supervisor.with_process(key, |p| (p.take_stdin(), p.take_stdout()));
         let Some((Some(stdin), Some(stdout))) = pipes else {
             supervisor.stop(key);
@@ -671,7 +684,7 @@ process.stdin.on("data", (chunk) => {
     }
 
     #[test]
-    fn restart_after_close_during_launch_reports_not_found() {
+    fn restart_after_close_before_launch_reports_not_found() {
         let tmp = TempDir::new();
         let (supervisor, paths, sessions) = setup(&tmp);
         let a = sessions
@@ -684,6 +697,29 @@ process.stdin.on("data", (chunk) => {
             Err(SessionError::NotFound(_))
         ));
         assert!(supervisor.running_keys().is_empty());
+    }
+
+    #[test]
+    fn close_between_reservation_and_commit_is_not_registered() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let a = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        // 模拟重启：旧进程已结束，名额已预留、进程已创建，此时会话被关闭
+        supervisor.stop(&a);
+        let mut gone = Evicted::default();
+        let reservation = supervisor.reserve(&a, |_| false, &mut gone).unwrap();
+        let process = reservation.launch(&test_opts()).unwrap();
+        sessions.close(&supervisor, &a);
+        // 登记前复查：不登记、结束新进程、归还名额
+        assert!(matches!(
+            sessions.register(&a, reservation, process),
+            Err(SessionError::NotFound(_))
+        ));
+        assert!(supervisor.running_keys().is_empty());
+        // 名额已归还：同一会话可再次预留
+        assert!(supervisor.reserve(&a, |_| false, &mut gone).is_ok());
     }
 
     #[test]

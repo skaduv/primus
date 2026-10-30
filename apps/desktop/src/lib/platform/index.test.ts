@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  CORE_NOT_RUNNING,
   canPickFiles,
   canUseWorkspaces,
   getPlatform,
   getWindowControls,
   isTauriRuntime,
+  PlatformError,
   setPlatformForTesting,
   setWindowControlsForTesting,
+  toPlatformError,
 } from "./index";
 import type { WindowControls } from "./window";
 
@@ -48,5 +51,15 @@ describe("平台选择", () => {
 
     setWindowControlsForTesting(undefined);
     await expect(getWindowControls()).resolves.toBeUndefined();
+  });
+});
+
+describe("命令错误", () => {
+  it("结构化错误转成带 code 的 PlatformError，字符串原样保留", () => {
+    const e = toPlatformError({ code: CORE_NOT_RUNNING, message: "会话的内核未运行" });
+    expect(e).toBeInstanceOf(PlatformError);
+    expect(e).toMatchObject({ code: CORE_NOT_RUNNING, message: "会话的内核未运行" });
+    expect(toPlatformError({ code: null, message: "x" })).toMatchObject({ code: undefined });
+    expect(toPlatformError("出错了")).toBe("出错了");
   });
 });

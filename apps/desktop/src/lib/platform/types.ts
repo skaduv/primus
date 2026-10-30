@@ -109,6 +109,28 @@ export interface Platform {
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
 
+/** 会话命令错误码：会话的内核未运行（重启失败、因进程上限被淘汰或已自行退出），需重启内核 */
+export const CORE_NOT_RUNNING = "coreNotRunning";
+
+/** 薄壳命令返回的结构化错误（`{ code, message }`，见 core_send / core_restart）；code 供界面区分处理 */
+export class PlatformError extends Error {
+  readonly code: string | undefined;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "PlatformError";
+    this.code = code;
+  }
+}
+
+/** 把命令的拒绝值转成 PlatformError：结构化错误带上 code；字符串等其他值原样返回 */
+export function toPlatformError(e: unknown): unknown {
+  if (typeof e === "object" && e !== null && !(e instanceof Error) && "message" in e) {
+    const { message, code } = e as { message: unknown; code?: unknown };
+    return new PlatformError(String(message), typeof code === "string" ? code : undefined);
+  }
+  return e;
+}
+
 /** Platform 方法名 → 薄壳命令名（附录 B）。tauri 实现按此表 invoke；测试用它核对覆盖面 */
 export const COMMANDS = {
   appInfo: "app_info",

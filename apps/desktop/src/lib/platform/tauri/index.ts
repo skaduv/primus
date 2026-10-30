@@ -1,12 +1,15 @@
 import type { CoreBatch } from "@primus/protocol";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { COMMANDS, type Platform } from "../types";
+import { COMMANDS, type Platform, toPlatformError } from "../types";
 
 // 真实实现：逐个映射到薄壳命令（附录 B）。参数名用 camelCase，Tauri 会转换为 Rust 端的 snake_case。
 // 会话事件与终端输出经 Channel 推送（第 7.1 节）。
 export function createTauriPlatform(): Platform {
+  // 结构化错误（{ code, message }）转成 PlatformError，界面据 code 区分处理
   const call = <T>(name: keyof Platform, args?: Record<string, unknown>) =>
-    invoke<T>(COMMANDS[name], args);
+    invoke<T>(COMMANDS[name], args).catch((e: unknown) => {
+      throw toPlatformError(e);
+    });
 
   return {
     appInfo: async () => ({ ...(await call("appInfo")), runtime: "tauri" }),

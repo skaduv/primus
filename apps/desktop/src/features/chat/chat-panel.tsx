@@ -327,7 +327,8 @@ function useElementHeight<T extends HTMLElement>() {
 }
 
 export function ChatPanel() {
-  const { state, error, unresponsive, send, abort, restarting, restart } = useChatSession();
+  const { state, error, unresponsive, coreStopped, send, abort, restarting, restart } =
+    useChatSession();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -482,8 +483,10 @@ export function ChatPanel() {
               className="flex items-center gap-3 rounded-xl border border-danger/40 px-3 py-2 text-xs"
             >
               <div className="flex-1">
-                <p className="font-medium text-danger">{t.unresponsive}</p>
-                <p className="text-muted">{t.unresponsiveHint}</p>
+                <p className="font-medium text-danger">
+                  {coreStopped ? t.coreStopped : t.unresponsive}
+                </p>
+                <p className="text-muted">{coreStopped ? t.coreStoppedHint : t.unresponsiveHint}</p>
               </div>
               <button
                 type="button"

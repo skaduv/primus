@@ -5,7 +5,7 @@ use tauri::ipc::Channel;
 
 use crate::paths::DataPaths;
 use crate::rpc_bridge::CoreBatch;
-use crate::sessions::AppSessions;
+use crate::sessions::{AppSessions, SessionError};
 use crate::supervisor::Supervisor;
 
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
@@ -63,6 +63,27 @@ pub(crate) fn session_close(
     Ok(())
 }
 
+/// 会话命令的错误：`code` 供前端区分需要特别处理的情况（`coreNotRunning`：内核未运行，需重启内核），
+/// 其余为 `null`；`message` 是界面文案。
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct CoreCommandError {
+    code: Option<&'static str>,
+    message: String,
+}
+
+impl From<SessionError> for CoreCommandError {
+    fn from(e: SessionError) -> Self {
+        let code = match e {
+            SessionError::NotRunning(_) => Some("coreNotRunning"),
+            _ => None,
+        };
+        Self {
+            code,
+            message: e.to_string(),
+        }
+    }
+}
+
 /// 把一条 RPC 记录原样写入 Core 的 stdin；响应经批次返回。
 #[tauri::command]
 pub(crate) fn core_send(
@@ -70,10 +91,10 @@ pub(crate) fn core_send(
     supervisor: State<'_, Supervisor>,
     session_key: String,
     record: serde_json::Value,
-) -> Result<(), String> {
+) -> Result<(), CoreCommandError> {
     sessions
         .send(&supervisor, &session_key, &record)
-        .map_err(|e| e.to_string())
+        .map_err(Into::into)
 }
 
 /// 重启会话的 Core（同一会话文件恢复）；前端随后用 `get_messages` + `get_state` 重建状态。
@@ -82,8 +103,8 @@ pub(crate) fn core_restart(
     sessions: State<'_, AppSessions>,
     supervisor: State<'_, Supervisor>,
     session_key: String,
-) -> Result<(), String> {
+) -> Result<(), CoreCommandError> {
     sessions
         .restart(&supervisor, &session_key)
-        .map_err(|e| e.to_string())
+        .map_err(Into::into)
 }

@@ -3,7 +3,7 @@
 import type { CoreBatch } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
-import { getPlatform, type Platform } from "@/lib/platform";
+import { CORE_NOT_RUNNING, getPlatform, type Platform, PlatformError } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { RpcClient, RpcClosedError, RpcResponseError, RpcTimeoutError } from "@/rpc/rpc-client";
 import { useAppStore } from "@/stores/app-store";
@@ -40,6 +40,8 @@ export interface ChatSession {
    * 期间禁止发送：超时的 prompt 可能已被 Core 受理，重发会多跑一轮。
    */
   unresponsive: boolean;
+  /** 内核未运行（已自行退出、因进程上限被淘汰或重启失败）：同样提示并提供重启，重启成功前禁止发送 */
+  coreStopped: boolean;
   /** 发送成功返回 true；失败时设置 error 并返回 false */
   send: (message: string) => Promise<boolean>;
   /** abort 成功（Core 已回成功响应）返回 true；失败时设置 error 并返回 false */
@@ -58,10 +60,14 @@ export function useChatSession(): ChatSession {
   // 错误来源：超时与重建失败产生的错误在内核恢复或重建成功后自动清除，其他错误保留到下一次操作
   const [error, setErrorState] = useState<{ message: string; kind?: "timeout" | "resync" }>();
   const [unresponsive, setUnresponsiveState] = useState(false);
-  // 无响应的两个来源：有命令超时（等它的迟到响应或重启），或重启后重建失败（等之后的重建成功）
-  const lock = useRef({ timeout: false, restart: false });
+  const [coreStopped, setCoreStopped] = useState(false);
+  // 锁定发送的三个来源：有命令超时（等它的迟到响应或重启）、重启后重建失败（等之后的重建成功）、
+  // 内核未运行（只有重启能恢复，重启成功即解除）
+  const lock = useRef({ timeout: false, restart: false, stopped: false });
   const syncUnresponsive = useCallback(() => {
-    setUnresponsiveState(lock.current.timeout || lock.current.restart);
+    const l = lock.current;
+    setUnresponsiveState(l.timeout || l.restart || l.stopped);
+    setCoreStopped(l.stopped);
   }, []);
   const setError = useCallback((message?: string, kind?: "timeout" | "resync") => {
     setErrorState(message === undefined ? undefined : { message, kind });
@@ -73,9 +79,14 @@ export function useChatSession(): ChatSession {
   const fail = useCallback(
     (e: unknown) => {
       if (e instanceof RpcClosedError) return;
+      if (e instanceof PlatformError && e.code === CORE_NOT_RUNNING) {
+        // 内核未运行时每次发送都会同样失败：锁定发送并提供重启入口
+        lock.current.stopped = true;
+        syncUnresponsive();
+      }
       setError(describeError(e), e instanceof RpcTimeoutError ? "timeout" : undefined);
     },
-    [setError],
+    [setError, syncUnresponsive],
   );
 
   const conn = useRef<{ platform: Platform; client: RpcClient }>(null);
@@ -220,11 +231,17 @@ export function useChatSession(): ChatSession {
       // 旧进程上等待的命令不会再有响应；新进程按会话文件恢复后重建状态
       c.client.reset();
       lock.current.timeout = false;
+      lock.current.stopped = false;
       // 重建成功前不解除发送限制：失败时保留重建错误与“重启内核”入口
       const ok = await c.client.resync();
       lock.current.restart = !ok;
       syncUnresponsive();
     } catch (e) {
+      // 重启失败时旧进程已结束、会话没有内核：保留重启入口，可再次重启
+      if (!(e instanceof RpcClosedError)) {
+        lock.current.stopped = true;
+        syncUnresponsive();
+      }
       fail(e);
     } finally {
       restartingRef.current = false;
@@ -232,5 +249,14 @@ export function useChatSession(): ChatSession {
     }
   }, [setError, fail, syncUnresponsive]);
 
-  return { state, error: error?.message, unresponsive, send, abort, restarting, restart };
+  return {
+    state,
+    error: error?.message,
+    unresponsive,
+    coreStopped,
+    send,
+    abort,
+    restarting,
+    restart,
+  };
 }

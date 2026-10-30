@@ -76,6 +76,8 @@ export const strings = {
     unresponsive: "内核无响应",
     unresponsiveHint:
       "命令超过 10 秒没有回应，恢复前暂停发送。可以继续等待，或重启内核：已完成的消息会保留，正在生成的回复会中断。",
+    coreStopped: "内核已停止运行",
+    coreStoppedHint: "重启内核后可继续对话：已完成的消息会保留。",
     restartCore: "重启内核",
     resyncFailed: "重建会话状态失败",
     responseTimeout: "内核超过 10 秒没有回应",
