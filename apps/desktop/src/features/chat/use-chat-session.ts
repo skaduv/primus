@@ -193,7 +193,10 @@ export function useChatSession(): ChatSession {
 
   const abort = useCallback(async (): Promise<boolean> => {
     const c = conn.current;
-    if (!c) return false;
+    if (!c) {
+      fail(new Error(strings.chat.sessionNotOpen));
+      return false;
+    }
     try {
       const res = await c.client.request("abort");
       return res.success;

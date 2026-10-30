@@ -137,6 +137,8 @@ pub(crate) enum SupervisorError {
     AlreadyRunning(String),
     /// 1 分钟内已崩溃 3 次，不再自动重启
     CrashLoop(String),
+    /// 已达进程上限且其他进程都在运行一轮，没有可淘汰的空闲进程
+    LimitReached(usize),
     /// 拉起、放入作业或读写进程失败
     Io(io::Error),
 }
@@ -152,6 +154,10 @@ impl fmt::Display for SupervisorError {
                     "会话 {key} 的内核 1 分钟内连续崩溃 {CRASH_LIMIT} 次，已停止自动重启"
                 )
             }
+            Self::LimitReached(max) => write!(
+                f,
+                "同时运行的内核已达上限（{max} 个）且都在工作，请等其中一个结束或在设置中调高上限"
+            ),
             Self::Io(e) => write!(f, "内核进程操作失败：{e}"),
         }
     }
@@ -507,20 +513,21 @@ impl Supervisor {
 
     /// 为会话 `key` 拉起 Core。成功后若超出上限，结束最久未使用的其他进程；该会话 1 分钟内已崩溃 3 次时拒绝。
     pub(crate) fn spawn(&self, key: &str, opts: &LaunchOptions) -> Result<u32, SupervisorError> {
-        self.spawn_evicting(key, opts, |_| {})
+        self.spawn_evicting(key, opts, &[], |_| {})
     }
 
-    /// 同 [`Supervisor::spawn`]；因超出上限要结束的会话先交给 `before_kill`（锁外、结束进程之前），
-    /// 调用方据此先把它们标为未运行，再结束进程。
+    /// 同 [`Supervisor::spawn`]，超出上限时只淘汰不在 `busy` 中的（空闲）进程，没有可淘汰的就拒绝拉起（第 2.2 节）。
+    /// 要结束的会话先交给 `before_kill`（锁外、结束进程之前），调用方据此先把它们标为未运行，再结束进程。
     pub(crate) fn spawn_evicting(
         &self,
         key: &str,
         opts: &LaunchOptions,
+        busy: &[String],
         before_kill: impl FnOnce(&[String]),
     ) -> Result<u32, SupervisorError> {
         self.layout.check()?;
         let mut evicted = Vec::new();
-        let result = self.spawn_locked(key, opts, &mut evicted);
+        let result = self.spawn_locked(key, opts, busy, &mut evicted);
         let keys: Vec<String> = evicted.iter().map(|(key, _)| key.clone()).collect();
         before_kill(&keys);
         // 被淘汰的进程在锁外结束
@@ -534,6 +541,7 @@ impl Supervisor {
         &self,
         key: &str,
         opts: &LaunchOptions,
+        busy: &[String],
         evicted: &mut Vec<(String, CoreProcess)>,
     ) -> Result<u32, SupervisorError> {
         let mut state = self.state();
@@ -546,16 +554,21 @@ impl Supervisor {
         {
             return Err(SupervisorError::CrashLoop(key.to_owned()));
         }
+        // 拉起前确认放得下：其他进程中空闲的个数足以腾出位置，否则拒绝（不淘汰正在工作的会话）
+        let max = self.max_processes();
+        let idle = state.procs.keys().filter(|k| !busy.contains(k)).count();
+        if state.procs.len() + 1 > max + idle {
+            return Err(SupervisorError::LimitReached(max));
+        }
         // 先拉起新进程，成功后再淘汰超出上限的旧进程：拉起失败（项目目录不存在等）不影响其他会话
         let process = self.launch(key, opts)?;
         let pid = process.pid();
         state.procs.insert(key.to_owned(), process);
-        let max = self.max_processes();
         while state.procs.len() > max {
             let Some(lru) = state
                 .procs
                 .iter()
-                .filter(|(k, _)| k.as_str() != key)
+                .filter(|(k, _)| k.as_str() != key && !busy.contains(k))
                 .max_by_key(|(_, p)| p.idle_for())
                 .map(|(k, _)| k.clone())
             else {
@@ -1006,9 +1019,16 @@ process.stderr.write("line one\nline two\r\nline three\n");
             supervisor.spawn("a", &opts(&tmp.0)),
             Err(SupervisorError::AlreadyRunning(_))
         ));
+        // 唯一的其他进程正在工作：不淘汰，拒绝拉起
+        assert!(matches!(
+            supervisor.spawn_evicting("b", &opts(&tmp.0), &["a".to_owned()], |_| {}),
+            Err(SupervisorError::LimitReached(1))
+        ));
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+
         let mut evicted = Vec::new();
         supervisor
-            .spawn_evicting("b", &opts(&tmp.0), |keys| {
+            .spawn_evicting("b", &opts(&tmp.0), &[], |keys| {
                 // 交给调用方时被淘汰的进程尚未结束
                 assert!(supervisor.running_keys().contains(&"b".to_owned()));
                 evicted = keys.to_vec();

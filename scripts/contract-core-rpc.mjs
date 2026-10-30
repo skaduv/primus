@@ -515,6 +515,30 @@ const cases = {
       const resumedCode = await resumed.stop();
       check(resumedCode === 0, `重启后的 Core 关闭 stdin 应以 0 退出，实际 ${resumedCode}`);
     }
+
+    // 再次用同一 ID 打开：重启后的一轮也已写入会话文件
+    const reopened = startCore(["--session-id", RESUME_SESSION_ID]);
+    try {
+      const messages = await reopened.request({ type: "get_messages" });
+      check(messages.success === true, `再次打开后 get_messages 失败：${json(messages)}`);
+      const history = messages.data.messages
+        .filter((m) => m.role !== "system")
+        .map((m) => [m.role, requestText(m)]);
+      check(
+        json(history) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+            ["user", "刚才记的是什么？"],
+            ["assistant", "是乾元。"],
+          ]),
+        `再次打开后历史应含两轮问答：${json(history)}`,
+      );
+      checkKnownRecords(reopened);
+    } finally {
+      const reopenedCode = await reopened.stop();
+      check(reopenedCode === 0, `再次打开的 Core 关闭 stdin 应以 0 退出，实际 ${reopenedCode}`);
+    }
     checkFauxRequests(faux);
   },
 

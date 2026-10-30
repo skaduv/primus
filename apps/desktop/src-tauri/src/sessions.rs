@@ -260,7 +260,9 @@ impl<S: BatchSink + Clone> Sessions<S> {
         first_seq: u64,
     ) -> Result<Bridge, SessionError> {
         // 被淘汰的会话在其进程结束之前标记，发送方先看到 NotRunning
-        supervisor.spawn_evicting(key, opts, |evicted| self.mark_evicted(evicted))?;
+        // 超出上限只淘汰空闲会话；正在运行一轮的会话不淘汰
+        let busy = self.busy_keys();
+        supervisor.spawn_evicting(key, opts, &busy, |evicted| self.mark_evicted(evicted))?;
         let pipes = supervisor.with_process(key, |p| (p.take_stdin(), p.take_stdout()));
         let Some((Some(stdin), Some(stdout))) = pipes else {
             supervisor.stop(key);
@@ -278,6 +280,16 @@ impl<S: BatchSink + Clone> Sessions<S> {
 }
 
 impl<S> Sessions<S> {
+    /// 正在运行一轮（Core 已发 agent_start、未发 agent_settled）的会话
+    fn busy_keys(&self) -> Vec<String> {
+        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries
+            .iter()
+            .filter(|(_, e)| !e.evicted && e.bridge.as_ref().is_some_and(Bridge::is_busy))
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
     /// 因进程上限被结束的会话：标为已淘汰，之后的发送得到 NotRunning。
     /// 桥留在表里（进程已结束，线程随 EOF 退出），重启时照常 `finish` 取得最后序号接着编号
     fn mark_evicted(&self, keys: &[String]) {
@@ -547,6 +559,53 @@ process.stdin.on("data", (chunk) => {
         first.wait_for(1, |r| r["id"] == "a2");
         let seqs = first.seqs();
         assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
+        sessions.close(&supervisor, &a);
+        sessions.close(&supervisor, &b);
+    }
+
+    #[test]
+    fn busy_session_is_not_evicted() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        supervisor.set_max_processes(1);
+        let sink = Collect::default();
+        let a = sessions
+            .open(&supervisor, &paths, "", None, sink.clone())
+            .unwrap();
+        // 回显的 agent_start 让会话进入忙碌
+        sessions
+            .send(
+                &supervisor,
+                &a,
+                &serde_json::json!({ "type": "agent_start" }),
+            )
+            .unwrap();
+        sink.wait_for(1, |r| r["type"] == "agent_start");
+        let result = sessions.open(&supervisor, &paths, "", None, Collect::default());
+        assert!(
+            matches!(
+                result,
+                Err(SessionError::Supervisor(SupervisorError::LimitReached(1)))
+            ),
+            "忙碌的会话不应被淘汰"
+        );
+        assert_eq!(supervisor.running_keys(), vec![a.clone()]);
+        // 被拒绝的打开不留下会话
+        assert_eq!(sessions.entries().len(), 1);
+
+        // 本轮结束后可以淘汰
+        sessions
+            .send(
+                &supervisor,
+                &a,
+                &serde_json::json!({ "type": "agent_settled" }),
+            )
+            .unwrap();
+        sink.wait_for(1, |r| r["type"] == "agent_settled");
+        let b = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        assert_eq!(supervisor.running_keys(), vec![b.clone()]);
         sessions.close(&supervisor, &a);
         sessions.close(&supervisor, &b);
     }

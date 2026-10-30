@@ -11,6 +11,8 @@
 //! - **合批线程**：有记录到达后最多等 16ms，把缓冲中的记录打成一个 [`CoreBatch`]（第 7.3 节：`sessionKey`、
 //!   按会话单调递增的 `seq`、`records`、`dropped`）交给 [`BatchSink`]（Tauri `Channel`）。
 //!   `dropped` 非零时前端用 `get_messages` + `get_state` 重建会话状态。
+//! - 忙碌状态：读线程只看每条记录的 `type` 字段（第 5.1 节“只解析少量字段”），`agent_start` 到 `agent_settled`
+//!   之间视为忙碌，供进程上限只淘汰空闲进程（第 2.2 节）。
 
 // 统计等接口留给健康检查与诊断（后续接入）；非测试构建放行未使用告警。
 #![cfg_attr(not(test), allow(dead_code))]
@@ -24,7 +26,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 /// 合批窗口（第 5.4、7.3 节）。
@@ -199,6 +201,8 @@ struct Shared {
     batches: AtomicU64,
     /// 写线程已退出（stdin 关闭）
     writer_closed: AtomicBool,
+    /// Core 正在运行一轮（`agent_start` 到 `agent_settled` 之间）
+    busy: AtomicBool,
 }
 
 impl Shared {
@@ -285,6 +289,7 @@ impl Bridge {
             invalid: AtomicU64::new(0),
             batches: AtomicU64::new(0),
             writer_closed: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
         });
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(config.write_queue_capacity.max(1));
 
@@ -340,6 +345,11 @@ impl Bridge {
             TrySendError::Full(_) => BridgeError::QueueFull,
             TrySendError::Disconnected(_) => BridgeError::Closed,
         })
+    }
+
+    /// Core 是否正在运行一轮（`agent_start` 之后、`agent_settled` 之前）。
+    pub(crate) fn is_busy(&self) -> bool {
+        self.shared.busy.load(Ordering::Acquire)
     }
 
     pub(crate) fn stats(&self) -> BridgeStats {
@@ -410,10 +420,31 @@ fn accept_frame(frame: Vec<u8>, shared: &Shared, limit: usize) {
         .ok()
         .and_then(|text| RawValue::from_string(text).ok());
     match parsed {
-        Some(record) => shared.push(record, limit),
+        Some(record) => {
+            track_busy(shared, &record);
+            shared.push(record, limit);
+        }
         None => {
             shared.invalid.fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+/// 只读记录的 `type` 字段（其余字段跳过，不改动记录）。
+#[derive(Deserialize)]
+struct RecordType<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Option<&'a str>,
+}
+
+fn track_busy(shared: &Shared, record: &RawValue) {
+    let Ok(RecordType { kind: Some(kind) }) = serde_json::from_str(record.get()) else {
+        return;
+    };
+    match kind {
+        "agent_start" => shared.busy.store(true, Ordering::Release),
+        "agent_settled" => shared.busy.store(false, Ordering::Release),
+        _ => {}
     }
 }
 
@@ -736,6 +767,7 @@ mod tests {
             invalid: AtomicU64::new(0),
             batches: AtomicU64::new(0),
             writer_closed: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
         };
         // 8 条 11 字节的记录（88 字节），随后是 60 字节、尚未收到 LF 的大帧
         let mut records = String::new();
@@ -839,6 +871,38 @@ process.stdin.on("end", () => process.exit(0));
             assert!(Instant::now() < deadline, "等待记录超时");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn tracks_busy_between_agent_start_and_settled() {
+        let run = |lines: &str| {
+            let sink = Collect::default();
+            let chunks = VecDeque::from([lines.as_bytes().to_vec()]);
+            let bridge = Bridge::start(
+                "s".into(),
+                NullWriter,
+                Chunks(chunks),
+                sink.clone(),
+                BridgeConfig::default(),
+            )
+            .unwrap();
+            let n = lines.lines().count();
+            wait_for(&sink, |r| r.len() == n);
+            let busy = bridge.is_busy();
+            bridge.join();
+            busy
+        };
+        assert!(run(
+            "{\"type\":\"agent_start\"}\n{\"type\":\"message_update\"}\n"
+        ));
+        assert!(!run(
+            "{\"type\":\"agent_start\"}\n{\"type\":\"agent_settled\",\"aborted\":false}\n"
+        ));
+        // 字段顺序、转义与非对象记录不影响判断
+        assert!(run("{\"id\":\"x\",\"type\":\"agent_start\"}\n[1]\n\"s\"\n"));
+        assert!(!run(
+            "{\"type\":\"response\",\"command\":\"agent_start\"}\n"
+        ));
     }
 
     #[test]

@@ -142,18 +142,20 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       case "get_state":
         emit(
           s,
-          respond(cmd, {
-            model: { provider: "mock", id: "mock-model", name: "Mock 模型" },
-            thinkingLevel: "medium",
-            isStreaming: s.streaming,
-            isCompacting: false,
-            steeringMode: "one-at-a-time",
-            followUpMode: "one-at-a-time",
-            sessionId: s.key,
-            autoCompactionEnabled: true,
-            messageCount: s.messages.length,
-            pendingMessageCount: 0,
-          }),
+          // 推送时才生成：反映此前推送的 agent_settled 等事件之后的运行状态
+          () =>
+            respond(cmd, {
+              model: { provider: "mock", id: "mock-model", name: "Mock 模型" },
+              thinkingLevel: "medium",
+              isStreaming: s.streaming,
+              isCompacting: false,
+              steeringMode: "one-at-a-time",
+              followUpMode: "one-at-a-time",
+              sessionId: s.key,
+              autoCompactionEnabled: true,
+              messageCount: s.messages.length,
+              pendingMessageCount: 0,
+            }),
         );
         return;
       case "get_messages":
