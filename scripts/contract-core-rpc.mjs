@@ -468,6 +468,11 @@ const cases = {
       `第一条助手消息应为思考、文本、工具调用：${json(contentSummary(ends[0].message))}`,
     );
     check(
+      json(contentSummary(ends[0].message)[0]) ===
+        json({ type: "thinking", thinking: "先读一下\u2028文件。" }),
+      `第一条助手消息的思考内容不符：${json(contentSummary(ends[0].message)[0])}`,
+    );
+    check(
       ends[0].message.stopReason === "toolUse",
       `第一条 stopReason 应为 toolUse：${ends[0].message.stopReason}`,
     );
@@ -479,6 +484,19 @@ const cases = {
       .slice(from)
       .find((x) => x.type === "tool_execution_end" && x.toolCallId === "toolu_faux_1");
     check(toolEnd && toolEnd.isError === false, `read 工具应执行成功：${json(toolEnd)}`);
+    // 工具确实读到了文件：结果里有文件内容，且作为 tool_result 发回了模型
+    check(
+      json(toolEnd.result).includes("乾元"),
+      `read 工具结果应含文件内容：${json(toolEnd.result)}`,
+    );
+    const followUp = faux.requests.find((q) =>
+      q.body?.messages?.some(
+        (m) =>
+          Array.isArray(m.content) &&
+          m.content.some((c) => c.type === "tool_result" && json(c).includes("乾元")),
+      ),
+    );
+    check(followUp, "第二次模型请求应带上含文件内容的 tool_result");
 
     check(checkStreamInvariants(core, from) === 2, "应检查到两条助手消息的流式不变量");
 

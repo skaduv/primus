@@ -63,8 +63,22 @@ export const initialSessionState: SessionState = {
   toolRuns: {},
 };
 
-/** 流式参数尽量解析成对象供界面显示；不完整的 JSON 保留上一次成功解析的结果 */
+/** 末尾（忽略空白）是不是 `}`：完整的 JSON 对象必然以它结尾 */
+function endsWithBrace(text: string): boolean {
+  for (let i = text.length - 1; i >= 0; i--) {
+    const c = text[i];
+    if (c === " " || c === "\n" || c === "\r" || c === "\t") continue;
+    return c === "}";
+  }
+  return false;
+}
+
+/**
+ * 流式参数尽量解析成对象供界面显示；不完整的 JSON 保留上一次成功解析的结果。
+ * 只在末尾是 `}` 时才尝试解析：参数被切成大量小片时，避免每片都重解析整段文本（总代价随长度平方增长）。
+ */
 function parseArgs(text: string): Record<string, unknown> | undefined {
+  if (!endsWithBrace(text)) return undefined;
   try {
     const value: unknown = JSON.parse(text);
     return value !== null && typeof value === "object" && !Array.isArray(value)

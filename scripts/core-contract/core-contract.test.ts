@@ -222,6 +222,13 @@ describe("Faux 模型服务", () => {
       "message_delta",
       "message_stop",
     ]);
+    expect(events[2]).toMatchObject({ delta: { type: "thinking_delta", thinking: "想" } });
+    expect(events[3]).toMatchObject({ delta: { type: "signature_delta", signature: "sig" } });
+    expect(events[6]).toMatchObject({ delta: { type: "text_delta", text: "好" } });
+    expect(events[9]).toMatchObject({
+      delta: { type: "input_json_delta", partial_json: '{"path":' },
+    });
+    expect(events[10]).toMatchObject({ delta: { type: "input_json_delta", partial_json: '"a"}' } });
     expect(events.at(-2)).toMatchObject({ delta: { stop_reason: "tool_use" } });
     expect(sseEvents({ chunks: ["a"] }).at(-2)).toMatchObject({
       delta: { stop_reason: "end_turn" },

@@ -91,6 +91,32 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(s2.messages[0]).toMatchObject({ content: [call] });
   });
 
+  it("工具调用参数只接受 JSON 对象：完整的数组、未闭合的对象都不写入 arguments", () => {
+    const start = chunk([
+      { type: "message_start", message: msg({ role: "assistant", content: [] }) },
+      update({ type: "toolcall_start", contentIndex: 0, id: "c1", toolName: "read" }),
+    ]);
+    const array = applyChunks(initialSessionState, [
+      start,
+      chunk([update({ type: "toolcall_delta", contentIndex: 0, delta: "[]" })]),
+    ]);
+    expect(array.messages[0]).toMatchObject({
+      content: [{ type: "toolCall", argsText: "[]", arguments: {} }],
+    });
+    // 解析过一次的对象在后续不完整的增量期间保留
+    const kept = applyChunks(initialSessionState, [
+      start,
+      chunk([
+        update({ type: "toolcall_delta", contentIndex: 0, delta: '{"a":{"b":1}' }),
+        update({ type: "toolcall_delta", contentIndex: 0, delta: "}" }),
+        update({ type: "toolcall_delta", contentIndex: 0, delta: " " }),
+      ]),
+    ]);
+    expect(kept.messages[0]).toMatchObject({
+      content: [{ type: "toolCall", arguments: { a: { b: 1 } } }],
+    });
+  });
+
   it("缺口标记重建；get_messages 覆盖历史并结束流式，get_state 校正运行状态", () => {
     const s1 = applyChunks(initialSessionState, [
       chunk([
@@ -170,16 +196,18 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
 
   it("message_update 携带的用量写到流式消息上；message_start 不改动记录本身", () => {
     const started = msg({ role: "assistant", content: [] });
-    const s = applyChunks(initialSessionState, [
-      chunk([
-        { type: "message_start", message: started },
-        {
-          type: "message_update",
-          usage: usage(5, 7),
-          assistantMessageEvent: { type: "text_start", contentIndex: 0 },
-        } as CoreRecord,
-        update({ type: "text_delta", contentIndex: 0, delta: "字" }),
-      ]),
+    const usageUpdate = {
+      type: "message_update",
+      usage: usage(5, 7),
+      assistantMessageEvent: { type: "text_start", contentIndex: 0 },
+    } as CoreRecord;
+    // 每条 message_update 的用量都写上：先看第一条之后的中间状态
+    const interim = applyChunks(initialSessionState, [
+      chunk([{ type: "message_start", message: started }, usageUpdate]),
+    ]);
+    expect(interim.messages[0]).toMatchObject({ usage: usage(5, 7) });
+    const s = applyChunks(interim, [
+      chunk([update({ type: "text_delta", contentIndex: 0, delta: "字" })]),
     ]);
     expect(s.messages[0]).toMatchObject({ usage: u, content: [{ type: "text", text: "字" }] });
     expect(started).toEqual({ role: "assistant", content: [] });
