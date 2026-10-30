@@ -417,8 +417,9 @@ export function ChatPanel() {
       });
   };
 
-  // 停止：发出 abort 后到本轮结束（agent_settled）之间按钮显示“正在停止”，避免重复发送。
-  // 每次停止一个令牌：旧的 abort 迟到完成时不清除新一轮的停止状态。abort 失败（含超时）时恢复按钮以便重试
+  // 停止：发出 abort 后到本轮结束（agent_settled，running 变为 false）之间按钮显示“正在停止”，不重复发送。
+  // abort 成功时保持到 running 结束；只有失败（失败响应或超时）才提前恢复按钮以便重试。
+  // 每次停止一个令牌：旧的 abort 迟到失败时不清除新一轮的停止状态
   const [stopping, setStopping] = useState(false);
   const stopToken = useRef<symbol | null>(null);
   const stop = () => {
@@ -426,8 +427,8 @@ export function ChatPanel() {
     const token = Symbol("stop");
     stopToken.current = token;
     setStopping(true);
-    void abort().finally(() => {
-      if (stopToken.current !== token) return;
+    void abort().then((ok) => {
+      if (ok || stopToken.current !== token) return;
       stopToken.current = null;
       setStopping(false);
     });

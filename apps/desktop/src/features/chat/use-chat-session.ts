@@ -42,7 +42,8 @@ export interface ChatSession {
   unresponsive: boolean;
   /** 发送成功返回 true；失败时设置 error 并返回 false */
   send: (message: string) => Promise<boolean>;
-  abort: () => Promise<void>;
+  /** abort 成功（Core 已回成功响应）返回 true；失败时设置 error 并返回 false */
+  abort: () => Promise<boolean>;
   /** 正在重启内核：期间重启入口不可用，避免连点重复重启 */
   restarting: boolean;
   /** 重启内核并重建会话状态；进行中再次调用会被忽略 */
@@ -190,13 +191,15 @@ export function useChatSession(): ChatSession {
     [ensureOpen, fail],
   );
 
-  const abort = useCallback(async () => {
+  const abort = useCallback(async (): Promise<boolean> => {
     const c = conn.current;
-    if (!c) return;
+    if (!c) return false;
     try {
-      await c.client.request("abort");
+      const res = await c.client.request("abort");
+      return res.success;
     } catch (e) {
       fail(e);
+      return false;
     }
   }, [fail]);
 

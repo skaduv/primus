@@ -154,6 +154,49 @@ describe("mock 平台", () => {
     expect((records[0] as typeof got).data.messages).toHaveLength(4);
   });
 
+  it("get_messages 排在 abort 之前：快照与推送时的历史一致，不含被 abort 丢弃的消息", async () => {
+    const platform = createMockPlatform({ batchSize: 1 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { id: "q-1", type: "prompt", message: "hi" });
+    await platform.coreSend(sessionKey, { id: "q-2", type: "get_messages" });
+    await platform.coreSend(sessionKey, { id: "q-3", type: "abort" });
+    await vi.runAllTimersAsync();
+    const roles = (id: string) =>
+      (
+        records.find((r) => "id" in r && r.id === id) as {
+          data: { messages: Array<{ role: string }> };
+        }
+      ).data.messages.map((m) => m.role);
+    expect(roles("q-2")).toEqual(["user"]);
+    await platform.coreSend(sessionKey, { id: "q-4", type: "get_messages" });
+    await vi.runAllTimersAsync();
+    expect(roles("q-4")).toEqual(["user"]);
+  });
+
+  it("连续两次 abort：只结束一次，两条响应都在 agent_settled 之后", async () => {
+    const platform = createMockPlatform({ batchSize: 2 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { id: "d-1", type: "prompt", message: "hi" });
+    await vi.advanceTimersByTimeAsync(16);
+    await platform.coreSend(sessionKey, { id: "d-2", type: "abort" });
+    await platform.coreSend(sessionKey, { id: "d-3", type: "abort" });
+    await vi.runAllTimersAsync();
+    expect(types(records).filter((t) => t === "agent_settled")).toHaveLength(1);
+    expect(types(records).slice(-4)).toEqual([
+      "agent_end",
+      "agent_settled",
+      "response",
+      "response",
+    ]);
+    expect(records.slice(-2).map((r) => ("id" in r ? r.id : undefined))).toEqual(["d-2", "d-3"]);
+  });
+
   it("工具执行中 abort：未结束的工具以出错结束", async () => {
     const platform = createMockPlatform({ batchSize: 1 });
     const records: CoreRecord[] = [];

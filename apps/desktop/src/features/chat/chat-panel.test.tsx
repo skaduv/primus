@@ -328,6 +328,46 @@ describe("对话区（mock 事件流）", () => {
     expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(1);
   });
 
+  it("abort 失败时停止按钮恢复可用，可以重试；成功前不提前恢复", async () => {
+    const base = createMockPlatform({ intervalMs: 20, batchSize: 2 });
+    let reject = true;
+    // 第一次 abort 不交给 mock，而是把失败响应并入下一个批次
+    const inject: CoreBatch["records"] = [];
+    const coreSend = vi.fn(async (key: string, record: Parameters<typeof base.coreSend>[1]) => {
+      if (record.type === "abort" && reject) {
+        reject = false;
+        inject.push({
+          type: "response",
+          id: record.id,
+          command: "abort",
+          success: false,
+          error: "拒绝",
+        });
+        return;
+      }
+      return base.coreSend(key, record);
+    });
+    setPlatformForTesting({
+      ...base,
+      coreSend,
+      sessionOpen: (ws, path, onBatch) =>
+        base.sessionOpen(ws, path, (b) =>
+          onBatch({ ...b, records: [...inject.splice(0), ...b.records] }),
+        ),
+    });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: t.stop }));
+    // 失败后恢复为可用的停止按钮
+    const again = await screen.findByRole("button", { name: t.stop });
+    expect((again as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(again);
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(2);
+  });
+
   it("时间线按悬浮输入框的实测高度留出底部空间，欢迎页不被遮挡", () => {
     const spy = vi
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")

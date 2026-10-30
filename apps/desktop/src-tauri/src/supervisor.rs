@@ -507,27 +507,27 @@ impl Supervisor {
 
     /// 为会话 `key` 拉起 Core。成功后若超出上限，结束最久未使用的其他进程；该会话 1 分钟内已崩溃 3 次时拒绝。
     pub(crate) fn spawn(&self, key: &str, opts: &LaunchOptions) -> Result<u32, SupervisorError> {
-        self.spawn_evicting(key, opts).map(|(pid, _)| pid)
+        self.spawn_evicting(key, opts, |_| {})
     }
 
-    /// 同 [`Supervisor::spawn`]，另外返回因超出上限被结束的会话，调用方据此把它们标为未运行。
+    /// 同 [`Supervisor::spawn`]；因超出上限要结束的会话先交给 `before_kill`（锁外、结束进程之前），
+    /// 调用方据此先把它们标为未运行，再结束进程。
     pub(crate) fn spawn_evicting(
         &self,
         key: &str,
         opts: &LaunchOptions,
-    ) -> Result<(u32, Vec<String>), SupervisorError> {
+        before_kill: impl FnOnce(&[String]),
+    ) -> Result<u32, SupervisorError> {
         self.layout.check()?;
         let mut evicted = Vec::new();
         let result = self.spawn_locked(key, opts, &mut evicted);
+        let keys: Vec<String> = evicted.iter().map(|(key, _)| key.clone()).collect();
+        before_kill(&keys);
         // 被淘汰的进程在锁外结束
-        let keys = evicted
-            .into_iter()
-            .map(|(key, process)| {
-                process.kill();
-                key
-            })
-            .collect();
-        result.map(|pid| (pid, keys))
+        for (_, process) in evicted {
+            process.kill();
+        }
+        result
     }
 
     fn spawn_locked(
@@ -1006,8 +1006,15 @@ process.stderr.write("line one\nline two\r\nline three\n");
             supervisor.spawn("a", &opts(&tmp.0)),
             Err(SupervisorError::AlreadyRunning(_))
         ));
-        let (_, evicted) = supervisor.spawn_evicting("b", &opts(&tmp.0)).unwrap();
-        assert_eq!(evicted, vec!["a".to_owned()], "返回被淘汰的会话");
+        let mut evicted = Vec::new();
+        supervisor
+            .spawn_evicting("b", &opts(&tmp.0), |keys| {
+                // 交给调用方时被淘汰的进程尚未结束
+                assert!(supervisor.running_keys().contains(&"b".to_owned()));
+                evicted = keys.to_vec();
+            })
+            .unwrap();
+        assert_eq!(evicted, vec!["a".to_owned()], "交出被淘汰的会话");
         assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
 
         // 拉起失败（工作目录不存在）不淘汰已有会话

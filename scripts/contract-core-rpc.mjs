@@ -490,6 +490,11 @@ const cases = {
         label: "重启后的 agent_settled",
         fromIndex: next,
       });
+      const done = assistantEnd(resumed, next);
+      check(
+        done && textOf(done.message) === "是乾元。",
+        `重启后的助手回复应为「是乾元。」：${json(done && textOf(done.message))}`,
+      );
       const request = faux.requests.find((q) => lastUserText(q.body) === "刚才记的是什么？");
       check(request, "Faux 模型服务未收到重启后的请求");
       const sent = request.body.messages.map((m) => [m.role, requestText(m)]);
@@ -529,9 +534,12 @@ const cases = {
     // 停止生效 < 1 秒（第 16.5 节）：abort 的 response 在会话空闲后才回，往返时间即停止生效的时间
     const abortSent = performance.now();
     const a = await core.request({ type: "abort" });
-    const stopMs = Math.round(performance.now() - abortSent);
+    const stopElapsed = performance.now() - abortSent;
     check(a.command === "abort" && a.success === true, `abort 响应异常：${json(a)}`);
-    check(stopMs < STOP_LATENCY_MS, `停止应在 ${STOP_LATENCY_MS}ms 内生效，实际 ${stopMs}ms`);
+    check(
+      stopElapsed < STOP_LATENCY_MS,
+      `停止应在 ${STOP_LATENCY_MS}ms 内生效，实际 ${Math.round(stopElapsed)}ms`,
+    );
     // abort 等会话空闲后才响应：此时本轮的助手消息已经结束
     const abortAt = core.records.indexOf(a);
     const done = assistantEnd(core, from);

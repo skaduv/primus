@@ -81,7 +81,7 @@ impl From<io::Error> for SessionError {
 struct Entry<S> {
     /// 重启中、重启失败或被淘汰时为 None：会话仍在表里，可以（再次）重启
     bridge: Option<Bridge>,
-    /// 正在重启
+    /// 正在拉起（打开或重启中）：桥为空，发送得到 NotRunning，重启被拒绝
     restarting: bool,
     /// 进程因进程上限被结束（重启可恢复）
     evicted: bool,
@@ -147,19 +147,25 @@ impl<S: BatchSink + Clone> Sessions<S> {
             offline: false,
             telemetry: false,
         };
-        let bridge = self.launch(supervisor, &key, &opts, sink.clone(), 0)?;
+        // 先登记（标记启动中）再拉起：拉起期间若被其他会话的拉起淘汰，标记能落到这一条上；
+        // 期间被关闭则结束新进程
         self.entries().insert(
             key.clone(),
             Entry {
-                bridge: Some(bridge),
-                restarting: false,
+                bridge: None,
+                restarting: true,
                 evicted: false,
                 last_seq: 0,
-                opts,
-                sink,
+                opts: opts.clone(),
+                sink: sink.clone(),
             },
         );
-        Ok(key)
+        let result = self.launch(supervisor, &key, &opts, sink, 0);
+        if result.is_err() {
+            self.entries().remove(&key);
+        }
+        self.finish_launch(supervisor, &key, 0, result)
+            .map(|()| key)
     }
 
     /// 把一条 RPC 记录写入会话的 Core（不阻塞）。
@@ -205,8 +211,10 @@ impl<S: BatchSink + Clone> Sessions<S> {
             if entry.restarting {
                 return Err(SessionError::Restarting(key.to_owned()));
             }
-            // 已淘汰的会话标记延后到拉起成功才清除，期间发送仍得到 NotRunning
+            // 重启期间桥为空，发送照样得到 NotRunning；淘汰标记在这里清除，
+            // 重启期间若新进程又被淘汰，mark_evicted 设下的标记得以保留
             entry.restarting = true;
+            entry.evicted = false;
             (
                 entry.bridge.take(),
                 entry.opts.clone(),
@@ -219,18 +227,26 @@ impl<S: BatchSink + Clone> Sessions<S> {
         // 进程（连同整个作业）已结束，stdout EOF：等旧桥把剩余记录推完再接着编号，新旧批次不交错
         let last_seq = old.map_or(last_seq, Bridge::finish);
         let result = self.launch(supervisor, key, &opts, sink, last_seq);
+        self.finish_launch(supervisor, key, last_seq, result)
+    }
 
+    /// 拉起结束后放回桥：会话期间被关闭则结束新进程并返回 NotFound；失败时会话留在表里（桥为空）
+    fn finish_launch(
+        &self,
+        supervisor: &Supervisor,
+        key: &str,
+        last_seq: u64,
+        result: Result<Bridge, SessionError>,
+    ) -> Result<(), SessionError> {
         let mut entries = self.entries();
         let Some(entry) = entries.get_mut(key) else {
-            // 重启期间会话被关闭：结束刚拉起的进程，不放回表中
             drop(entries);
             if result.is_ok() {
                 supervisor.stop(key);
             }
-            return Err(SessionError::NotFound(key.to_owned()));
+            return result.and(Err(SessionError::NotFound(key.to_owned())));
         };
         entry.restarting = false;
-        entry.evicted = false;
         entry.last_seq = last_seq;
         result.map(|bridge| entry.bridge = Some(bridge))
     }
@@ -243,8 +259,8 @@ impl<S: BatchSink + Clone> Sessions<S> {
         sink: S,
         first_seq: u64,
     ) -> Result<Bridge, SessionError> {
-        let (_, evicted) = supervisor.spawn_evicting(key, opts)?;
-        self.mark_evicted(&evicted);
+        // 被淘汰的会话在其进程结束之前标记，发送方先看到 NotRunning
+        supervisor.spawn_evicting(key, opts, |evicted| self.mark_evicted(evicted))?;
         let pipes = supervisor.with_process(key, |p| (p.take_stdin(), p.take_stdout()));
         let Some((Some(stdin), Some(stdout))) = pipes else {
             supervisor.stop(key);
