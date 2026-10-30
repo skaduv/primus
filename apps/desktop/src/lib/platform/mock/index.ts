@@ -1,4 +1,11 @@
-import type { AgentMessage, CoreRecord, RpcCommand, RpcResponse } from "@primus/protocol";
+import type {
+  AgentMessage,
+  AssistantContent,
+  AssistantMessage,
+  CoreRecord,
+  RpcCommand,
+  RpcResponse,
+} from "@primus/protocol";
 import type { BatchListener, Platform, SessionSummary, WorkspaceInfo } from "../types";
 import { promptScenario } from "./scenario";
 
@@ -28,6 +35,8 @@ interface MockSession {
   timer: ReturnType<typeof setTimeout> | undefined;
   streaming: boolean;
   closed: boolean;
+  /** 本轮已推送的事件（abort 时据此拼出被中止的消息） */
+  delivered: CoreRecord[];
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -55,7 +64,16 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     s.timer = undefined;
     if (s.closed || s.queue.length === 0) return;
     const records = s.queue.splice(0, batchSize);
-    if (records.some((r) => r.type === "agent_settled")) s.streaming = false;
+    for (const r of records) {
+      if (r.type === "response") continue;
+      s.delivered.push(r);
+      // 历史只记已定稿（已推送 message_end）的消息，与 Core 的 get_messages 一致
+      if (r.type === "message_end") s.messages.push(r.message);
+      if (r.type === "agent_settled") {
+        s.streaming = false;
+        s.delivered = [];
+      }
+    }
     s.seq += 1;
     if (!options.dropBatch?.(s.seq, records))
       s.onBatch({ sessionKey: s.key, seq: s.seq, records, dropped: 0 });
@@ -93,22 +111,14 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         }
         const scenario = promptScenario(String(cmd.message ?? ""), now());
         s.streaming = true;
-        s.messages.push(...scenario.messages);
         emit(s, respond(cmd, { disposition: "started" }), ...scenario.records);
         return;
       }
       case "abort": {
-        const wasStreaming = s.streaming;
-        // 丢弃尚未推送的事件，只保留已排队的响应
+        // 与 Core 一致：丢弃尚未推送的事件，结束被中止的消息与工具，会话空闲（agent_settled）后才回 response
         s.queue = s.queue.filter((r) => r.type === "response");
+        if (s.streaming) emit(s, ...abortRecords(s.delivered, now()));
         emit(s, respond(cmd));
-        if (wasStreaming) {
-          emit(
-            s,
-            { type: "agent_end", messages: [], willRetry: false },
-            { type: "agent_settled", aborted: true },
-          );
-        }
         return;
       }
       case "get_state":
@@ -186,6 +196,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         timer: undefined,
         streaming: false,
         closed: false,
+        delivered: [],
       });
       if (!sessionPath)
         sessionIndex.push({ path: `${key}.jsonl`, workspace, updatedAt: now(), name: "新会话" });
@@ -212,6 +223,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       const s = session(sessionKey);
       s.queue = [];
       s.streaming = false;
+      s.delivered = [];
     },
 
     settingsGet: async () => ({ ...settings }),
@@ -250,4 +262,66 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       console[level === "debug" ? "log" : level](`[mock] ${message}`);
     },
   };
+}
+
+/**
+ * 中止一轮时补上的事件：正在输出的助手消息以已推送的内容结束（stopReason 为 aborted），
+ * 已开始未结束的工具以出错结束，最后 agent_end + agent_settled（aborted）。
+ */
+export function abortRecords(delivered: readonly CoreRecord[], timestamp: number): CoreRecord[] {
+  const out: CoreRecord[] = [];
+  let open: AssistantMessage | undefined;
+  let content: AssistantContent[] = [];
+  const tools = new Map<string, string>();
+  for (const r of delivered) {
+    if (r.type === "message_start") {
+      open = r.message.role === "assistant" ? r.message : undefined;
+      content = [];
+    } else if (r.type === "message_end") {
+      open = undefined;
+    } else if (r.type === "message_update" && open) {
+      const e = r.assistantMessageEvent;
+      if (e.type === "text_start") content[e.contentIndex] = { type: "text", text: "" };
+      else if (e.type === "thinking_start")
+        content[e.contentIndex] = { type: "thinking", thinking: "" };
+      else if (e.type === "text_delta" || e.type === "thinking_delta") {
+        const block = content[e.contentIndex];
+        if (block?.type === "text") block.text += e.delta;
+        if (block?.type === "thinking") block.thinking += e.delta;
+      } else if (e.type === "text_end") content[e.contentIndex] = { type: "text", text: e.content };
+      else if (e.type === "thinking_end")
+        content[e.contentIndex] = { type: "thinking", thinking: e.content };
+      else if (e.type === "toolcall_end") content[e.contentIndex] = e.toolCall;
+    } else if (r.type === "tool_execution_start") {
+      tools.set(r.toolCallId, r.toolName);
+    } else if (r.type === "tool_execution_end") {
+      tools.delete(r.toolCallId);
+    }
+  }
+  if (open) {
+    out.push({
+      type: "message_end",
+      message: {
+        ...open,
+        content: content.filter(Boolean),
+        stopReason: "aborted",
+        errorMessage: "Request was aborted",
+        timestamp,
+      },
+    });
+  }
+  for (const [toolCallId, toolName] of tools) {
+    out.push({
+      type: "tool_execution_end",
+      toolCallId,
+      toolName,
+      result: { content: [{ type: "text", text: "Operation aborted" }], details: {} },
+      isError: true,
+    });
+  }
+  out.push(
+    { type: "agent_end", messages: [], willRetry: false },
+    { type: "agent_settled", aborted: true },
+  );
+  return out;
 }

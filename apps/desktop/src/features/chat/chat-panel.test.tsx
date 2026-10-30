@@ -262,15 +262,65 @@ describe("对话区（mock 事件流）", () => {
     expect(useAppStore.getState().permissionMode).toBe("ask");
   });
 
-  it("运行中可以停止", async () => {
+  it("多轮对话：每轮结束（agent_settled）后解锁输入，第二轮接在第一轮之后", async () => {
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    for (const text of ["第一问", "第二问"]) {
+      await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+      fireEvent.change(input, { target: { value: text } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
+    }
+    await waitFor(() => expect(screen.getByText(/你刚才说：「第二问」/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    const users = screen.getAllByRole("article", { name: t.you }).map((a) => a.textContent);
+    expect(users).toEqual(["第一问", "第二问"]);
+    // 每轮一条工具调用回复 + 一条最终回答
+    expect(screen.getAllByRole("article", { name: t.assistant })).toHaveLength(4);
+    expect(screen.getByText(/你刚才说：「第一问」/)).toBeTruthy();
+  });
+
+  it("运行中可以停止：1 秒内恢复发送，半截回复标为已停止，之后可以继续对话", async () => {
     setPlatformForTesting(createMockPlatform({ intervalMs: 20, batchSize: 2 }));
     render(<ChatPanel />);
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "长任务" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("button", { name: t.stop }));
-    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    const stopButton = await screen.findByRole("button", { name: t.stop });
+    // 等到助手回复开始输出再停止
+    await screen.findByRole("article", { name: t.assistant });
+    const started = performance.now();
+    fireEvent.click(stopButton);
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy(), {
+      timeout: 1000,
+    });
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(screen.getByText(t.stopped)).toBeTruthy();
     expect(screen.queryByText(/mock 平台/)).toBeNull();
+
+    fireEvent.change(input, { target: { value: "继续" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText(/你刚才说：「继续」/)).toBeTruthy(), {
+      timeout: 5000,
+    });
+  });
+
+  it("输入框里按 Esc 停止；停止进行中按钮禁用，不重复发 abort", async () => {
+    const base = createMockPlatform({ intervalMs: 20, batchSize: 2 });
+    const coreSend = vi.fn(base.coreSend);
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: t.stop });
+    fireEvent.keyDown(input, { key: "Escape" });
+    const stopping = await screen.findByRole("button", { name: t.stopping });
+    expect((stopping as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.click(stopping);
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(1);
   });
 
   it("时间线按悬浮输入框的实测高度留出底部空间，欢迎页不被遮挡", () => {

@@ -54,9 +54,12 @@ export const strings = {
   },
   chat: {
     inputLabel: "输入消息",
-    inputPlaceholder: "问乾元任何事，Enter 发送，Shift+Enter 换行",
+    inputPlaceholder: "问乾元任何事，Enter 发送，Shift+Enter 换行，Esc 停止",
     send: "发送",
     stop: "停止",
+    stopping: "正在停止",
+    stopped: "已停止",
+    replyFailed: "回复出错",
     attach: "添加附件",
     removeAttachment: "移除附件",
     expandInput: "展开编辑",

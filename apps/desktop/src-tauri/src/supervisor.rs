@@ -117,6 +117,9 @@ pub(crate) struct LaunchOptions {
     pub(crate) cwd: PathBuf,
     /// 恢复的会话文件；新会话为 None
     pub(crate) session_file: Option<PathBuf>,
+    /// 没有会话文件时指定的会话 ID（`--session-id`，不存在则以此 ID 新建）：新会话由薄壳先定好 ID，
+    /// 重启时用同一 ID 恢复到 Core 已写下的会话文件。与 `session_file` 同时给出时以文件为准（Core 不允许两者同用）
+    pub(crate) session_id: Option<String>,
     /// 项目已信任时为 true（`--approve`），否则 `--no-approve`（第 17.2 节）
     pub(crate) approve: bool,
     /// 用户开启了离线模式
@@ -172,6 +175,8 @@ pub(crate) fn build_command(
     cmd.arg(&layout.entry);
     if let Some(session) = &opts.session_file {
         cmd.arg("--session").arg(session);
+    } else if let Some(id) = &opts.session_id {
+        cmd.arg("--session-id").arg(id);
     }
     cmd.arg(if opts.approve {
         "--approve"
@@ -692,17 +697,17 @@ impl Drop for Supervisor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::paths::{self, DataRoot, DataRootSource};
     use std::ffi::OsStr;
     use std::io::Read;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    struct TempDir(PathBuf);
+    pub(crate) struct TempDir(pub(crate) PathBuf);
 
     impl TempDir {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             static COUNTER: AtomicU32 = AtomicU32::new(0);
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -724,7 +729,7 @@ mod tests {
         }
     }
 
-    fn data_paths(root: &Path) -> DataPaths {
+    pub(crate) fn data_paths(root: &Path) -> DataPaths {
         let user = crate::platform::current_user_id().unwrap();
         paths::prepare_at(
             DataRoot {
@@ -737,7 +742,7 @@ mod tests {
     }
 
     /// 用 PATH 中的 node 运行一个测试脚本充当 Core 入口。
-    fn fake_layout(root: &Path, script: &str) -> CoreLayout {
+    pub(crate) fn fake_layout(root: &Path, script: &str) -> CoreLayout {
         let core = root.join("agent-core");
         std::fs::create_dir_all(core.join("extensions")).unwrap();
         std::fs::write(core.join("rpc-entry.js"), script).unwrap();
@@ -753,6 +758,7 @@ mod tests {
         LaunchOptions {
             cwd: cwd.to_path_buf(),
             session_file: None,
+            session_id: None,
             approve: false,
             offline: false,
             telemetry: false,
@@ -819,6 +825,7 @@ mod tests {
         let layout = fake_layout(&tmp.0, "");
         let mut o = opts(&tmp.0);
         o.session_file = Some(tmp.0.join("s.jsonl"));
+        o.session_id = Some("ignored".into());
         o.approve = true;
         o.offline = true;
         let cmd = build_command(&layout, &paths, &o);
@@ -861,6 +868,14 @@ mod tests {
         assert!(has_arg(&cmd, "--no-approve"));
         assert!(!has_arg(&cmd, "--session"));
         assert_eq!(env_of(&cmd, "PRIMUS_OFFLINE"), Some(None));
+
+        // 没有会话文件时用会话 ID：新会话与重启恢复用同一个 ID
+        o.session_id = Some("primus-1".into());
+        let cmd = build_command(&layout, &paths, &o);
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_owned()).collect();
+        assert_eq!(args[1], "--session-id");
+        assert_eq!(args[2], "primus-1");
+        assert!(!has_arg(&cmd, "--session"));
     }
 
     /// 打印 Core 关心的环境变量与参数，向 stderr 写 3 行（含 CRLF 与非法 UTF-8 之外的普通文本），然后退出。

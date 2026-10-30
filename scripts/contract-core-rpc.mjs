@@ -65,6 +65,9 @@ function check(condition, message) {
 
 const json = (value) => JSON.stringify(value);
 
+/** 停止生效时限（技术方案第 16.5 节） */
+const STOP_LATENCY_MS = 1000;
+
 /** 助手消息的全部文本块 */
 function textOf(message) {
   if (!Array.isArray(message?.content)) return "";
@@ -72,6 +75,11 @@ function textOf(message) {
     .filter((b) => b?.type === "text")
     .map((b) => b.text)
     .join("");
+}
+
+/** 发给模型的一条消息的文本（content 可能是字符串或内容块数组） */
+function requestText(message) {
+  return typeof message?.content === "string" ? message.content : textOf(message);
 }
 
 /** Core 只应向模型端点发 Messages 请求 */
@@ -376,6 +384,61 @@ const cases = {
     checkKnownRecords(core);
   },
 
+  /** multiturn：同一会话连续两轮，第二轮请求带上第一轮的问答，历史按轮次排列 */
+  async multiturn({ core, faux }) {
+    const turns = [
+      { ask: "第一问", reply: "第一答。" },
+      { ask: "第二问", reply: "第二答。" },
+    ];
+    for (const { ask, reply } of turns) {
+      faux.enqueue({ chunks: [reply] });
+      const from = core.records.length;
+      const r = await core.request({ type: "prompt", message: ask });
+      check(r.success === true && r.data?.disposition === "started", `prompt 响应异常：${json(r)}`);
+      const settled = await core.waitFor((x) => x.type === "agent_settled", {
+        label: `「${ask}」的 agent_settled`,
+        fromIndex: from,
+      });
+      check(settled.aborted === false, `正常结束的一轮 aborted 应为 false：${json(settled)}`);
+      const done = assistantEnd(core, from);
+      check(done && textOf(done.message) === reply, `「${ask}」的回复不符：${json(done?.message)}`);
+    }
+
+    // 第二轮发给模型的上下文：第一轮的问答在前，本轮问题在最后
+    const second = faux.requests.find((q) => lastUserText(q.body) === "第二问");
+    check(second, "Faux 模型服务未收到第二轮请求");
+    const sent = second.body.messages.map((m) => [m.role, requestText(m)]);
+    check(
+      json(sent) ===
+        json([
+          ["user", "第一问"],
+          ["assistant", "第一答。"],
+          ["user", "第二问"],
+        ]),
+      `第二轮请求的上下文应为第一轮问答 + 本轮问题：${json(sent)}`,
+    );
+
+    const messages = await core.request({ type: "get_messages" });
+    check(messages.success === true, `get_messages 失败：${json(messages)}`);
+    const history = messages.data.messages
+      .filter((m) => m.role !== "system")
+      .map((m) => [m.role, requestText(m)]);
+    check(
+      json(history) ===
+        json([
+          ["user", "第一问"],
+          ["assistant", "第一答。"],
+          ["user", "第二问"],
+          ["assistant", "第二答。"],
+        ]),
+      `get_messages 应按轮次排列两轮问答：${json(history)}`,
+    );
+
+    await expectIdleState(core, { messageCount: messages.data.messages.length });
+    checkFauxRequests(faux);
+    checkKnownRecords(core);
+  },
+
   /** abort：运行中中止，等会话空闲后才回 response；助手消息 stopReason 为 aborted，供应商请求被取消 */
   async abort({ core, faux }) {
     const chunks = Array.from({ length: 200 }, (_, i) => `第${i}段。`);
@@ -389,8 +452,12 @@ const cases = {
       { label: "第一个 text_delta", fromIndex: from },
     );
 
+    // 停止生效 < 1 秒（第 16.5 节）：abort 的 response 在会话空闲后才回，往返时间即停止生效的时间
+    const abortSent = Date.now();
     const a = await core.request({ type: "abort" });
+    const stopMs = Date.now() - abortSent;
     check(a.command === "abort" && a.success === true, `abort 响应异常：${json(a)}`);
+    check(stopMs < STOP_LATENCY_MS, `停止应在 ${STOP_LATENCY_MS}ms 内生效，实际 ${stopMs}ms`);
     // abort 等会话空闲后才响应：此时本轮的助手消息已经结束
     const abortAt = core.records.indexOf(a);
     const done = assistantEnd(core, from);

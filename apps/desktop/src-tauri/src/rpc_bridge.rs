@@ -12,7 +12,7 @@
 //!   按会话单调递增的 `seq`、`records`、`dropped`）交给 [`BatchSink`]（Tauri `Channel`）。
 //!   `dropped` 非零时前端用 `get_messages` + `get_state` 重建会话状态。
 
-// 由 session_open / core_send 命令使用（随前端 rpc 客户端接入）；接入前非测试构建先放行未使用告警。
+// 统计等接口留给健康检查与诊断（后续接入）；非测试构建放行未使用告警。
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::VecDeque;
@@ -128,6 +128,8 @@ pub(crate) struct BridgeConfig {
     pub(crate) buffer_limit: usize,
     pub(crate) max_batch_bytes: usize,
     pub(crate) write_queue_capacity: usize,
+    /// 第一批之前的序号：重启后的新桥从旧桥的最后一批接着编号，前端的 `seq` 保持单调递增（第 7.3 节）
+    pub(crate) first_seq: u64,
 }
 
 impl Default for BridgeConfig {
@@ -137,6 +139,7 @@ impl Default for BridgeConfig {
             buffer_limit: BUFFER_LIMIT,
             max_batch_bytes: MAX_BATCH_BYTES,
             write_queue_capacity: WRITE_QUEUE_CAPACITY,
+            first_seq: 0,
         }
     }
 }
@@ -255,6 +258,7 @@ impl Shared {
 /// 一个 Core 进程的 RPC 桥。drop 时关闭写队列（Core 的 stdin 随之关闭）；读、合批线程在 stdout EOF 后自行结束。
 pub(crate) struct Bridge {
     writer: Option<SyncSender<Vec<u8>>>,
+    first_seq: u64,
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -314,6 +318,7 @@ impl Bridge {
 
         Ok(Self {
             writer: Some(tx),
+            first_seq: config.first_seq,
             shared,
             threads,
         })
@@ -344,6 +349,12 @@ impl Bridge {
             invalid: self.shared.invalid.load(Ordering::Relaxed),
             batches: self.shared.batches.load(Ordering::Relaxed),
         }
+    }
+
+    /// 同 [`Bridge::join`]，返回已推出的最后一批的序号（一批也没有时为 `first_seq`），供重启后的新桥接着编号。
+    pub(crate) fn finish(self) -> u64 {
+        let first_seq = self.first_seq;
+        first_seq + self.join().batches
     }
 
     /// 关闭写队列并等待三条线程结束（Core 已退出、stdout 已 EOF 时调用，否则会一直等到 EOF）。
@@ -408,7 +419,7 @@ fn accept_frame(frame: Vec<u8>, shared: &Shared, limit: usize) {
 
 /// 合批线程：有记录后等满一个合批窗口，再按字节上限分批推出。
 fn batch_loop(session_key: &str, shared: &Shared, sink: &dyn BatchSink, config: BridgeConfig) {
-    let mut seq: u64 = 0;
+    let mut seq = config.first_seq;
     loop {
         // 等待第一条记录（或丢弃计数、或关闭）
         let mut pending = shared.pending();
