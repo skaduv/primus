@@ -65,6 +65,9 @@ function check(condition, message) {
 
 const json = (value) => JSON.stringify(value);
 
+/** 停止生效时限（技术方案第 16.5 节） */
+const STOP_LATENCY_MS = 1000;
+
 /** 助手消息的全部文本块 */
 function textOf(message) {
   if (!Array.isArray(message?.content)) return "";
@@ -72,6 +75,11 @@ function textOf(message) {
     .filter((b) => b?.type === "text")
     .map((b) => b.text)
     .join("");
+}
+
+/** 发给模型的一条消息的文本（content 可能是字符串或内容块数组） */
+function requestText(message) {
+  return typeof message?.content === "string" ? message.content : textOf(message);
 }
 
 /** Core 只应向模型端点发 Messages 请求 */
@@ -282,6 +290,12 @@ function checkStoreReplay(records, history) {
 
 // ---------- 用例 ----------
 
+/** 薄壳为新会话预先指定的会话 ID（`--session-id`），重启时用同一 ID 恢复 */
+const RESUME_SESSION_ID = "primus-contract-resume";
+
+/** 个别用例的额外启动参数 */
+const CASE_ARGS = { resume: ["--session-id", RESUME_SESSION_ID] };
+
 const cases = {
   /** get_state：新会话的状态快照，模型为 Faux，未在运行 */
   async get_state({ core }) {
@@ -376,6 +390,196 @@ const cases = {
     checkKnownRecords(core);
   },
 
+  /** multiturn：同一会话连续两轮，第二轮请求带上第一轮的问答，历史按轮次排列 */
+  async multiturn({ core, faux }) {
+    const turns = [
+      { ask: "第一问", reply: "第一答。" },
+      { ask: "第二问", reply: "第二答。" },
+    ];
+    for (const { ask, reply } of turns) {
+      faux.enqueue({ chunks: [reply] });
+      const from = core.records.length;
+      const r = await core.request({ type: "prompt", message: ask });
+      check(r.success === true && r.data?.disposition === "started", `prompt 响应异常：${json(r)}`);
+      const settled = await core.waitFor((x) => x.type === "agent_settled", {
+        label: `「${ask}」的 agent_settled`,
+        fromIndex: from,
+      });
+      check(settled.aborted === false, `正常结束的一轮 aborted 应为 false：${json(settled)}`);
+      const done = assistantEnd(core, from);
+      check(done && textOf(done.message) === reply, `「${ask}」的回复不符：${json(done?.message)}`);
+    }
+
+    // 第二轮发给模型的上下文：第一轮的问答在前，本轮问题在最后
+    const second = faux.requests.find((q) => lastUserText(q.body) === "第二问");
+    check(second, "Faux 模型服务未收到第二轮请求");
+    const sent = second.body.messages.map((m) => [m.role, requestText(m)]);
+    check(
+      json(sent) ===
+        json([
+          ["user", "第一问"],
+          ["assistant", "第一答。"],
+          ["user", "第二问"],
+        ]),
+      `第二轮请求的上下文应为第一轮问答 + 本轮问题：${json(sent)}`,
+    );
+
+    const messages = await core.request({ type: "get_messages" });
+    check(messages.success === true, `get_messages 失败：${json(messages)}`);
+    const history = messages.data.messages
+      .filter((m) => m.role !== "system")
+      .map((m) => [m.role, requestText(m)]);
+    check(
+      json(history) ===
+        json([
+          ["user", "第一问"],
+          ["assistant", "第一答。"],
+          ["user", "第二问"],
+          ["assistant", "第二答。"],
+        ]),
+      `get_messages 应按轮次排列两轮问答：${json(history)}`,
+    );
+
+    await expectIdleState(core, { messageCount: messages.data.messages.length });
+    checkFauxRequests(faux);
+    checkKnownRecords(core);
+  },
+
+  /**
+   * resume：模拟薄壳的 core_restart。新会话以 --session-id 启动，一轮之后结束进程，
+   * 用同一 ID 重新拉起：历史从会话文件恢复，下一轮的模型上下文仍含重启前的问答。
+   * 第二轮之后不关 stdin、直接强制结束（同薄壳 stop_for_restart），再次打开：两轮都已落盘，
+   * 第三轮的模型上下文含前两轮
+   */
+  async resume({ core, faux, startCore }) {
+    faux.enqueue({ chunks: ["记住了。"] });
+    const from = core.records.length;
+    const r = await core.request({ type: "prompt", message: "记住：乾元" });
+    check(r.success === true, `prompt 响应异常：${json(r)}`);
+    await core.waitFor((x) => x.type === "agent_settled", {
+      label: "agent_settled",
+      fromIndex: from,
+    });
+    const state = await core.request({ type: "get_state" });
+    check(
+      state.data?.sessionId === RESUME_SESSION_ID,
+      `会话 ID 应为 --session-id 指定的 ${RESUME_SESSION_ID}：${json(state.data?.sessionId)}`,
+    );
+    const code = await core.stop();
+    check(code === 0, `关闭 stdin 后 Core 应以 0 退出，实际 ${code}`);
+
+    const resumed = startCore(["--session-id", RESUME_SESSION_ID]);
+    try {
+      const messages = await resumed.request({ type: "get_messages" });
+      check(messages.success === true, `get_messages 失败：${json(messages)}`);
+      const history = messages.data.messages
+        .filter((m) => m.role !== "system")
+        .map((m) => [m.role, requestText(m)]);
+      check(
+        json(history) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+          ]),
+        `重启后 get_messages 应恢复重启前的问答：${json(history)}`,
+      );
+
+      faux.enqueue({ chunks: ["是乾元。"] });
+      const next = resumed.records.length;
+      const p = await resumed.request({ type: "prompt", message: "刚才记的是什么？" });
+      check(p.success === true, `重启后 prompt 响应异常：${json(p)}`);
+      await resumed.waitFor((x) => x.type === "agent_settled", {
+        label: "重启后的 agent_settled",
+        fromIndex: next,
+      });
+      const done = assistantEnd(resumed, next);
+      check(
+        done && textOf(done.message) === "是乾元。",
+        `重启后的助手回复应为「是乾元。」：${json(done && textOf(done.message))}`,
+      );
+      const request = faux.requests.find((q) => lastUserText(q.body) === "刚才记的是什么？");
+      check(request, "Faux 模型服务未收到重启后的请求");
+      const sent = request.body.messages.map((m) => [m.role, requestText(m)]);
+      check(
+        json(sent) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+            ["user", "刚才记的是什么？"],
+          ]),
+        `重启后的模型上下文应含重启前的问答：${json(sent)}`,
+      );
+      checkKnownRecords(resumed);
+    } catch (err) {
+      console.error(`--- 重启后的 Core stderr ---\n${resumed.stderr}`);
+      throw err;
+    } finally {
+      // 不走有序退出：每轮结束即落盘的 Core 才经得起强制结束
+      await resumed.kill();
+    }
+
+    // 再次用同一 ID 打开：强制结束前的一轮也已写入会话文件
+    const reopened = startCore(["--session-id", RESUME_SESSION_ID]);
+    try {
+      const messages = await reopened.request({ type: "get_messages" });
+      check(messages.success === true, `再次打开后 get_messages 失败：${json(messages)}`);
+      const history = messages.data.messages
+        .filter((m) => m.role !== "system")
+        .map((m) => [m.role, requestText(m)]);
+      check(
+        json(history) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+            ["user", "刚才记的是什么？"],
+            ["assistant", "是乾元。"],
+          ]),
+        `再次打开后历史应含两轮问答：${json(history)}`,
+      );
+
+      faux.enqueue({ chunks: ["第三答。"] });
+      const next = reopened.records.length;
+      const p = await reopened.request({ type: "prompt", message: "第三问" });
+      check(p.success === true, `再次打开后 prompt 响应异常：${json(p)}`);
+      const settled = await reopened.waitFor((x) => x.type === "agent_settled", {
+        label: "再次打开后的 agent_settled",
+        fromIndex: next,
+      });
+      const done = assistantEnd(reopened, next);
+      check(
+        done && textOf(done.message) === "第三答。",
+        `再次打开后的第三轮助手回复应为「第三答。」：${json(done && textOf(done.message))}`,
+      );
+      check(
+        done?.message.stopReason === "stop",
+        `再次打开后的第三轮 stopReason 应为 stop：${json(done?.message.stopReason)}`,
+      );
+      check(
+        settled.aborted === false,
+        `再次打开后的第三轮应正常结束，aborted 应为 false：${json(settled)}`,
+      );
+      const request = faux.requests.find((q) => lastUserText(q.body) === "第三问");
+      check(request, "Faux 模型服务未收到再次打开后的请求");
+      const sent = request.body.messages.map((m) => [m.role, requestText(m)]);
+      check(
+        json(sent) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+            ["user", "刚才记的是什么？"],
+            ["assistant", "是乾元。"],
+            ["user", "第三问"],
+          ]),
+        `再次打开后的模型上下文应含两轮问答：${json(sent)}`,
+      );
+      checkKnownRecords(reopened);
+    } finally {
+      const reopenedCode = await reopened.stop();
+      check(reopenedCode === 0, `再次打开的 Core 关闭 stdin 应以 0 退出，实际 ${reopenedCode}`);
+    }
+    checkFauxRequests(faux);
+  },
+
   /** abort：运行中中止，等会话空闲后才回 response；助手消息 stopReason 为 aborted，供应商请求被取消 */
   async abort({ core, faux }) {
     const chunks = Array.from({ length: 200 }, (_, i) => `第${i}段。`);
@@ -389,8 +593,15 @@ const cases = {
       { label: "第一个 text_delta", fromIndex: from },
     );
 
+    // 停止生效 < 1 秒（第 16.5 节）：abort 的 response 在会话空闲后才回，往返时间即停止生效的时间
+    const abortSent = performance.now();
     const a = await core.request({ type: "abort" });
+    const stopElapsed = performance.now() - abortSent;
     check(a.command === "abort" && a.success === true, `abort 响应异常：${json(a)}`);
+    check(
+      stopElapsed < STOP_LATENCY_MS,
+      `停止应在 ${STOP_LATENCY_MS}ms 内生效，实际 ${Math.round(stopElapsed)}ms`,
+    );
     // abort 等会话空闲后才响应：此时本轮的助手消息已经结束
     const abortAt = core.records.indexOf(a);
     const done = assistantEnd(core, from);
@@ -550,18 +761,20 @@ async function runCase(name, target) {
       join(coreDir, "models.json"),
       JSON.stringify(fauxModelsJson(faux.baseUrl), null, 2),
     );
-    core = new CoreProcess({
-      ...target,
-      args: ["--offline", "--provider", FAUX_PROVIDER, "--model", FAUX_MODEL],
-      cwd: workDir,
-      // 本机 Faux 服务不能走代理：CI 或开发机配置的 HTTP(S)_PROXY 会让 127.0.0.1 的请求失败
-      env: {
-        ...coreEnv({ home: sandbox, coreDir }),
-        NO_PROXY: "127.0.0.1,localhost",
-        no_proxy: "127.0.0.1,localhost",
-      },
-    });
-    await cases[name]({ core, faux, workDir });
+    const startCore = (extraArgs = []) =>
+      new CoreProcess({
+        ...target,
+        args: ["--offline", "--provider", FAUX_PROVIDER, "--model", FAUX_MODEL, ...extraArgs],
+        cwd: workDir,
+        // 本机 Faux 服务不能走代理：CI 或开发机配置的 HTTP(S)_PROXY 会让 127.0.0.1 的请求失败
+        env: {
+          ...coreEnv({ home: sandbox, coreDir }),
+          NO_PROXY: "127.0.0.1,localhost",
+          no_proxy: "127.0.0.1,localhost",
+        },
+      });
+    core = startCore(CASE_ARGS[name] ?? []);
+    await cases[name]({ core, faux, workDir, startCore });
     // 有序退出：关闭 stdin 后 Core 应以 0 退出；stdout 须读完（否则残余未计入，检查不完整），
     // 关闭阶段到达的记录同样要符合协议，且不得有非法行（含不以 LF 结尾的残余）
     const code = await core.stop();

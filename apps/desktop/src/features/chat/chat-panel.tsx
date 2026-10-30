@@ -150,6 +150,18 @@ const MessageItem = memo(function MessageItem({
           content={(message.content as TimelineContent[]) ?? []}
           toolRuns={toolRuns}
         />
+        {/* 被停止或出错结束的回复：在末尾标明，避免把半截回答当成完整结果 */}
+        {message.stopReason === "aborted" && (
+          <p className="self-start rounded-full bg-hover px-2 py-0.5 text-[11px] text-muted">
+            {t.stopped}
+          </p>
+        )}
+        {message.stopReason === "error" && (
+          <p className="text-xs text-danger">
+            {t.replyFailed}
+            {message.errorMessage ? `：${message.errorMessage}` : ""}
+          </p>
+        )}
       </article>
     );
   return null; // 工具结果并入对应的工具卡片显示
@@ -315,7 +327,8 @@ function useElementHeight<T extends HTMLElement>() {
 }
 
 export function ChatPanel() {
-  const { state, error, unresponsive, send, abort, restarting, restart } = useChatSession();
+  const { state, error, unresponsive, coreStopped, send, abort, restarting, restart } =
+    useChatSession();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -405,8 +418,35 @@ export function ChatPanel() {
       });
   };
 
+  // 停止：发出 abort 后到本轮结束（agent_settled，running 变为 false）之间按钮显示“正在停止”，不重复发送。
+  // abort 成功时保持到 running 结束；只有失败（失败响应或超时）才提前恢复按钮以便重试。
+  // 每次停止一个令牌：旧的 abort 迟到失败时不清除新一轮的停止状态
+  const [stopping, setStopping] = useState(false);
+  const stopToken = useRef<symbol | null>(null);
+  const stop = () => {
+    if (!state.running || stopToken.current) return;
+    const token = Symbol("stop");
+    stopToken.current = token;
+    setStopping(true);
+    void abort().then((ok) => {
+      if (ok || stopToken.current !== token) return;
+      stopToken.current = null;
+      setStopping(false);
+    });
+  };
+  useEffect(() => {
+    if (state.running) return;
+    stopToken.current = null;
+    setStopping(false);
+  }, [state.running]);
+
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) submit(e);
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey) submit(e);
+    else if (e.key === "Escape" && state.running) {
+      e.preventDefault();
+      stop();
+    }
   };
 
   const shownError = error ?? state.lastError;
@@ -443,8 +483,10 @@ export function ChatPanel() {
               className="flex items-center gap-3 rounded-xl border border-danger/40 px-3 py-2 text-xs"
             >
               <div className="flex-1">
-                <p className="font-medium text-danger">{t.unresponsive}</p>
-                <p className="text-muted">{t.unresponsiveHint}</p>
+                <p className="font-medium text-danger">
+                  {coreStopped ? t.coreStopped : t.unresponsive}
+                </p>
+                <p className="text-muted">{coreStopped ? t.coreStoppedHint : t.unresponsiveHint}</p>
               </div>
               <button
                 type="button"
@@ -586,9 +628,12 @@ export function ChatPanel() {
                 {state.running ? (
                   <button
                     type="button"
-                    aria-label={t.stop}
-                    onClick={() => void abort()}
-                    className="grid size-8 place-items-center rounded-full bg-fg text-surface"
+                    aria-label={stopping ? t.stopping : t.stop}
+                    title={stopping ? t.stopping : t.stop}
+                    aria-busy={stopping}
+                    disabled={stopping}
+                    onClick={stop}
+                    className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
                   >
                     <Square aria-hidden size={12} fill="currentColor" />
                   </button>

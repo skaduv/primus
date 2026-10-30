@@ -11,8 +11,10 @@
 //! - **合批线程**：有记录到达后最多等 16ms，把缓冲中的记录打成一个 [`CoreBatch`]（第 7.3 节：`sessionKey`、
 //!   按会话单调递增的 `seq`、`records`、`dropped`）交给 [`BatchSink`]（Tauri `Channel`）。
 //!   `dropped` 非零时前端用 `get_messages` + `get_state` 重建会话状态。
+//! - 忙碌状态：读线程只看每条记录的 `type` 字段（第 5.1 节“只解析少量字段”），`agent_start` 到 `agent_settled`
+//!   之间视为忙碌，供进程上限只淘汰空闲进程（第 2.2 节）。
 
-// 由 session_open / core_send 命令使用（随前端 rpc 客户端接入）；接入前非测试构建先放行未使用告警。
+// 统计等接口留给健康检查与诊断（后续接入）；非测试构建放行未使用告警。
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::VecDeque;
@@ -24,7 +26,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 /// 合批窗口（第 5.4、7.3 节）。
@@ -128,6 +130,8 @@ pub(crate) struct BridgeConfig {
     pub(crate) buffer_limit: usize,
     pub(crate) max_batch_bytes: usize,
     pub(crate) write_queue_capacity: usize,
+    /// 第一批之前的序号：重启后的新桥从旧桥的最后一批接着编号，前端的 `seq` 保持单调递增（第 7.3 节）
+    pub(crate) first_seq: u64,
 }
 
 impl Default for BridgeConfig {
@@ -137,6 +141,7 @@ impl Default for BridgeConfig {
             buffer_limit: BUFFER_LIMIT,
             max_batch_bytes: MAX_BATCH_BYTES,
             write_queue_capacity: WRITE_QUEUE_CAPACITY,
+            first_seq: 0,
         }
     }
 }
@@ -196,9 +201,35 @@ struct Shared {
     batches: AtomicU64,
     /// 写线程已退出（stdin 关闭）
     writer_closed: AtomicBool,
+    /// Core 正在运行一轮（`agent_start` 到 `agent_settled` 之间）
+    turn: AtomicBool,
+    /// prompt 已响应 `disposition: "started"`、尚未收到 `agent_start`（响应先于事件到达时的空档）
+    starting: AtomicBool,
+    /// 已写入、尚未收到响应的 prompt 条数：写入即算忙碌，不留“已发 prompt、未到 agent_start”的空档
+    prompts: AtomicU64,
 }
 
 impl Shared {
+    fn is_busy(&self) -> bool {
+        self.prompts.load(Ordering::Acquire) > 0
+            || self.starting.load(Ordering::Acquire)
+            || self.turn.load(Ordering::Acquire)
+    }
+
+    /// 收到一条 prompt 的响应（或写入失败）：未响应计数减一，不减到 0 以下
+    fn prompt_answered(&self) {
+        let mut n = self.prompts.load(Ordering::Acquire);
+        while n > 0 {
+            match self
+                .prompts
+                .compare_exchange_weak(n, n - 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(current) => n = current,
+            }
+        }
+    }
+
     fn pending(&self) -> MutexGuard<'_, Pending> {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -255,6 +286,7 @@ impl Shared {
 /// 一个 Core 进程的 RPC 桥。drop 时关闭写队列（Core 的 stdin 随之关闭）；读、合批线程在 stdout EOF 后自行结束。
 pub(crate) struct Bridge {
     writer: Option<SyncSender<Vec<u8>>>,
+    first_seq: u64,
     shared: Arc<Shared>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -281,6 +313,9 @@ impl Bridge {
             invalid: AtomicU64::new(0),
             batches: AtomicU64::new(0),
             writer_closed: AtomicBool::new(false),
+            turn: AtomicBool::new(false),
+            starting: AtomicBool::new(false),
+            prompts: AtomicU64::new(0),
         });
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(config.write_queue_capacity.max(1));
 
@@ -314,6 +349,7 @@ impl Bridge {
 
         Ok(Self {
             writer: Some(tx),
+            first_seq: config.first_seq,
             shared,
             threads,
         })
@@ -323,7 +359,16 @@ impl Bridge {
     pub(crate) fn send(&self, record: &serde_json::Value) -> Result<(), BridgeError> {
         let mut line = serde_json::to_vec(record).map_err(BridgeError::Encode)?;
         line.push(b'\n');
-        self.send_line(line)
+        // 先记为忙碌再入队：调用方（会话表）在同一把锁下写入与挑选淘汰对象，写入成功的 prompt 不会被淘汰
+        let prompt = record.get("type").and_then(serde_json::Value::as_str) == Some("prompt");
+        if prompt {
+            self.shared.prompts.fetch_add(1, Ordering::AcqRel);
+        }
+        let result = self.send_line(line);
+        if prompt && result.is_err() {
+            self.shared.prompt_answered();
+        }
+        result
     }
 
     fn send_line(&self, line: Vec<u8>) -> Result<(), BridgeError> {
@@ -337,6 +382,11 @@ impl Bridge {
         })
     }
 
+    /// Core 是否正在运行一轮（`agent_start` 之后、`agent_settled` 之前），或有已写入、未响应的 prompt。
+    pub(crate) fn is_busy(&self) -> bool {
+        self.shared.is_busy()
+    }
+
     pub(crate) fn stats(&self) -> BridgeStats {
         BridgeStats {
             received: self.shared.received.load(Ordering::Relaxed),
@@ -344,6 +394,12 @@ impl Bridge {
             invalid: self.shared.invalid.load(Ordering::Relaxed),
             batches: self.shared.batches.load(Ordering::Relaxed),
         }
+    }
+
+    /// 同 [`Bridge::join`]，返回已推出的最后一批的序号（一批也没有时为 `first_seq`），供重启后的新桥接着编号。
+    pub(crate) fn finish(self) -> u64 {
+        let first_seq = self.first_seq;
+        first_seq + self.join().batches
     }
 
     /// 关闭写队列并等待三条线程结束（Core 已退出、stdout 已 EOF 时调用，否则会一直等到 EOF）。
@@ -387,6 +443,10 @@ fn read_loop<R: Read>(mut stdout: R, shared: &Shared, limit: usize) {
         }
         shared.trim(budget);
     }
+    // stdout EOF：进程已退出，不再忙碌
+    shared.turn.store(false, Ordering::Release);
+    shared.starting.store(false, Ordering::Release);
+    shared.prompts.store(0, Ordering::Release);
     shared.close();
 }
 
@@ -399,16 +459,69 @@ fn accept_frame(frame: Vec<u8>, shared: &Shared, limit: usize) {
         .ok()
         .and_then(|text| RawValue::from_string(text).ok());
     match parsed {
-        Some(record) => shared.push(record, limit),
+        Some(record) => {
+            track_busy(shared, &record);
+            shared.push(record, limit);
+        }
         None => {
             shared.invalid.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
+/// 只读记录的 `type`，以及 prompt 响应的 `command`、`success`、`data.disposition`（其余字段跳过，不改动记录）。
+#[derive(Deserialize)]
+struct RecordType<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Option<&'a str>,
+    #[serde(borrow, default)]
+    command: Option<&'a str>,
+    #[serde(default)]
+    success: Option<bool>,
+    #[serde(borrow, default)]
+    data: Option<ResponseData<'a>>,
+}
+
+#[derive(Deserialize)]
+struct ResponseData<'a> {
+    #[serde(borrow, default)]
+    disposition: Option<&'a str>,
+}
+
+fn track_busy(shared: &Shared, record: &RawValue) {
+    let Ok(RecordType {
+        kind: Some(kind),
+        command,
+        success,
+        data,
+    }) = serde_json::from_str(record.get())
+    else {
+        return;
+    };
+    match kind {
+        "agent_start" => {
+            shared.turn.store(true, Ordering::Release);
+            shared.starting.store(false, Ordering::Release);
+        }
+        "agent_settled" => {
+            shared.turn.store(false, Ordering::Release);
+            shared.starting.store(false, Ordering::Release);
+        }
+        "response" if command == Some("prompt") => {
+            // 已开始的一轮在 agent_start 到达前仍算忙碌：先置 starting 再结清未响应计数，忙碌不出现空档
+            let started = data.and_then(|d| d.disposition) == Some("started");
+            if success == Some(true) && started && !shared.turn.load(Ordering::Acquire) {
+                shared.starting.store(true, Ordering::Release);
+            }
+            shared.prompt_answered();
+        }
+        _ => {}
+    }
+}
+
 /// 合批线程：有记录后等满一个合批窗口，再按字节上限分批推出。
 fn batch_loop(session_key: &str, shared: &Shared, sink: &dyn BatchSink, config: BridgeConfig) {
-    let mut seq: u64 = 0;
+    let mut seq = config.first_seq;
     loop {
         // 等待第一条记录（或丢弃计数、或关闭）
         let mut pending = shared.pending();
@@ -725,6 +838,9 @@ mod tests {
             invalid: AtomicU64::new(0),
             batches: AtomicU64::new(0),
             writer_closed: AtomicBool::new(false),
+            turn: AtomicBool::new(false),
+            starting: AtomicBool::new(false),
+            prompts: AtomicU64::new(0),
         };
         // 8 条 11 字节的记录（88 字节），随后是 60 字节、尚未收到 LF 的大帧
         let mut records = String::new();
@@ -828,6 +944,140 @@ process.stdin.on("end", () => process.exit(0));
             assert!(Instant::now() < deadline, "等待记录超时");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn tracks_busy_between_agent_start_and_settled() {
+        let run = |lines: &str| {
+            let sink = Collect::default();
+            // 管道保持打开：读到 EOF（进程退出）会清除忙碌
+            let (reader, mut pipe_writer) = std::io::pipe().unwrap();
+            pipe_writer.write_all(lines.as_bytes()).unwrap();
+            let bridge = Bridge::start(
+                "s".into(),
+                NullWriter,
+                reader,
+                sink.clone(),
+                BridgeConfig::default(),
+            )
+            .unwrap();
+            let n = lines.lines().count();
+            wait_for(&sink, |r| r.len() == n);
+            let busy = bridge.is_busy();
+            drop(pipe_writer);
+            bridge.join();
+            busy
+        };
+        assert!(run(
+            "{\"type\":\"agent_start\"}\n{\"type\":\"message_update\"}\n"
+        ));
+        assert!(!run(
+            "{\"type\":\"agent_start\"}\n{\"type\":\"agent_settled\",\"aborted\":false}\n"
+        ));
+        // 字段顺序、转义与非对象记录不影响判断
+        assert!(run("{\"id\":\"x\",\"type\":\"agent_start\"}\n[1]\n\"s\"\n"));
+        assert!(!run(
+            "{\"type\":\"response\",\"command\":\"agent_start\"}\n"
+        ));
+    }
+
+    #[test]
+    fn prompt_counts_as_busy_from_write_until_turn_settles() {
+        let shared = Shared {
+            pending: Mutex::new(Pending::default()),
+            ready: Condvar::new(),
+            received: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            invalid: AtomicU64::new(0),
+            batches: AtomicU64::new(0),
+            writer_closed: AtomicBool::new(false),
+            turn: AtomicBool::new(false),
+            starting: AtomicBool::new(false),
+            prompts: AtomicU64::new(0),
+        };
+        let feed = |line: &str| track_busy(&shared, &RawValue::from_string(line.into()).unwrap());
+        // 写入的 prompt（Bridge::send 计数）
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        assert!(shared.is_busy(), "写入即忙碌");
+        // 响应先于 agent_start：之间不出现空闲
+        feed(
+            r#"{"type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}"#,
+        );
+        assert!(shared.is_busy());
+        feed(r#"{"type":"agent_start"}"#);
+        assert!(shared.is_busy());
+        feed(r#"{"type":"agent_settled","aborted":false}"#);
+        assert!(!shared.is_busy());
+        // agent_start 先于响应：本轮结束后同样空闲
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        feed(r#"{"type":"agent_start"}"#);
+        feed(
+            r#"{"type":"response","command":"prompt","success":true,"data":{"disposition":"started"}}"#,
+        );
+        feed(r#"{"type":"agent_settled","aborted":false}"#);
+        assert!(!shared.is_busy());
+        // 被拒绝的 prompt 结清计数；多余的响应不减到 0 以下
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        feed(r#"{"type":"response","command":"prompt","success":false,"error":"x"}"#);
+        assert!(!shared.is_busy());
+        feed(r#"{"type":"response","command":"prompt","success":false}"#);
+        assert_eq!(shared.prompts.load(Ordering::Acquire), 0);
+        // 其他命令的响应不影响
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        feed(r#"{"type":"response","command":"get_state","success":true}"#);
+        assert!(shared.is_busy());
+    }
+
+    #[test]
+    fn two_outstanding_prompts_stay_busy_until_both_answered() {
+        let shared = Shared {
+            pending: Mutex::new(Pending::default()),
+            ready: Condvar::new(),
+            received: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            invalid: AtomicU64::new(0),
+            batches: AtomicU64::new(0),
+            writer_closed: AtomicBool::new(false),
+            turn: AtomicBool::new(false),
+            starting: AtomicBool::new(false),
+            prompts: AtomicU64::new(0),
+        };
+        let feed = |line: &str| track_busy(&shared, &RawValue::from_string(line.into()).unwrap());
+        // 两条 prompt 先后写入，均未响应：一次响应只结清一条
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        feed(r#"{"type":"response","command":"prompt","success":true}"#);
+        assert_eq!(shared.prompts.load(Ordering::Acquire), 1);
+        assert!(shared.is_busy());
+        // 本轮结束时仍有未响应的 prompt：保持忙碌
+        feed(r#"{"type":"agent_settled","aborted":false}"#);
+        assert!(shared.is_busy());
+        feed(r#"{"type":"response","command":"prompt","success":true}"#);
+        assert_eq!(shared.prompts.load(Ordering::Acquire), 0);
+        assert!(!shared.is_busy());
+    }
+
+    #[test]
+    fn send_marks_prompt_busy_before_core_answers() {
+        let (reader, pipe_writer) = std::io::pipe().unwrap();
+        let bridge = Bridge::start(
+            "s".into(),
+            NullWriter,
+            reader,
+            Collect::default(),
+            BridgeConfig::default(),
+        )
+        .unwrap();
+        bridge
+            .send(&serde_json::json!({ "type": "get_state" }))
+            .unwrap();
+        assert!(!bridge.is_busy());
+        bridge
+            .send(&serde_json::json!({ "type": "prompt", "message": "hi" }))
+            .unwrap();
+        assert!(bridge.is_busy(), "prompt 一写入就算忙碌");
+        drop(pipe_writer);
+        bridge.join();
     }
 
     #[test]

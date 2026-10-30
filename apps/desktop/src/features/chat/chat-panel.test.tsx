@@ -1,7 +1,7 @@
 import type { CoreBatch } from "@primus/protocol";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setPlatformForTesting } from "@/lib/platform";
+import { CORE_NOT_RUNNING, PlatformError, setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
@@ -119,6 +119,111 @@ describe("对话区（mock 事件流）", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("内核未运行时提示已停止并提供重启，重启后可继续发送", async () => {
+    let stopped = true;
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    const coreSend = vi.fn(async (key: string, record: Parameters<typeof base.coreSend>[1]) => {
+      if (stopped) throw new PlatformError("会话的内核未运行，请重启内核：k", CORE_NOT_RUNNING);
+      return base.coreSend(key, record);
+    });
+    const coreRestart = vi.fn(async () => {
+      stopped = false;
+    });
+    setPlatformForTesting({ ...base, coreSend, coreRestart });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText(t.coreStopped)).toBeTruthy();
+    expect(screen.getByText(t.coreStoppedHint)).toBeTruthy();
+    expect(screen.queryByText(t.unresponsive)).toBeNull();
+    expect((input as HTMLTextAreaElement).value).toBe("你好"); // 保留草稿
+    const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
+    await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText(t.coreStopped)).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(sendButton.disabled).toBe(false);
+    fireEvent.click(sendButton);
+    await waitFor(() =>
+      expect(coreSend.mock.calls.filter(([, r]) => r.type === "prompt")).toHaveLength(2),
+    );
+    // 重启后的发送才到达 mock：其回复应渲染到会话中
+    await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
+    expect(screen.queryByText(t.coreStopped)).toBeNull();
+  });
+
+  it("重启后重建时内核未运行：提示已停止而不是无响应，保留重启入口", async () => {
+    let stopped = true;
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    const coreSend = vi.fn(async (key: string, record: Parameters<typeof base.coreSend>[1]) => {
+      if (stopped) throw new PlatformError("会话的内核未运行，请重启内核：k", CORE_NOT_RUNNING);
+      return base.coreSend(key, record);
+    });
+    // 重启“成功”但新进程随即退出：重建请求仍得到 coreNotRunning
+    const coreRestart = vi.fn(async () => {});
+    setPlatformForTesting({ ...base, coreSend, coreRestart });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText(t.coreStopped)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
+    await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(coreSend.mock.calls.some(([, r]) => r.type === "get_messages")).toBe(true),
+    );
+    await waitFor(() => expect(screen.getByText(t.coreStopped)).toBeTruthy());
+    expect(screen.queryByText(t.unresponsive)).toBeNull();
+    const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
+    expect(screen.getByRole("button", { name: t.restartCore })).toBeTruthy();
+    stopped = false;
+  });
+
+  it("其他发送错误只显示错误文案，不锁定发送", async () => {
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    const coreSend = vi.fn(async () => {
+      throw new PlatformError("写入失败", undefined);
+    });
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("写入失败")).toBeTruthy();
+    expect(screen.queryByText(t.coreStopped)).toBeNull();
+    expect(screen.queryByRole("button", { name: t.restartCore })).toBeNull();
+    const sendButton = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(false);
+  });
+
+  it("重启失败时保留已停止提示与重启入口", async () => {
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    const coreSend = vi.fn(async () => {
+      throw new PlatformError("会话的内核未运行，请重启内核：k", CORE_NOT_RUNNING);
+    });
+    const coreRestart = vi.fn(async () => {
+      throw new PlatformError("内核 1 分钟内连续崩溃 3 次", undefined);
+    });
+    setPlatformForTesting({ ...base, coreSend, coreRestart });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText(t.coreStopped)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
+    await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("内核 1 分钟内连续崩溃 3 次")).toBeTruthy();
+    expect(screen.getByText(t.coreStopped)).toBeTruthy();
+    const restartButton = screen.getByRole("button", { name: t.restartCore }) as HTMLButtonElement;
+    await waitFor(() => expect(restartButton.disabled).toBe(false));
   });
 
   it("重启进行中按钮禁用，连点只重启一次", async () => {
@@ -262,15 +367,110 @@ describe("对话区（mock 事件流）", () => {
     expect(useAppStore.getState().permissionMode).toBe("ask");
   });
 
-  it("运行中可以停止", async () => {
+  it("多轮对话：每轮结束（agent_settled）后解锁输入，第二轮接在第一轮之后", async () => {
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    for (const text of ["第一问", "第二问"]) {
+      await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+      fireEvent.change(input, { target: { value: text } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
+    }
+    await waitFor(() => expect(screen.getByText(/你刚才说：「第二问」/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    const users = screen.getAllByRole("article", { name: t.you }).map((a) => a.textContent);
+    expect(users).toEqual(["第一问", "第二问"]);
+    // 每轮一条工具调用回复 + 一条最终回答
+    expect(screen.getAllByRole("article", { name: t.assistant })).toHaveLength(4);
+    expect(screen.getByText(/你刚才说：「第一问」/)).toBeTruthy();
+  });
+
+  it("运行中可以停止：1 秒内恢复发送，半截回复标为已停止，之后可以继续对话", async () => {
     setPlatformForTesting(createMockPlatform({ intervalMs: 20, batchSize: 2 }));
     render(<ChatPanel />);
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "长任务" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("button", { name: t.stop }));
-    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    const stopButton = await screen.findByRole("button", { name: t.stop });
+    // 等到助手回复开始输出再停止
+    await screen.findByRole("article", { name: t.assistant });
+    const started = performance.now();
+    fireEvent.click(stopButton);
+    // 先填好下一条：停止生效即发送按钮可用（不只是出现）
+    fireEvent.change(input, { target: { value: "继续" } });
+    await waitFor(
+      () =>
+        expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(
+          false,
+        ),
+      { timeout: 1000 },
+    );
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(screen.getByText(t.stopped)).toBeTruthy();
     expect(screen.queryByText(/mock 平台/)).toBeNull();
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText(/你刚才说：「继续」/)).toBeTruthy(), {
+      timeout: 5000,
+    });
+  });
+
+  it("输入框里按 Esc 停止；停止进行中按钮禁用，不重复发 abort", async () => {
+    const base = createMockPlatform({ intervalMs: 20, batchSize: 2 });
+    const coreSend = vi.fn(base.coreSend);
+    setPlatformForTesting({ ...base, coreSend });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("button", { name: t.stop });
+    fireEvent.keyDown(input, { key: "Escape" });
+    const stopping = await screen.findByRole("button", { name: t.stopping });
+    expect((stopping as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.click(stopping);
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(1);
+  });
+
+  it("abort 失败时停止按钮恢复可用，可以重试；成功前不提前恢复", async () => {
+    const base = createMockPlatform({ intervalMs: 20, batchSize: 2 });
+    let reject = true;
+    // 第一次 abort 不交给 mock，而是把失败响应并入下一个批次
+    const inject: CoreBatch["records"] = [];
+    const coreSend = vi.fn(async (key: string, record: Parameters<typeof base.coreSend>[1]) => {
+      if (record.type === "abort" && reject) {
+        reject = false;
+        inject.push({
+          type: "response",
+          id: record.id,
+          command: "abort",
+          success: false,
+          error: "拒绝",
+        });
+        return;
+      }
+      return base.coreSend(key, record);
+    });
+    setPlatformForTesting({
+      ...base,
+      coreSend,
+      sessionOpen: (ws, path, onBatch) =>
+        base.sessionOpen(ws, path, (b) =>
+          onBatch({ ...b, records: [...inject.splice(0), ...b.records] }),
+        ),
+    });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "长任务" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("button", { name: t.stop }));
+    // 失败后恢复为可用的停止按钮
+    const again = await screen.findByRole("button", { name: t.stop });
+    expect((again as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(again);
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(2);
   });
 
   it("时间线按悬浮输入框的实测高度留出底部空间，欢迎页不被遮挡", () => {

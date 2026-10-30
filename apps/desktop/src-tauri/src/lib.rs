@@ -12,6 +12,7 @@ mod paths;
 mod platform;
 mod rpc_bridge;
 mod session_index;
+mod sessions;
 mod shell_detect;
 mod supervisor;
 mod tray;
@@ -62,7 +63,14 @@ pub fn run() {
         }))
         .manage(data_paths)
         .manage(supervisor)
-        .invoke_handler(tauri::generate_handler![commands::window_set_bounds])
+        .manage(sessions::AppSessions::default())
+        .invoke_handler(tauri::generate_handler![
+            commands::window_set_bounds,
+            commands::session_open,
+            commands::session_close,
+            commands::core_send,
+            commands::core_restart,
+        ])
         .build(tauri::generate_context!())
         .expect("failed to build Primus")
         .run(|app, event| {

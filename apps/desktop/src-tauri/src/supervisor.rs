@@ -17,7 +17,7 @@
 // 由 rpc_bridge 与前端命令使用；它们接入前非测试构建先放行未使用告警，接入后删除此属性。
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -117,6 +117,9 @@ pub(crate) struct LaunchOptions {
     pub(crate) cwd: PathBuf,
     /// 恢复的会话文件；新会话为 None
     pub(crate) session_file: Option<PathBuf>,
+    /// 没有会话文件时指定的会话 ID（`--session-id`，不存在则以此 ID 新建）：新会话由薄壳先定好 ID，
+    /// 重启时用同一 ID 恢复到 Core 已写下的会话文件。与 `session_file` 同时给出时以文件为准（Core 不允许两者同用）
+    pub(crate) session_id: Option<String>,
     /// 项目已信任时为 true（`--approve`），否则 `--no-approve`（第 17.2 节）
     pub(crate) approve: bool,
     /// 用户开启了离线模式
@@ -134,6 +137,8 @@ pub(crate) enum SupervisorError {
     AlreadyRunning(String),
     /// 1 分钟内已崩溃 3 次，不再自动重启
     CrashLoop(String),
+    /// 已达进程上限且其他进程都在运行一轮，没有可淘汰的空闲进程
+    LimitReached(usize),
     /// 拉起、放入作业或读写进程失败
     Io(io::Error),
 }
@@ -149,6 +154,10 @@ impl fmt::Display for SupervisorError {
                     "会话 {key} 的内核 1 分钟内连续崩溃 {CRASH_LIMIT} 次，已停止自动重启"
                 )
             }
+            Self::LimitReached(max) => write!(
+                f,
+                "同时运行的内核已达上限（{max} 个）且都在工作，请等其中一个结束或在设置中调高上限"
+            ),
             Self::Io(e) => write!(f, "内核进程操作失败：{e}"),
         }
     }
@@ -172,6 +181,8 @@ pub(crate) fn build_command(
     cmd.arg(&layout.entry);
     if let Some(session) = &opts.session_file {
         cmd.arg("--session").arg(session);
+    } else if let Some(id) = &opts.session_id {
+        cmd.arg("--session-id").arg(id);
     }
     cmd.arg(if opts.approve {
         "--approve"
@@ -396,6 +407,122 @@ impl CoreProcess {
     }
 }
 
+/// 拉起时腾出的进程：因上限被淘汰的，以及已自行退出、被移出表的。drop 时结束（不要在持有监管器锁时 drop）。
+#[derive(Default)]
+pub(crate) struct Evicted {
+    evicted: Vec<(String, CoreProcess)>,
+    exited: Vec<(String, CoreProcess)>,
+}
+
+impl Evicted {
+    /// 进程已不在表里的会话：因进程上限被淘汰的，以及已自行退出、被清理的。
+    /// 调用方据此把它们标为未运行（发送得到 NotRunning，重启可恢复）。
+    pub(crate) fn keys(&self) -> Vec<String> {
+        self.evicted
+            .iter()
+            .chain(&self.exited)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    fn append(&mut self, mut other: Evicted) {
+        self.evicted.append(&mut other.evicted);
+        self.exited.append(&mut other.exited);
+    }
+}
+
+impl Drop for Evicted {
+    fn drop(&mut self) {
+        for (_, process) in self.evicted.drain(..).chain(self.exited.drain(..)) {
+            process.kill();
+        }
+    }
+}
+
+/// 拉起前预留的名额（[`Supervisor::reserve`]）：占着名额直到 [`Reservation::commit`]；未提交即 drop 时归还。
+/// 进程创建（[`Reservation::launch`]）不持任何锁，其他会话的发送、关闭不必等它。
+pub(crate) struct Reservation<'a> {
+    supervisor: &'a Supervisor,
+    key: String,
+    committed: bool,
+}
+
+impl Reservation<'_> {
+    /// 创建 Core 进程（不持锁）；失败时 drop 预留即归还名额，不影响其他会话。
+    pub(crate) fn launch(&self, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {
+        self.supervisor.launch(&self.key, opts)
+    }
+
+    /// 登记新进程，超出上限时淘汰最久未使用的空闲进程（`is_busy` 在监管器锁内求值，调用方让它与
+    /// “进入忙碌”持同一把锁）。预留之后若空闲会话转为忙碌、腾不出位置，不结束正在工作的会话，
+    /// 而是拒绝新进程（[`Rejected`]，drop 时结束新进程；不要在持锁时 drop）：进程数始终不超过上限（第 2.2 节）。
+    pub(crate) fn commit(
+        mut self,
+        process: CoreProcess,
+        is_busy: impl Fn(&str) -> bool,
+    ) -> Result<(u32, Evicted), Rejected> {
+        self.committed = true;
+        let key = self.key.as_str();
+        let max = self.supervisor.max_processes();
+        let mut state = self.supervisor.state();
+        state.starting.remove(key);
+        let excess = (state.procs.len() + 1).saturating_sub(max);
+        let mut idle: Vec<(String, Duration)> = state
+            .procs
+            .iter()
+            .filter(|(k, _)| !is_busy(k))
+            .map(|(k, p)| (k.clone(), p.idle_for()))
+            .collect();
+        if idle.len() < excess {
+            return Err(Rejected {
+                max,
+                process: Some(Box::new(process)),
+            });
+        }
+        // 最久未使用的先淘汰
+        idle.sort_by_key(|(_, idle_for)| std::cmp::Reverse(*idle_for));
+        let mut evicted = Evicted::default();
+        for (lru, _) in idle.into_iter().take(excess) {
+            if let Some(process) = state.procs.remove(&lru) {
+                evicted.evicted.push((lru, process));
+            }
+        }
+        let pid = process.pid();
+        state.procs.insert(key.to_owned(), process);
+        Ok((pid, evicted))
+    }
+}
+
+/// 登记被拒绝：进程都在工作、腾不出位置（[`Reservation::commit`]）。带着新创建的进程，drop 时结束它
+/// （不要在持锁时 drop）；转换成 [`SupervisorError::LimitReached`] 时同样结束。
+pub(crate) struct Rejected {
+    max: usize,
+    /// 装箱：Windows 上 `CoreProcess` 带作业对象等句柄，体积大，避免 `Result` 的错误类型过大
+    process: Option<Box<CoreProcess>>,
+}
+
+impl Drop for Rejected {
+    fn drop(&mut self) {
+        if let Some(process) = self.process.take() {
+            (*process).kill();
+        }
+    }
+}
+
+impl From<Rejected> for SupervisorError {
+    fn from(rejected: Rejected) -> Self {
+        Self::LimitReached(rejected.max)
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.supervisor.state().starting.remove(&self.key);
+        }
+    }
+}
+
 /// 崩溃计数：窗口内达到上限即不再自动重启（第 5.5 节）。
 #[derive(Debug, Clone)]
 pub(crate) struct CrashTracker {
@@ -455,6 +582,8 @@ pub(crate) struct ExitedCore {
 struct State {
     procs: HashMap<String, CoreProcess>,
     crashes: HashMap<String, CrashTracker>,
+    /// 已预留名额、正在创建进程的会话（占名额，不可淘汰）
+    starting: HashSet<String>,
 }
 
 /// Core 进程池。
@@ -476,6 +605,7 @@ impl Supervisor {
             state: Mutex::new(State {
                 procs: HashMap::new(),
                 crashes: HashMap::new(),
+                starting: HashSet::new(),
             }),
         })
     }
@@ -502,52 +632,81 @@ impl Supervisor {
 
     /// 为会话 `key` 拉起 Core。成功后若超出上限，结束最久未使用的其他进程；该会话 1 分钟内已崩溃 3 次时拒绝。
     pub(crate) fn spawn(&self, key: &str, opts: &LaunchOptions) -> Result<u32, SupervisorError> {
-        self.layout.check()?;
-        let mut evicted = Vec::new();
-        let result = self.spawn_locked(key, opts, &mut evicted);
-        // 被淘汰的进程在锁外结束
-        for process in evicted {
-            process.kill();
-        }
-        result
+        self.spawn_evicting(key, opts, &[], |_| {})
     }
 
-    fn spawn_locked(
+    /// 同 [`Supervisor::spawn`]，超出上限时只淘汰不在 `busy` 中的（空闲）进程，没有可淘汰的就拒绝拉起（第 2.2 节）。
+    /// 要结束的会话先交给 `before_kill`（锁外、结束进程之前），调用方据此先把它们标为未运行，再结束进程。
+    pub(crate) fn spawn_evicting(
         &self,
         key: &str,
         opts: &LaunchOptions,
-        evicted: &mut Vec<CoreProcess>,
+        busy: &[String],
+        before_kill: impl FnOnce(&[String]),
     ) -> Result<u32, SupervisorError> {
+        let (pid, evicted) = self.spawn_with(key, opts, |k| busy.iter().any(|b| b == k))?;
+        before_kill(&evicted.keys());
+        Ok(pid)
+    }
+
+    /// 拉起会话的 Core：[`Supervisor::reserve`] → [`Reservation::launch`] → [`Reservation::commit`] 一次做完。
+    /// 返回被淘汰与已退出的进程（在 drop 时结束，调用方在锁外 drop）。
+    pub(crate) fn spawn_with(
+        &self,
+        key: &str,
+        opts: &LaunchOptions,
+        is_busy: impl Fn(&str) -> bool,
+    ) -> Result<(u32, Evicted), SupervisorError> {
+        let mut evicted = Evicted::default();
+        let reservation = self.reserve(key, &is_busy, &mut evicted)?;
+        let process = reservation.launch(opts)?;
+        let (pid, more) = reservation.commit(process, &is_busy)?;
+        evicted.append(more);
+        Ok((pid, evicted))
+    }
+
+    /// 为会话预留名额（监管器锁内，不创建进程）：先移出已自行退出的进程（计一次崩溃、不占名额），
+    /// 检查崩溃上限，再确认放得下——其他进程中空闲（`is_busy` 为假）的个数足以腾出位置，否则拒绝（第 2.2 节）。
+    /// 预留中的会话占名额且不可淘汰。已退出的进程放进 `exited`（拒绝时也放）：调用方把这些会话标为未运行，在锁外 drop。
+    pub(crate) fn reserve(
+        &self,
+        key: &str,
+        is_busy: impl Fn(&str) -> bool,
+        exited: &mut Evicted,
+    ) -> Result<Reservation<'_>, SupervisorError> {
+        self.layout.check()?;
+        let max = self.max_processes();
         let mut state = self.state();
-        if state.procs.contains_key(key) {
+        if state.procs.contains_key(key) || state.starting.contains(key) {
             return Err(SupervisorError::AlreadyRunning(key.to_owned()));
         }
         let now = Instant::now();
+        let gone: Vec<String> = state
+            .procs
+            .iter_mut()
+            .filter_map(|(k, p)| matches!(p.try_wait(), Ok(Some(_))).then(|| k.clone()))
+            .collect();
+        for k in gone {
+            if let Some(process) = state.procs.remove(&k) {
+                state.crashes.entry(k.clone()).or_default().record(now);
+                exited.exited.push((k, process));
+            }
+        }
         if let Some(tracker) = state.crashes.get_mut(key)
             && !tracker.allows_restart(now)
         {
             return Err(SupervisorError::CrashLoop(key.to_owned()));
         }
-        // 先拉起新进程，成功后再淘汰超出上限的旧进程：拉起失败（项目目录不存在等）不影响其他会话
-        let process = self.launch(key, opts)?;
-        let pid = process.pid();
-        state.procs.insert(key.to_owned(), process);
-        let max = self.max_processes();
-        while state.procs.len() > max {
-            let Some(lru) = state
-                .procs
-                .iter()
-                .filter(|(k, _)| k.as_str() != key)
-                .max_by_key(|(_, p)| p.idle_for())
-                .map(|(k, _)| k.clone())
-            else {
-                break;
-            };
-            if let Some(process) = state.procs.remove(&lru) {
-                evicted.push(process);
-            }
+        let idle = state.procs.keys().filter(|k| !is_busy(k)).count();
+        if state.procs.len() + state.starting.len() + 1 > max + idle {
+            return Err(SupervisorError::LimitReached(max));
         }
-        Ok(pid)
+        state.starting.insert(key.to_owned());
+        Ok(Reservation {
+            supervisor: self,
+            key: key.to_owned(),
+            committed: false,
+        })
     }
 
     fn launch(&self, key: &str, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {
@@ -609,6 +768,26 @@ impl Supervisor {
     pub(crate) fn stop(&self, key: &str) -> Option<Vec<String>> {
         let process = self.state().procs.remove(key)?;
         Some(process.kill())
+    }
+
+    /// 重启（重新连接）前结束会话的进程。进程已自行退出时按崩溃计数（第 5.5 节），
+    /// 之后的 [`Supervisor::spawn`] 因而同样受“1 分钟内 3 次”的限制；返回退出状态（仍在运行则为 None）。
+    pub(crate) fn stop_for_restart(&self, key: &str) -> Option<ExitStatus> {
+        let (process, exited) = {
+            let mut state = self.state();
+            let mut process = state.procs.remove(key)?;
+            let exited = process.try_wait().ok().flatten();
+            if exited.is_some() {
+                state
+                    .crashes
+                    .entry(key.to_owned())
+                    .or_default()
+                    .record(Instant::now());
+            }
+            (process, exited)
+        };
+        process.kill();
+        exited
     }
 
     /// 收集意外退出的进程并计入崩溃次数；调用方据此在时间线标记“内核已退出”。
@@ -692,17 +871,17 @@ impl Drop for Supervisor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::paths::{self, DataRoot, DataRootSource};
     use std::ffi::OsStr;
     use std::io::Read;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    struct TempDir(PathBuf);
+    pub(crate) struct TempDir(pub(crate) PathBuf);
 
     impl TempDir {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             static COUNTER: AtomicU32 = AtomicU32::new(0);
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -724,7 +903,7 @@ mod tests {
         }
     }
 
-    fn data_paths(root: &Path) -> DataPaths {
+    pub(crate) fn data_paths(root: &Path) -> DataPaths {
         let user = crate::platform::current_user_id().unwrap();
         paths::prepare_at(
             DataRoot {
@@ -737,7 +916,7 @@ mod tests {
     }
 
     /// 用 PATH 中的 node 运行一个测试脚本充当 Core 入口。
-    fn fake_layout(root: &Path, script: &str) -> CoreLayout {
+    pub(crate) fn fake_layout(root: &Path, script: &str) -> CoreLayout {
         let core = root.join("agent-core");
         std::fs::create_dir_all(core.join("extensions")).unwrap();
         std::fs::write(core.join("rpc-entry.js"), script).unwrap();
@@ -753,6 +932,7 @@ mod tests {
         LaunchOptions {
             cwd: cwd.to_path_buf(),
             session_file: None,
+            session_id: None,
             approve: false,
             offline: false,
             telemetry: false,
@@ -819,6 +999,7 @@ mod tests {
         let layout = fake_layout(&tmp.0, "");
         let mut o = opts(&tmp.0);
         o.session_file = Some(tmp.0.join("s.jsonl"));
+        o.session_id = Some("ignored".into());
         o.approve = true;
         o.offline = true;
         let cmd = build_command(&layout, &paths, &o);
@@ -861,6 +1042,14 @@ mod tests {
         assert!(has_arg(&cmd, "--no-approve"));
         assert!(!has_arg(&cmd, "--session"));
         assert_eq!(env_of(&cmd, "PRIMUS_OFFLINE"), Some(None));
+
+        // 没有会话文件时用会话 ID：新会话与重启恢复用同一个 ID
+        o.session_id = Some("primus-1".into());
+        let cmd = build_command(&layout, &paths, &o);
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_owned()).collect();
+        assert_eq!(args[1], "--session-id");
+        assert_eq!(args[2], "primus-1");
+        assert!(!has_arg(&cmd, "--session"));
     }
 
     /// 打印 Core 关心的环境变量与参数，向 stderr 写 3 行（含 CRLF 与非法 UTF-8 之外的普通文本），然后退出。
@@ -958,7 +1147,22 @@ process.stderr.write("line one\nline two\r\nline three\n");
             supervisor.spawn("a", &opts(&tmp.0)),
             Err(SupervisorError::AlreadyRunning(_))
         ));
-        supervisor.spawn("b", &opts(&tmp.0)).unwrap();
+        // 唯一的其他进程正在工作：不淘汰，拒绝拉起
+        assert!(matches!(
+            supervisor.spawn_evicting("b", &opts(&tmp.0), &["a".to_owned()], |_| {}),
+            Err(SupervisorError::LimitReached(1))
+        ));
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+
+        let mut evicted = Vec::new();
+        supervisor
+            .spawn_evicting("b", &opts(&tmp.0), &[], |keys| {
+                // 交给调用方时被淘汰的进程尚未结束
+                assert!(supervisor.running_keys().contains(&"b".to_owned()));
+                evicted = keys.to_vec();
+            })
+            .unwrap();
+        assert_eq!(evicted, vec!["a".to_owned()], "交出被淘汰的会话");
         assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
 
         // 拉起失败（工作目录不存在）不淘汰已有会话
@@ -971,6 +1175,121 @@ process.stderr.write("line one\nline two\r\nline three\n");
         assert_eq!(supervisor.stop("b").map(|t| t.len()), Some(0));
         assert!(supervisor.running_keys().is_empty());
         assert!(supervisor.stop("b").is_none());
+    }
+
+    #[test]
+    fn exited_process_frees_its_slot_and_counts_as_crash() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        supervisor.set_max_processes(1);
+        supervisor.spawn("a", &opts(&tmp.0)).unwrap();
+        supervisor.with_process("a", |p| {
+            p.child.kill().unwrap();
+            p.child.wait().unwrap();
+        });
+        // 即使调用方仍把 a 当作忙碌，已退出的进程也不占名额；它的会话交给调用方标为未运行
+        let mut evicted = vec!["x".to_owned()];
+        supervisor
+            .spawn_evicting("b", &opts(&tmp.0), &["a".to_owned()], |keys| {
+                evicted = keys.to_vec();
+            })
+            .unwrap();
+        assert_eq!(evicted, vec!["a".to_owned()]);
+        assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
+        assert_eq!(
+            supervisor.state().crashes.get("a").map(|t| t.history.len()),
+            Some(1)
+        );
+        supervisor.stop("b");
+    }
+
+    /// 结束会话的 Core 并等它退出（模拟崩溃；进程仍留在表里）。
+    pub(crate) fn kill_core(supervisor: &Supervisor, key: &str) {
+        supervisor.with_process(key, |p| {
+            p.child.kill().unwrap();
+            p.child.wait().unwrap();
+        });
+    }
+
+    #[test]
+    fn reservation_holds_a_slot_until_committed_or_dropped() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        supervisor.set_max_processes(1);
+        let mut gone = Evicted::default();
+        let a = supervisor.reserve("a", |_| false, &mut gone).unwrap();
+        // 预留中的会话占名额、不可淘汰，也不能重复预留
+        assert!(matches!(
+            supervisor.reserve("b", |_| false, &mut gone),
+            Err(SupervisorError::LimitReached(1))
+        ));
+        assert!(matches!(
+            supervisor.reserve("a", |_| false, &mut gone),
+            Err(SupervisorError::AlreadyRunning(_))
+        ));
+        // 创建进程不持监管器锁：本线程持锁期间，另一线程的 launch 仍能完成
+        let guard = supervisor.state();
+        let (tx, rx) = mpsc::channel();
+        let process = std::thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let process = a.launch(&opts(&tmp.0));
+                let _ = tx.send(());
+                process
+            });
+            let finished = rx.recv_timeout(Duration::from_secs(10)).is_ok();
+            drop(guard);
+            let process = handle.join().unwrap().unwrap();
+            assert!(finished, "创建进程期间不应等待监管器锁");
+            process
+        });
+        assert!(supervisor.running_keys().is_empty());
+        let (_, evicted) = a.commit(process, |_| false).ok().unwrap();
+        assert!(evicted.keys().is_empty());
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+
+        // a 忙碌时放不下；空闲时可预留，未提交即 drop 则归还名额、不淘汰 a
+        assert!(matches!(
+            supervisor.reserve("b", |_| true, &mut gone),
+            Err(SupervisorError::LimitReached(1))
+        ));
+        let b = supervisor.reserve("b", |_| false, &mut gone).unwrap();
+        drop(b);
+        assert!(supervisor.state().starting.is_empty());
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+        supervisor.stop("a");
+    }
+
+    #[test]
+    fn commit_rejects_when_idle_session_turned_busy_after_reservation() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        supervisor.set_max_processes(1);
+        let mut gone = Evicted::default();
+        let a = supervisor.reserve("a", |_| false, &mut gone).unwrap();
+        let process = a.launch(&opts(&tmp.0)).unwrap();
+        a.commit(process, |_| false).ok().unwrap();
+        // 预留 b 时 a 空闲，登记 b 时 a 已忙碌：不淘汰 a，拒绝 b 并结束其进程，不超出上限
+        let b = supervisor.reserve("b", |_| false, &mut gone).unwrap();
+        let process = b.launch(&opts(&tmp.0)).unwrap();
+        let rejected_pid = process.pid();
+        assert!(pid_alive(rejected_pid));
+        let rejected = b.commit(process, |k| k == "a").err().unwrap();
+        assert!(matches!(
+            SupervisorError::from(rejected),
+            SupervisorError::LimitReached(1)
+        ));
+        // 被拒绝的进程未登记，转换（drop）时已结束并回收
+        assert!(!pid_alive(rejected_pid), "被拒绝的 Core 进程应已结束");
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+        assert!(supervisor.state().starting.is_empty());
+        // a 空闲时登记 b 则淘汰 a
+        let b = supervisor.reserve("b", |_| false, &mut gone).unwrap();
+        let process = b.launch(&opts(&tmp.0)).unwrap();
+        let (_, evicted) = b.commit(process, |_| false).ok().unwrap();
+        assert_eq!(evicted.keys(), vec!["a".to_owned()]);
+        drop(evicted);
+        assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
+        supervisor.stop("b");
     }
 
     #[test]
@@ -1025,6 +1344,39 @@ process.stderr.write("line one\nline two\r\nline three\n");
         ));
     }
 
+    #[test]
+    fn stop_for_restart_counts_exited_core_as_crash() {
+        let tmp = TempDir::new();
+        let supervisor =
+            Supervisor::new(fake_layout(&tmp.0, "process.exit(3);"), data_paths(&tmp.0)).unwrap();
+        for _ in 0..CRASH_LIMIT {
+            supervisor.spawn("c", &opts(&tmp.0)).unwrap();
+            // 等进程自行退出（不经 reap_exited），再由“重新连接”结束
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while supervisor
+                .with_process("c", |p| p.try_wait().ok().flatten().is_none())
+                .unwrap_or(false)
+            {
+                assert!(Instant::now() < deadline, "进程未退出");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let status = supervisor.stop_for_restart("c").expect("已退出");
+            assert_eq!(status.code(), Some(3));
+        }
+        assert!(matches!(
+            supervisor.spawn("c", &opts(&tmp.0)),
+            Err(SupervisorError::CrashLoop(_))
+        ));
+
+        // 仍在运行的进程被重新连接结束，不算崩溃
+        let idle = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        for _ in 0..=CRASH_LIMIT {
+            idle.spawn("d", &opts(&tmp.0)).unwrap();
+            assert!(idle.stop_for_restart("d").is_none());
+        }
+        assert!(idle.stop_for_restart("d").is_none());
+    }
+
     /// 拉起一个继承 stderr 的常驻孙进程并打印其 pid；`exit` 为真时 Core 随即退出。
     fn grandchild_script(exit: bool) -> String {
         format!(
@@ -1047,17 +1399,29 @@ setInterval(() => {{}}, 1000);
         line.trim().parse().expect("孙进程 pid")
     }
 
+    /// 进程是否仍存在（Windows 用 tasklist，其他平台 `kill -0`；已回收的进程视为不存在）。
+    pub(crate) fn pid_alive(pid: u32) -> bool {
+        if cfg!(windows) {
+            Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+                .unwrap_or(false)
+        } else {
+            Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        }
+    }
+
     /// 孙进程收尾：Windows 上应已随作业结束；其他平台没有作业，测试自行清理。
     fn cleanup_grandchild(pid: u32) {
         if cfg!(windows) {
             let deadline = Instant::now() + Duration::from_secs(10);
             loop {
-                let alive = Command::new("tasklist")
-                    .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-                    .unwrap_or(false);
-                if !alive {
+                if !pid_alive(pid) {
                     break;
                 }
                 assert!(Instant::now() < deadline, "孙进程应随 Core 的作业结束");

@@ -1,4 +1,11 @@
-import type { AgentMessage, CoreRecord, RpcCommand, RpcResponse } from "@primus/protocol";
+import type {
+  AgentMessage,
+  AssistantContent,
+  AssistantMessage,
+  CoreRecord,
+  RpcCommand,
+  RpcResponse,
+} from "@primus/protocol";
 import type { BatchListener, Platform, SessionSummary, WorkspaceInfo } from "../types";
 import { promptScenario } from "./scenario";
 
@@ -18,16 +25,23 @@ export interface MockOptions {
   stallCommand?: (cmd: RpcCommand) => boolean;
 }
 
+/** 队列项：记录本身，或推送时才生成的记录（get_messages 的响应在推送那一刻取历史快照） */
+type Queued = CoreRecord | (() => CoreRecord);
+
 interface MockSession {
   key: string;
   workspace: string;
   onBatch: BatchListener;
   seq: number;
   messages: AgentMessage[];
-  queue: CoreRecord[];
+  queue: Queued[];
   timer: ReturnType<typeof setTimeout> | undefined;
   streaming: boolean;
   closed: boolean;
+  /** 本轮已推送的事件（abort 时据此拼出被中止的消息） */
+  delivered: CoreRecord[];
+  /** 本轮已在中止中（结束事件已排队）：再次 abort 只排一条响应，不再丢弃队列 */
+  aborting: boolean;
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -51,11 +65,28 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     return s;
   };
 
+  /** 推送一条记录时更新 mock 的会话状态 */
+  const deliver = (s: MockSession, r: CoreRecord) => {
+    if (r.type === "response") return;
+    s.delivered.push(r);
+    // 历史只记已定稿（已推送 message_end）的消息，与 Core 的 get_messages 一致
+    if (r.type === "message_end") s.messages.push(r.message);
+    if (r.type === "agent_settled") {
+      s.streaming = false;
+      s.aborting = false;
+      s.delivered = [];
+    }
+  };
+
   const flush = (s: MockSession) => {
     s.timer = undefined;
     if (s.closed || s.queue.length === 0) return;
-    const records = s.queue.splice(0, batchSize);
-    if (records.some((r) => r.type === "agent_settled")) s.streaming = false;
+    const records = s.queue.splice(0, batchSize).map((item) => {
+      // 按顺序推送：生成型记录在它之前的记录都已计入历史后才生成
+      const r = typeof item === "function" ? item() : item;
+      deliver(s, r);
+      return r;
+    });
     s.seq += 1;
     if (!options.dropBatch?.(s.seq, records))
       s.onBatch({ sessionKey: s.key, seq: s.seq, records, dropped: 0 });
@@ -67,7 +98,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       s.timer = setTimeout(() => flush(s), intervalMs);
   };
 
-  const emit = (s: MockSession, ...records: CoreRecord[]) => {
+  const emit = (s: MockSession, ...records: Queued[]) => {
     s.queue.push(...records);
     schedule(s);
   };
@@ -93,43 +124,43 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         }
         const scenario = promptScenario(String(cmd.message ?? ""), now());
         s.streaming = true;
-        s.messages.push(...scenario.messages);
         emit(s, respond(cmd, { disposition: "started" }), ...scenario.records);
         return;
       }
       case "abort": {
-        const wasStreaming = s.streaming;
-        // 丢弃尚未推送的事件，只保留已排队的响应
-        s.queue = s.queue.filter((r) => r.type === "response");
-        emit(s, respond(cmd));
-        if (wasStreaming) {
-          emit(
-            s,
-            { type: "agent_end", messages: [], willRetry: false },
-            { type: "agent_settled", aborted: true },
-          );
+        // 与 Core 一致：丢弃尚未推送的事件，结束被中止的消息与工具，会话空闲（agent_settled）后才回 response。
+        // 运行开始与用户消息在 Core 受理 prompt 时就已发生，保留它们（用户消息因此留在历史里）
+        // 已在中止中（结束事件已排队）时只排响应：不丢弃上一次 abort 的结束事件，响应仍在 agent_settled 之后
+        if (s.streaming && !s.aborting) {
+          s.aborting = true;
+          s.queue = keptOnAbort(s.queue);
+          emit(s, ...abortRecords(s.delivered, now()));
         }
+        emit(s, respond(cmd));
         return;
       }
       case "get_state":
         emit(
           s,
-          respond(cmd, {
-            model: { provider: "mock", id: "mock-model", name: "Mock 模型" },
-            thinkingLevel: "medium",
-            isStreaming: s.streaming,
-            isCompacting: false,
-            steeringMode: "one-at-a-time",
-            followUpMode: "one-at-a-time",
-            sessionId: s.key,
-            autoCompactionEnabled: true,
-            messageCount: s.messages.length,
-            pendingMessageCount: 0,
-          }),
+          // 推送时才生成：反映此前推送的 agent_settled 等事件之后的运行状态
+          () =>
+            respond(cmd, {
+              model: { provider: "mock", id: "mock-model", name: "Mock 模型" },
+              thinkingLevel: "medium",
+              isStreaming: s.streaming,
+              isCompacting: false,
+              steeringMode: "one-at-a-time",
+              followUpMode: "one-at-a-time",
+              sessionId: s.key,
+              autoCompactionEnabled: true,
+              messageCount: s.messages.length,
+              pendingMessageCount: 0,
+            }),
         );
         return;
       case "get_messages":
-        emit(s, respond(cmd, { messages: s.messages.slice() }));
+        // 推送时才取快照：此前推送的事件都已计入历史；排在它前面、被 abort 丢弃的事件不会进入快照
+        emit(s, () => respond(cmd, { messages: s.messages.slice() }));
         return;
       default:
         emit(s, respond(cmd, undefined, `mock：未实现命令 ${cmd.type}`));
@@ -186,6 +217,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         timer: undefined,
         streaming: false,
         closed: false,
+        delivered: [],
+        aborting: false,
       });
       if (!sessionPath)
         sessionIndex.push({ path: `${key}.jsonl`, workspace, updatedAt: now(), name: "新会话" });
@@ -212,6 +245,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       const s = session(sessionKey);
       s.queue = [];
       s.streaming = false;
+      s.aborting = false;
+      s.delivered = [];
     },
 
     settingsGet: async () => ({ ...settings }),
@@ -250,4 +285,83 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       console[level === "debug" ? "log" : level](`[mock] ${message}`);
     },
   };
+}
+
+/**
+ * abort 时队列中保留的记录：全部响应，以及队首尚未推送的运行开始与用户消息（Core 受理 prompt 时就已发生）；
+ * 从第一条其他事件起（助手输出、工具、下一轮的 turn_start 等）全部丢弃
+ */
+function keptOnAbort(queue: readonly Queued[]): Queued[] {
+  let prefix = true;
+  return queue.filter((r) => {
+    if (typeof r === "function" || r.type === "response") return true;
+    const opening =
+      r.type === "agent_start" ||
+      r.type === "turn_start" ||
+      ((r.type === "message_start" || r.type === "message_end") && r.message.role === "user");
+    prefix &&= opening;
+    return prefix;
+  });
+}
+
+/**
+ * 中止一轮时补上的事件：正在输出的助手消息以已推送的内容结束（stopReason 为 aborted），
+ * 已开始未结束的工具以出错结束，最后 agent_end + agent_settled（aborted）。
+ */
+export function abortRecords(delivered: readonly CoreRecord[], timestamp: number): CoreRecord[] {
+  const out: CoreRecord[] = [];
+  let open: AssistantMessage | undefined;
+  let content: AssistantContent[] = [];
+  const tools = new Map<string, string>();
+  for (const r of delivered) {
+    if (r.type === "message_start") {
+      open = r.message.role === "assistant" ? r.message : undefined;
+      content = [];
+    } else if (r.type === "message_end") {
+      open = undefined;
+    } else if (r.type === "message_update" && open) {
+      const e = r.assistantMessageEvent;
+      if (e.type === "text_start") content[e.contentIndex] = { type: "text", text: "" };
+      else if (e.type === "thinking_start")
+        content[e.contentIndex] = { type: "thinking", thinking: "" };
+      else if (e.type === "text_delta" || e.type === "thinking_delta") {
+        const block = content[e.contentIndex];
+        if (block?.type === "text") block.text += e.delta;
+        if (block?.type === "thinking") block.thinking += e.delta;
+      } else if (e.type === "text_end") content[e.contentIndex] = { type: "text", text: e.content };
+      else if (e.type === "thinking_end")
+        content[e.contentIndex] = { type: "thinking", thinking: e.content };
+      else if (e.type === "toolcall_end") content[e.contentIndex] = e.toolCall;
+    } else if (r.type === "tool_execution_start") {
+      tools.set(r.toolCallId, r.toolName);
+    } else if (r.type === "tool_execution_end") {
+      tools.delete(r.toolCallId);
+    }
+  }
+  if (open) {
+    out.push({
+      type: "message_end",
+      message: {
+        ...open,
+        content: content.filter(Boolean),
+        stopReason: "aborted",
+        errorMessage: "Request was aborted",
+        timestamp,
+      },
+    });
+  }
+  for (const [toolCallId, toolName] of tools) {
+    out.push({
+      type: "tool_execution_end",
+      toolCallId,
+      toolName,
+      result: { content: [{ type: "text", text: "Operation aborted" }], details: {} },
+      isError: true,
+    });
+  }
+  out.push(
+    { type: "agent_end", messages: [], willRetry: false },
+    { type: "agent_settled", aborted: true },
+  );
+  return out;
 }
