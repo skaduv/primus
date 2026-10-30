@@ -476,6 +476,12 @@ const cases = {
       ends[0].message.stopReason === "toolUse",
       `第一条 stopReason 应为 toolUse：${ends[0].message.stopReason}`,
     );
+    // 工具执行与 follow-up 都按 toolu_faux_1 定位，所以要确认助手消息里的 toolCall 就是这个 id
+    const toolCall = contentSummary(ends[0].message).find((b) => b.type === "toolCall");
+    check(
+      toolCall?.id === "toolu_faux_1",
+      `第一条助手消息的 toolCall id 应为 toolu_faux_1：${json(toolCall)}`,
+    );
     check(
       textOf(ends[1].message) === "文件内容是「乾元」。",
       `最终回答不符：${json(textOf(ends[1].message))}`,
@@ -484,24 +490,24 @@ const cases = {
       .slice(from)
       .find((x) => x.type === "tool_execution_end" && x.toolCallId === "toolu_faux_1");
     check(toolEnd && toolEnd.isError === false, `read 工具应执行成功：${json(toolEnd)}`);
-    // 工具确实读到了文件：结果里有文件内容，且作为 tool_result 发回了模型
+    // 工具确实读到了完整文件（含末尾换行），且原样作为 tool_result 发回了模型
+    const fileText = "乾元\n";
     check(
-      json(toolEnd.result).includes("乾元"),
-      `read 工具结果应含文件内容：${json(toolEnd.result)}`,
+      json(toolEnd.result?.content) === json([{ type: "text", text: fileText }]),
+      `read 工具结果应为完整文件内容：${json(toolEnd.result)}`,
     );
-    const followUp = faux.requests.find((q) =>
-      q.body?.messages?.some(
-        (m) =>
-          Array.isArray(m.content) &&
-          m.content.some(
-            (c) =>
-              c.type === "tool_result" &&
-              c.tool_use_id === "toolu_faux_1" &&
-              json(c).includes("乾元"),
-          ),
+    const toolResults = faux.requests.flatMap((q) =>
+      (q.body?.messages ?? []).flatMap((m) =>
+        Array.isArray(m.content) ? m.content.filter((c) => c.type === "tool_result") : [],
       ),
     );
-    check(followUp, "第二次模型请求应带上 tool_use_id 为 toolu_faux_1、含文件内容的 tool_result");
+    check(
+      toolResults.length === 1 &&
+        toolResults[0].tool_use_id === "toolu_faux_1" &&
+        toolResults[0].is_error === false &&
+        toolResults[0].content === fileText,
+      `第二次模型请求应带上 tool_use_id 为 toolu_faux_1、内容为完整文件的 tool_result：${json(toolResults)}`,
+    );
 
     check(checkStreamInvariants(core, from) === 2, "应检查到两条助手消息的流式不变量");
 
