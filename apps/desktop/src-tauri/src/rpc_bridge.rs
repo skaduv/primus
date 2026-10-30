@@ -1029,6 +1029,35 @@ process.stdin.on("end", () => process.exit(0));
     }
 
     #[test]
+    fn two_outstanding_prompts_stay_busy_until_both_answered() {
+        let shared = Shared {
+            pending: Mutex::new(Pending::default()),
+            ready: Condvar::new(),
+            received: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            invalid: AtomicU64::new(0),
+            batches: AtomicU64::new(0),
+            writer_closed: AtomicBool::new(false),
+            turn: AtomicBool::new(false),
+            starting: AtomicBool::new(false),
+            prompts: AtomicU64::new(0),
+        };
+        let feed = |line: &str| track_busy(&shared, &RawValue::from_string(line.into()).unwrap());
+        // 两条 prompt 先后写入，均未响应：一次响应只结清一条
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        shared.prompts.fetch_add(1, Ordering::AcqRel);
+        feed(r#"{"type":"response","command":"prompt","success":true}"#);
+        assert_eq!(shared.prompts.load(Ordering::Acquire), 1);
+        assert!(shared.is_busy());
+        // 本轮结束时仍有未响应的 prompt：保持忙碌
+        feed(r#"{"type":"agent_settled","aborted":false}"#);
+        assert!(shared.is_busy());
+        feed(r#"{"type":"response","command":"prompt","success":true}"#);
+        assert_eq!(shared.prompts.load(Ordering::Acquire), 0);
+        assert!(!shared.is_busy());
+    }
+
+    #[test]
     fn send_marks_prompt_busy_before_core_answers() {
         let (reader, pipe_writer) = std::io::pipe().unwrap();
         let bridge = Bridge::start(

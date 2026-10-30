@@ -545,6 +545,11 @@ const cases = {
         label: "再次打开后的 agent_settled",
         fromIndex: next,
       });
+      const done = assistantEnd(reopened, next);
+      check(
+        done && textOf(done.message) === "第三答。",
+        `再次打开后的第三轮助手回复应为「第三答。」：${json(done && textOf(done.message))}`,
+      );
       const request = faux.requests.find((q) => lastUserText(q.body) === "第三问");
       check(request, "Faux 模型服务未收到再次打开后的请求");
       const sent = request.body.messages.map((m) => [m.role, requestText(m)]);

@@ -17,7 +17,7 @@
 // 由 rpc_bridge 与前端命令使用；它们接入前非测试构建先放行未使用告警，接入后删除此属性。
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
@@ -411,23 +411,85 @@ impl CoreProcess {
 #[derive(Default)]
 pub(crate) struct Evicted {
     evicted: Vec<(String, CoreProcess)>,
-    exited: Vec<CoreProcess>,
+    exited: Vec<(String, CoreProcess)>,
 }
 
 impl Evicted {
-    /// 因进程上限被淘汰的会话（不含已自行退出的）。
+    /// 进程已不在表里的会话：因进程上限被淘汰的，以及已自行退出、被清理的。
+    /// 调用方据此把它们标为未运行（发送得到 NotRunning，重启可恢复）。
     pub(crate) fn keys(&self) -> Vec<String> {
-        self.evicted.iter().map(|(k, _)| k.clone()).collect()
+        self.evicted
+            .iter()
+            .chain(&self.exited)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    fn append(&mut self, mut other: Evicted) {
+        self.evicted.append(&mut other.evicted);
+        self.exited.append(&mut other.exited);
     }
 }
 
 impl Drop for Evicted {
     fn drop(&mut self) {
-        for (_, process) in self.evicted.drain(..) {
+        for (_, process) in self.evicted.drain(..).chain(self.exited.drain(..)) {
             process.kill();
         }
-        for process in self.exited.drain(..) {
-            process.kill();
+    }
+}
+
+/// 拉起前预留的名额（[`Supervisor::reserve`]）：占着名额直到 [`Reservation::commit`]；未提交即 drop 时归还。
+/// 进程创建（[`Reservation::launch`]）不持任何锁，其他会话的发送、关闭不必等它。
+pub(crate) struct Reservation<'a> {
+    supervisor: &'a Supervisor,
+    key: String,
+    committed: bool,
+}
+
+impl Reservation<'_> {
+    /// 创建 Core 进程（不持锁）；失败时 drop 预留即归还名额，不影响其他会话。
+    pub(crate) fn launch(&self, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {
+        self.supervisor.launch(&self.key, opts)
+    }
+
+    /// 登记新进程，超出上限时淘汰最久未使用的空闲进程（`is_busy` 在监管器锁内求值，调用方让它与
+    /// “进入忙碌”持同一把锁）。预留之后若空闲会话转为忙碌、腾不出位置，暂时超出上限，不结束正在工作的会话。
+    pub(crate) fn commit(
+        mut self,
+        process: CoreProcess,
+        is_busy: impl Fn(&str) -> bool,
+    ) -> (u32, Evicted) {
+        self.committed = true;
+        let key = self.key.as_str();
+        let max = self.supervisor.max_processes();
+        let mut evicted = Evicted::default();
+        let mut state = self.supervisor.state();
+        state.starting.remove(key);
+        let pid = process.pid();
+        state.procs.insert(key.to_owned(), process);
+        while state.procs.len() > max {
+            let Some(lru) = state
+                .procs
+                .iter()
+                .filter(|(k, _)| k.as_str() != key && !is_busy(k))
+                .max_by_key(|(_, p)| p.idle_for())
+                .map(|(k, _)| k.clone())
+            else {
+                break;
+            };
+            if let Some(process) = state.procs.remove(&lru) {
+                evicted.evicted.push((lru, process));
+            }
+        }
+        (pid, evicted)
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.supervisor.state().starting.remove(&self.key);
         }
     }
 }
@@ -491,6 +553,8 @@ pub(crate) struct ExitedCore {
 struct State {
     procs: HashMap<String, CoreProcess>,
     crashes: HashMap<String, CrashTracker>,
+    /// 已预留名额、正在创建进程的会话（占名额，不可淘汰）
+    starting: HashSet<String>,
 }
 
 /// Core 进程池。
@@ -512,6 +576,7 @@ impl Supervisor {
             state: Mutex::new(State {
                 procs: HashMap::new(),
                 crashes: HashMap::new(),
+                starting: HashSet::new(),
             }),
         })
     }
@@ -555,43 +620,47 @@ impl Supervisor {
         Ok(pid)
     }
 
-    /// 拉起会话的 Core；超出上限时按 `is_busy` 只挑空闲进程淘汰，返回被淘汰的进程（在 drop 时结束）。
-    /// `is_busy` 在监管器锁内、挑选淘汰对象的同时求值：调用方让它与“进入忙碌”（写入 prompt）持同一把锁，
-    /// 挑中后、结束前也不会有会话变为忙碌。被淘汰的进程由调用方在锁外 drop。
+    /// 拉起会话的 Core：[`Supervisor::reserve`] → [`Reservation::launch`] → [`Reservation::commit`] 一次做完。
+    /// 返回被淘汰与已退出的进程（在 drop 时结束，调用方在锁外 drop）。
     pub(crate) fn spawn_with(
         &self,
         key: &str,
         opts: &LaunchOptions,
         is_busy: impl Fn(&str) -> bool,
     ) -> Result<(u32, Evicted), SupervisorError> {
-        self.layout.check()?;
         let mut evicted = Evicted::default();
-        let result = self.spawn_locked(key, opts, &is_busy, &mut evicted);
-        result.map(|pid| (pid, evicted))
+        let reservation = self.reserve(key, &is_busy, &mut evicted)?;
+        let process = reservation.launch(opts)?;
+        let (pid, more) = reservation.commit(process, &is_busy);
+        evicted.append(more);
+        Ok((pid, evicted))
     }
 
-    fn spawn_locked(
+    /// 为会话预留名额（监管器锁内，不创建进程）：先移出已自行退出的进程（计一次崩溃、不占名额），
+    /// 检查崩溃上限，再确认放得下——其他进程中空闲（`is_busy` 为假）的个数足以腾出位置，否则拒绝（第 2.2 节）。
+    /// 预留中的会话占名额且不可淘汰。已退出的进程放进 `exited`（拒绝时也放）：调用方把这些会话标为未运行，在锁外 drop。
+    pub(crate) fn reserve(
         &self,
         key: &str,
-        opts: &LaunchOptions,
-        is_busy: &dyn Fn(&str) -> bool,
-        evicted: &mut Evicted,
-    ) -> Result<u32, SupervisorError> {
+        is_busy: impl Fn(&str) -> bool,
+        exited: &mut Evicted,
+    ) -> Result<Reservation<'_>, SupervisorError> {
+        self.layout.check()?;
+        let max = self.max_processes();
         let mut state = self.state();
-        if state.procs.contains_key(key) {
+        if state.procs.contains_key(key) || state.starting.contains(key) {
             return Err(SupervisorError::AlreadyRunning(key.to_owned()));
         }
         let now = Instant::now();
-        // 已自行退出的进程不占名额：移出并计一次崩溃（同 reap_exited），由调用方在锁外收尾
-        let exited: Vec<String> = state
+        let gone: Vec<String> = state
             .procs
             .iter_mut()
             .filter_map(|(k, p)| matches!(p.try_wait(), Ok(Some(_))).then(|| k.clone()))
             .collect();
-        for k in exited {
+        for k in gone {
             if let Some(process) = state.procs.remove(&k) {
-                state.crashes.entry(k).or_default().record(now);
-                evicted.exited.push(process);
+                state.crashes.entry(k.clone()).or_default().record(now);
+                exited.exited.push((k, process));
             }
         }
         if let Some(tracker) = state.crashes.get_mut(key)
@@ -599,31 +668,16 @@ impl Supervisor {
         {
             return Err(SupervisorError::CrashLoop(key.to_owned()));
         }
-        // 拉起前确认放得下：其他进程中空闲的个数足以腾出位置，否则拒绝（不淘汰正在工作的会话）
-        let max = self.max_processes();
         let idle = state.procs.keys().filter(|k| !is_busy(k)).count();
-        if state.procs.len() + 1 > max + idle {
+        if state.procs.len() + state.starting.len() + 1 > max + idle {
             return Err(SupervisorError::LimitReached(max));
         }
-        // 先拉起新进程，成功后再淘汰超出上限的旧进程：拉起失败（项目目录不存在等）不影响其他会话
-        let process = self.launch(key, opts)?;
-        let pid = process.pid();
-        state.procs.insert(key.to_owned(), process);
-        while state.procs.len() > max {
-            let Some(lru) = state
-                .procs
-                .iter()
-                .filter(|(k, _)| k.as_str() != key && !is_busy(k))
-                .max_by_key(|(_, p)| p.idle_for())
-                .map(|(k, _)| k.clone())
-            else {
-                break;
-            };
-            if let Some(process) = state.procs.remove(&lru) {
-                evicted.evicted.push((lru, process));
-            }
-        }
-        Ok(pid)
+        state.starting.insert(key.to_owned());
+        Ok(Reservation {
+            supervisor: self,
+            key: key.to_owned(),
+            committed: false,
+        })
     }
 
     fn launch(&self, key: &str, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {
@@ -1104,20 +1158,63 @@ process.stderr.write("line one\nline two\r\nline three\n");
             p.child.kill().unwrap();
             p.child.wait().unwrap();
         });
-        // 即使调用方仍把 a 当作忙碌，已退出的进程也不占名额，也不算被淘汰
+        // 即使调用方仍把 a 当作忙碌，已退出的进程也不占名额；它的会话交给调用方标为未运行
         let mut evicted = vec!["x".to_owned()];
         supervisor
             .spawn_evicting("b", &opts(&tmp.0), &["a".to_owned()], |keys| {
                 evicted = keys.to_vec();
             })
             .unwrap();
-        assert!(evicted.is_empty());
+        assert_eq!(evicted, vec!["a".to_owned()]);
         assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
         assert_eq!(
             supervisor.state().crashes.get("a").map(|t| t.history.len()),
             Some(1)
         );
         supervisor.stop("b");
+    }
+
+    /// 结束会话的 Core 并等它退出（模拟崩溃；进程仍留在表里）。
+    pub(crate) fn kill_core(supervisor: &Supervisor, key: &str) {
+        supervisor.with_process(key, |p| {
+            p.child.kill().unwrap();
+            p.child.wait().unwrap();
+        });
+    }
+
+    #[test]
+    fn reservation_holds_a_slot_until_committed_or_dropped() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        supervisor.set_max_processes(1);
+        let mut gone = Evicted::default();
+        let a = supervisor.reserve("a", |_| false, &mut gone).unwrap();
+        // 预留中的会话占名额、不可淘汰，也不能重复预留
+        assert!(matches!(
+            supervisor.reserve("b", |_| false, &mut gone),
+            Err(SupervisorError::LimitReached(1))
+        ));
+        assert!(matches!(
+            supervisor.reserve("a", |_| false, &mut gone),
+            Err(SupervisorError::AlreadyRunning(_))
+        ));
+        // 创建进程不持监管器锁
+        let process = a.launch(&opts(&tmp.0)).unwrap();
+        assert!(supervisor.running_keys().is_empty());
+        let (_, evicted) = a.commit(process, |_| false);
+        assert!(evicted.keys().is_empty());
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+
+        // a 忙碌时放不下；空闲时可预留，未提交即 drop 则归还名额、不淘汰 a
+        assert!(matches!(
+            supervisor.reserve("b", |_| true, &mut gone),
+            Err(SupervisorError::LimitReached(1))
+        ));
+        let b = supervisor.reserve("b", |_| false, &mut gone).unwrap();
+        drop(b);
+        assert!(supervisor.state().starting.is_empty());
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+        supervisor.stop("a");
     }
 
     #[test]

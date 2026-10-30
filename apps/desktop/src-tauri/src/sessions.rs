@@ -9,7 +9,9 @@
 //!   重新连接同样受“1 分钟内 3 次”限制（第 5.5 节）。重启期间会话留在表里（标记重启中）：发送得到 NotRunning，
 //!   并发的重启被拒绝；期间被关闭的会话，重启完成后立即结束新进程，不放回表中。
 //! - 关闭：结束进程，桥随 stdout EOF 自行收尾。
-//! - 拉起新进程超出进程上限时，被淘汰会话的桥随之移除，之后的发送得到 NotRunning（可重启恢复）。
+//! - 拉起新进程超出进程上限时只淘汰空闲会话（打开或重启中的会话算忙碌）；被淘汰的、以及拉起时清理掉的已自行退出的
+//!   会话标为未运行，之后的发送得到 NotRunning（可重启恢复）。
+//! - 拉起分三步：会话表锁内预留名额 → 不持锁创建进程（其他会话的发送、关闭不等它）→ 会话表锁内登记并淘汰。
 
 use std::collections::HashMap;
 use std::fmt;
@@ -21,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::paths::DataPaths;
 use crate::rpc_bridge::{BatchSink, Bridge, BridgeConfig, BridgeError, CoreBatch};
-use crate::supervisor::{LaunchOptions, Supervisor, SupervisorError};
+use crate::supervisor::{Evicted, LaunchOptions, Supervisor, SupervisorError};
 
 /// Tauri 中使用的会话表：批次经每个会话自己的 Channel 推给前端。
 pub(crate) type AppSessions = Sessions<tauri::ipc::Channel<CoreBatch>>;
@@ -35,7 +37,7 @@ pub(crate) enum SessionError {
     NotFound(String),
     /// 工作区不是一个已存在的目录
     Workspace(PathBuf),
-    /// 会话暂无进程（重启失败或因进程上限被淘汰），需重启内核
+    /// 会话暂无进程（重启失败、因进程上限被淘汰或已自行退出），需重启内核
     NotRunning(String),
     /// 会话正在重启
     Restarting(String),
@@ -83,7 +85,7 @@ struct Entry<S> {
     bridge: Option<Bridge>,
     /// 正在拉起（打开或重启中）：桥为空，发送得到 NotRunning，重启被拒绝
     restarting: bool,
-    /// 进程因进程上限被结束（重启可恢复）
+    /// 进程已不在：因进程上限被结束，或已自行退出、被拉起时的清理移除（重启可恢复）
     evicted: bool,
     /// 下一座桥第一批之前的序号（重启失败时保留旧桥的最后序号）
     last_seq: u64,
@@ -259,21 +261,24 @@ impl<S: BatchSink + Clone> Sessions<S> {
         sink: S,
         first_seq: u64,
     ) -> Result<Bridge, SessionError> {
-        // 超出上限只淘汰空闲会话（正在运行一轮、或已写入 prompt 未响应的不淘汰）。挑选淘汰对象与
-        // 发送（写入 prompt 即记忙碌）持同一把会话表锁：挑中的会话之后不会再收到 prompt。
-        // 被淘汰的会话在锁内标记（发送方随即看到 NotRunning），进程在锁外结束
+        // 超出上限只淘汰空闲会话：正在运行一轮、已写入 prompt 未响应、或正在打开/重启（桥尚未装入）的都算忙碌。
+        // 预留名额与登记淘汰都与发送（写入 prompt 即记忙碌）持同一把会话表锁，挑中的会话之后不会再收到 prompt；
+        // 进程创建在两把锁之外进行。进程已不在的会话在锁内标记（发送方随即看到 NotRunning），进程在锁外结束
+        let mut gone = Evicted::default();
+        let reservation = {
+            let mut entries = self.entries();
+            let reservation = supervisor.reserve(key, |k| is_busy(&entries, k), &mut gone);
+            mark_gone(&mut entries, &gone);
+            reservation
+        };
+        drop(gone);
+        let reservation = reservation?;
+        // 失败时预留随 drop 归还，不影响其他会话
+        let process = reservation.launch(opts)?;
         let evicted = {
             let mut entries = self.entries();
-            let (_, evicted) = supervisor.spawn_with(key, opts, |k| {
-                entries
-                    .get(k)
-                    .is_some_and(|e| !e.evicted && e.bridge.as_ref().is_some_and(Bridge::is_busy))
-            })?;
-            for k in evicted.keys() {
-                if let Some(entry) = entries.get_mut(&k) {
-                    entry.evicted = true;
-                }
-            }
+            let (_, evicted) = reservation.commit(process, |k| is_busy(&entries, k));
+            mark_gone(&mut entries, &evicted);
             evicted
         };
         drop(evicted);
@@ -293,6 +298,22 @@ impl<S: BatchSink + Clone> Sessions<S> {
     }
 }
 
+/// 拉起时的淘汰判断：正在工作、已写入 prompt 未响应、或正在打开/重启（桥尚未装入）的会话算忙碌，不淘汰。
+fn is_busy<S>(entries: &HashMap<String, Entry<S>>, key: &str) -> bool {
+    entries.get(key).is_some_and(|e| {
+        !e.evicted && (e.restarting || e.bridge.as_ref().is_some_and(Bridge::is_busy))
+    })
+}
+
+/// 把进程已不在的会话（被淘汰或已自行退出）标为未运行：之后的发送得到 NotRunning，重启可恢复。
+fn mark_gone<S>(entries: &mut HashMap<String, Entry<S>>, gone: &Evicted) {
+    for k in gone.keys() {
+        if let Some(entry) = entries.get_mut(&k) {
+            entry.evicted = true;
+        }
+    }
+}
+
 /// 新会话的 ID：Core 要求字母数字开头结尾、只含 `[A-Za-z0-9._-]`。
 fn new_session_id(n: u64) -> String {
     let nanos = SystemTime::now()
@@ -306,7 +327,7 @@ fn new_session_id(n: u64) -> String {
 mod tests {
     use super::*;
     use crate::supervisor::CoreLayout;
-    use crate::supervisor::tests::{TempDir, data_paths, fake_layout};
+    use crate::supervisor::tests::{TempDir, data_paths, fake_layout, kill_core};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -549,6 +570,63 @@ process.stdin.on("data", (chunk) => {
         assert!(seqs.windows(2).all(|w| w[1] == w[0] + 1), "{seqs:?}");
         sessions.close(&supervisor, &a);
         sessions.close(&supervisor, &b);
+    }
+
+    #[test]
+    fn exited_core_session_reports_not_running_after_cleanup() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let first = Collect::default();
+        let a = sessions
+            .open(&supervisor, &paths, "", None, first.clone())
+            .unwrap();
+        first.wait_for(1, |r| r.get("start").is_some());
+        kill_core(&supervisor, &a);
+        // 打开 b 时清理已退出的 a：a 标为未运行，记录不再进桥
+        let b = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        assert_eq!(supervisor.running_keys(), vec![b.clone()]);
+        assert!(matches!(
+            sessions.send(&supervisor, &a, &serde_json::json!({ "id": "lost" })),
+            Err(SessionError::NotRunning(_))
+        ));
+        // 重启恢复
+        sessions.restart(&supervisor, &a).unwrap();
+        sessions
+            .send(&supervisor, &a, &serde_json::json!({ "id": "a2" }))
+            .unwrap();
+        first.wait_for(1, |r| r["id"] == "a2");
+        assert!(!first.records().iter().any(|r| r["id"] == "lost"));
+        sessions.close(&supervisor, &a);
+        sessions.close(&supervisor, &b);
+    }
+
+    #[test]
+    fn opening_or_restarting_session_counts_as_busy() {
+        let mut entries = HashMap::new();
+        entries.insert(
+            "s1".to_owned(),
+            Entry {
+                bridge: None,
+                restarting: true,
+                evicted: false,
+                last_seq: 0,
+                opts: LaunchOptions {
+                    cwd: PathBuf::from("."),
+                    session_file: None,
+                    session_id: None,
+                    approve: false,
+                    offline: false,
+                    telemetry: false,
+                },
+                sink: Collect::default(),
+            },
+        );
+        assert!(is_busy(&entries, "s1"), "桥尚未装入的会话不能被淘汰");
+        entries.get_mut("s1").unwrap().restarting = false;
+        assert!(!is_busy(&entries, "s1"));
+        assert!(!is_busy(&entries, "s2"));
     }
 
     #[test]
