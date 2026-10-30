@@ -454,35 +454,63 @@ impl Reservation<'_> {
     }
 
     /// 登记新进程，超出上限时淘汰最久未使用的空闲进程（`is_busy` 在监管器锁内求值，调用方让它与
-    /// “进入忙碌”持同一把锁）。预留之后若空闲会话转为忙碌、腾不出位置，暂时超出上限，不结束正在工作的会话。
+    /// “进入忙碌”持同一把锁）。预留之后若空闲会话转为忙碌、腾不出位置，不结束正在工作的会话，
+    /// 而是拒绝新进程（[`Rejected`]，drop 时结束新进程；不要在持锁时 drop）：进程数始终不超过上限（第 2.2 节）。
     pub(crate) fn commit(
         mut self,
         process: CoreProcess,
         is_busy: impl Fn(&str) -> bool,
-    ) -> (u32, Evicted) {
+    ) -> Result<(u32, Evicted), Rejected> {
         self.committed = true;
         let key = self.key.as_str();
         let max = self.supervisor.max_processes();
-        let mut evicted = Evicted::default();
         let mut state = self.supervisor.state();
         state.starting.remove(key);
-        let pid = process.pid();
-        state.procs.insert(key.to_owned(), process);
-        while state.procs.len() > max {
-            let Some(lru) = state
-                .procs
-                .iter()
-                .filter(|(k, _)| k.as_str() != key && !is_busy(k))
-                .max_by_key(|(_, p)| p.idle_for())
-                .map(|(k, _)| k.clone())
-            else {
-                break;
-            };
+        let excess = (state.procs.len() + 1).saturating_sub(max);
+        let mut idle: Vec<(String, Duration)> = state
+            .procs
+            .iter()
+            .filter(|(k, _)| !is_busy(k))
+            .map(|(k, p)| (k.clone(), p.idle_for()))
+            .collect();
+        if idle.len() < excess {
+            return Err(Rejected {
+                max,
+                process: Some(process),
+            });
+        }
+        // 最久未使用的先淘汰
+        idle.sort_by_key(|(_, idle_for)| std::cmp::Reverse(*idle_for));
+        let mut evicted = Evicted::default();
+        for (lru, _) in idle.into_iter().take(excess) {
             if let Some(process) = state.procs.remove(&lru) {
                 evicted.evicted.push((lru, process));
             }
         }
-        (pid, evicted)
+        let pid = process.pid();
+        state.procs.insert(key.to_owned(), process);
+        Ok((pid, evicted))
+    }
+}
+
+/// 登记被拒绝：进程都在工作、腾不出位置（[`Reservation::commit`]）。带着新创建的进程，drop 时结束它
+/// （不要在持锁时 drop）；转换成 [`SupervisorError::LimitReached`] 时同样结束。
+pub(crate) struct Rejected {
+    max: usize,
+    process: Option<CoreProcess>,
+}
+
+impl Drop for Rejected {
+    fn drop(&mut self) {
+        if let Some(process) = self.process.take() {
+            process.kill();
+        }
+    }
+}
+
+impl From<Rejected> for SupervisorError {
+    fn from(rejected: Rejected) -> Self {
+        Self::LimitReached(rejected.max)
     }
 }
 
@@ -631,7 +659,7 @@ impl Supervisor {
         let mut evicted = Evicted::default();
         let reservation = self.reserve(key, &is_busy, &mut evicted)?;
         let process = reservation.launch(opts)?;
-        let (pid, more) = reservation.commit(process, &is_busy);
+        let (pid, more) = reservation.commit(process, &is_busy)?;
         evicted.append(more);
         Ok((pid, evicted))
     }
@@ -1201,7 +1229,7 @@ process.stderr.write("line one\nline two\r\nline three\n");
         // 创建进程不持监管器锁
         let process = a.launch(&opts(&tmp.0)).unwrap();
         assert!(supervisor.running_keys().is_empty());
-        let (_, evicted) = a.commit(process, |_| false);
+        let (_, evicted) = a.commit(process, |_| false).ok().unwrap();
         assert!(evicted.keys().is_empty());
         assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
 
@@ -1215,6 +1243,35 @@ process.stderr.write("line one\nline two\r\nline three\n");
         assert!(supervisor.state().starting.is_empty());
         assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
         supervisor.stop("a");
+    }
+
+    #[test]
+    fn commit_rejects_when_idle_session_turned_busy_after_reservation() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        supervisor.set_max_processes(1);
+        let mut gone = Evicted::default();
+        let a = supervisor.reserve("a", |_| false, &mut gone).unwrap();
+        let process = a.launch(&opts(&tmp.0)).unwrap();
+        a.commit(process, |_| false).ok().unwrap();
+        // 预留 b 时 a 空闲，登记 b 时 a 已忙碌：不淘汰 a，拒绝 b 并结束其进程，不超出上限
+        let b = supervisor.reserve("b", |_| false, &mut gone).unwrap();
+        let process = b.launch(&opts(&tmp.0)).unwrap();
+        let rejected = b.commit(process, |k| k == "a").err().unwrap();
+        assert!(matches!(
+            SupervisorError::from(rejected),
+            SupervisorError::LimitReached(1)
+        ));
+        assert_eq!(supervisor.running_keys(), vec!["a".to_owned()]);
+        assert!(supervisor.state().starting.is_empty());
+        // a 空闲时登记 b 则淘汰 a
+        let b = supervisor.reserve("b", |_| false, &mut gone).unwrap();
+        let process = b.launch(&opts(&tmp.0)).unwrap();
+        let (_, evicted) = b.commit(process, |_| false).ok().unwrap();
+        assert_eq!(evicted.keys(), vec!["a".to_owned()]);
+        drop(evicted);
+        assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
+        supervisor.stop("b");
     }
 
     #[test]

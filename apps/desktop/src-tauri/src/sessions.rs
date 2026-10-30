@@ -9,8 +9,9 @@
 //!   重新连接同样受“1 分钟内 3 次”限制（第 5.5 节）。重启期间会话留在表里（标记重启中）：发送得到 NotRunning，
 //!   并发的重启被拒绝；期间被关闭的会话，重启完成后立即结束新进程，不放回表中。
 //! - 关闭：结束进程，桥随 stdout EOF 自行收尾。
-//! - 拉起新进程超出进程上限时只淘汰空闲会话（打开或重启中的会话算忙碌）；被淘汰的、以及拉起时清理掉的已自行退出的
-//!   会话标为未运行，之后的发送得到 NotRunning（可重启恢复）。
+//! - 拉起新进程超出进程上限时只淘汰空闲会话（打开或重启中的会话算忙碌），腾不出位置则拒绝（LimitReached），
+//!   进程数不超过上限；被淘汰的、拉起时清理掉的、以及发送时发现已自行退出的会话标为未运行，
+//!   之后的发送得到 NotRunning（可重启恢复）。
 //! - 拉起分三步：会话表锁内预留名额 → 不持锁创建进程（其他会话的发送、关闭不等它）→ 会话表锁内登记并淘汰。
 
 use std::collections::HashMap;
@@ -23,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::paths::DataPaths;
 use crate::rpc_bridge::{BatchSink, Bridge, BridgeConfig, BridgeError, CoreBatch};
-use crate::supervisor::{Evicted, LaunchOptions, Supervisor, SupervisorError};
+use crate::supervisor::{Evicted, LaunchOptions, Rejected, Supervisor, SupervisorError};
 
 /// Tauri 中使用的会话表：批次经每个会话自己的 Channel 推给前端。
 pub(crate) type AppSessions = Sessions<tauri::ipc::Channel<CoreBatch>>;
@@ -65,6 +66,12 @@ impl std::error::Error for SessionError {}
 impl From<SupervisorError> for SessionError {
     fn from(e: SupervisorError) -> Self {
         Self::Supervisor(e)
+    }
+}
+
+impl From<Rejected> for SessionError {
+    fn from(rejected: Rejected) -> Self {
+        Self::Supervisor(rejected.into())
     }
 }
 
@@ -177,19 +184,31 @@ impl<S: BatchSink + Clone> Sessions<S> {
         key: &str,
         record: &serde_json::Value,
     ) -> Result<(), SessionError> {
-        {
-            let entries = self.entries();
-            let entry = entries
-                .get(key)
-                .ok_or_else(|| SessionError::NotFound(key.to_owned()))?;
-            let bridge = entry
-                .bridge
-                .as_ref()
-                .filter(|_| !entry.evicted)
-                .ok_or_else(|| SessionError::NotRunning(key.to_owned()))?;
+        let mut entries = self.entries();
+        let entry = entries
+            .get_mut(key)
+            .ok_or_else(|| SessionError::NotFound(key.to_owned()))?;
+        if entry.evicted || entry.bridge.is_none() {
+            return Err(SessionError::NotRunning(key.to_owned()));
+        }
+        // 进程已自行退出（尚未被清理）：标为未运行并立即报错，不写进旧桥再等前端超时。
+        // 锁顺序与拉起一致：会话表 → 监管器
+        let alive = supervisor
+            .with_process(key, |p| {
+                let alive = !matches!(p.try_wait(), Ok(Some(_)));
+                if alive {
+                    p.touch();
+                }
+                alive
+            })
+            .unwrap_or(false);
+        if !alive {
+            entry.evicted = true;
+            return Err(SessionError::NotRunning(key.to_owned()));
+        }
+        if let Some(bridge) = &entry.bridge {
             bridge.send(record)?;
         }
-        supervisor.with_process(key, |p| p.touch());
         Ok(())
     }
 
@@ -213,8 +232,8 @@ impl<S: BatchSink + Clone> Sessions<S> {
             if entry.restarting {
                 return Err(SessionError::Restarting(key.to_owned()));
             }
-            // 重启期间桥为空，发送照样得到 NotRunning；淘汰标记在这里清除，
-            // 重启期间若新进程又被淘汰，mark_evicted 设下的标记得以保留
+            // 重启期间桥为空，发送照样得到 NotRunning；淘汰标记在这里清除。重启中 mark_gone 不再标记它
+            // （被清理的可能是旧进程），新进程是否还在由 finish_launch 按监管器的实际状态判定
             entry.restarting = true;
             entry.evicted = false;
             (
@@ -250,7 +269,11 @@ impl<S: BatchSink + Clone> Sessions<S> {
         };
         entry.restarting = false;
         entry.last_seq = last_seq;
-        result.map(|bridge| entry.bridge = Some(bridge))
+        let bridge = result?;
+        // 登记后到这里之间新进程若已被清理（自行退出），标为未运行；否则清除拉起期间可能残留的标记
+        entry.evicted = supervisor.with_process(key, |_| ()).is_none();
+        entry.bridge = Some(bridge);
+        Ok(())
     }
 
     fn launch(
@@ -267,6 +290,9 @@ impl<S: BatchSink + Clone> Sessions<S> {
         let mut gone = Evicted::default();
         let reservation = {
             let mut entries = self.entries();
+            if !entries.contains_key(key) {
+                return Err(SessionError::NotFound(key.to_owned()));
+            }
             let reservation = supervisor.reserve(key, |k| is_busy(&entries, k), &mut gone);
             mark_gone(&mut entries, &gone);
             reservation
@@ -275,12 +301,28 @@ impl<S: BatchSink + Clone> Sessions<S> {
         let reservation = reservation?;
         // 失败时预留随 drop 归还，不影响其他会话
         let process = reservation.launch(opts)?;
-        let evicted = {
+        // 登记前确认会话仍在（创建进程期间可能被关闭）：已关闭则不登记、不淘汰别的会话，锁外结束新进程。
+        // 登记时腾不出位置（预留后空闲会话转为忙碌）则拒绝，新进程同样在锁外结束（Rejected 的 drop）
+        let committed = {
             let mut entries = self.entries();
-            let (_, evicted) = reservation.commit(process, |k| is_busy(&entries, k));
-            mark_gone(&mut entries, &evicted);
-            evicted
+            if entries.contains_key(key) {
+                let committed = reservation.commit(process, |k| is_busy(&entries, k));
+                if let Ok((_, evicted)) = &committed {
+                    mark_gone(&mut entries, evicted);
+                }
+                Ok(committed)
+            } else {
+                Err(process)
+            }
         };
+        let committed = match committed {
+            Ok(committed) => committed,
+            Err(process) => {
+                process.kill();
+                return Err(SessionError::NotFound(key.to_owned()));
+            }
+        };
+        let (_, evicted) = committed?;
         drop(evicted);
         let pipes = supervisor.with_process(key, |p| (p.take_stdin(), p.take_stdout()));
         let Some((Some(stdin), Some(stdout))) = pipes else {
@@ -306,9 +348,10 @@ fn is_busy<S>(entries: &HashMap<String, Entry<S>>, key: &str) -> bool {
 }
 
 /// 把进程已不在的会话（被淘汰或已自行退出）标为未运行：之后的发送得到 NotRunning，重启可恢复。
+/// 打开/重启中的会话跳过：被清理的可能是重启前的旧进程，新进程的状态由 finish_launch 判定。
 fn mark_gone<S>(entries: &mut HashMap<String, Entry<S>>, gone: &Evicted) {
     for k in gone.keys() {
-        if let Some(entry) = entries.get_mut(&k) {
+        if let Some(entry) = entries.get_mut(&k).filter(|e| !e.restarting) {
             entry.evicted = true;
         }
     }
@@ -600,6 +643,90 @@ process.stdin.on("data", (chunk) => {
         assert!(!first.records().iter().any(|r| r["id"] == "lost"));
         sessions.close(&supervisor, &a);
         sessions.close(&supervisor, &b);
+    }
+
+    #[test]
+    fn send_to_exited_core_reports_not_running_without_cleanup() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let first = Collect::default();
+        let a = sessions
+            .open(&supervisor, &paths, "", None, first.clone())
+            .unwrap();
+        first.wait_for(1, |r| r.get("start").is_some());
+        kill_core(&supervisor, &a);
+        // 没有其他拉起来清理：发送时发现进程已退出，立即得到 NotRunning，不写进旧桥
+        assert!(matches!(
+            sessions.send(&supervisor, &a, &serde_json::json!({ "id": "lost" })),
+            Err(SessionError::NotRunning(_))
+        ));
+        // 重启（按崩溃计数）恢复
+        sessions.restart(&supervisor, &a).unwrap();
+        sessions
+            .send(&supervisor, &a, &serde_json::json!({ "id": "a2" }))
+            .unwrap();
+        first.wait_for(1, |r| r["id"] == "a2");
+        assert!(!first.records().iter().any(|r| r["id"] == "lost"));
+        sessions.close(&supervisor, &a);
+    }
+
+    #[test]
+    fn restart_after_close_during_launch_reports_not_found() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let a = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        sessions.close(&supervisor, &a);
+        // 会话已不在表里：不预留、不拉起
+        assert!(matches!(
+            sessions.launch(&supervisor, &a, &test_opts(), Collect::default(), 0),
+            Err(SessionError::NotFound(_))
+        ));
+        assert!(supervisor.running_keys().is_empty());
+    }
+
+    #[test]
+    fn cleanup_does_not_mark_restarting_session() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(fake_layout(&tmp.0, ECHO), data_paths(&tmp.0)).unwrap();
+        supervisor.spawn("s1", &test_opts()).unwrap();
+        kill_core(&supervisor, "s1");
+        let mut gone = Evicted::default();
+        let reservation = supervisor.reserve("s2", |_| false, &mut gone).unwrap();
+        assert_eq!(gone.keys(), vec!["s1".to_owned()]);
+        let mut entries = HashMap::new();
+        entries.insert("s1".to_owned(), test_entry(true));
+        // 重启中的会话：被清理的是旧进程，不标未运行（否则重启成功后发送仍得到 NotRunning）
+        mark_gone(&mut entries, &gone);
+        assert!(!entries["s1"].evicted);
+        entries.get_mut("s1").unwrap().restarting = false;
+        mark_gone(&mut entries, &gone);
+        assert!(entries["s1"].evicted);
+        drop(reservation);
+        drop(gone);
+    }
+
+    fn test_opts() -> LaunchOptions {
+        LaunchOptions {
+            cwd: PathBuf::from("."),
+            session_file: None,
+            session_id: None,
+            approve: false,
+            offline: false,
+            telemetry: false,
+        }
+    }
+
+    fn test_entry(restarting: bool) -> Entry<Collect> {
+        Entry {
+            bridge: None,
+            restarting,
+            evicted: false,
+            last_seq: 0,
+            opts: test_opts(),
+            sink: Collect::default(),
+        }
     }
 
     #[test]
