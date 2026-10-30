@@ -177,7 +177,7 @@ describe("Faux 模型服务", () => {
   });
 
   it("SSE 事件序列：message_start → 文本块 → message_delta → message_stop", () => {
-    const types = sseEvents(["a", "b"]).map((e) => e.type);
+    const types = sseEvents({ chunks: ["a", "b"] }).map((e) => e.type);
     expect(types).toEqual([
       "message_start",
       "content_block_start",
@@ -187,6 +187,45 @@ describe("Faux 模型服务", () => {
       "message_delta",
       "message_stop",
     ]);
+  });
+
+  it("多个内容块：思考（含签名）、文本、工具调用依次编码，含工具调用时 stop_reason 为 tool_use", () => {
+    const events = sseEvents({
+      blocks: [
+        { type: "thinking", chunks: ["想"], signature: "sig" },
+        { type: "text", chunks: ["好"] },
+        { type: "tool_use", id: "toolu_1", name: "read", chunks: ['{"path":', '"a"}'] },
+      ],
+    });
+    const summary = events.map((e) =>
+      e.type === "content_block_start"
+        ? `${e.index}:start:${e.content_block.type}`
+        : e.type === "content_block_delta"
+          ? `${e.index}:${e.delta.type}`
+          : e.type === "content_block_stop"
+            ? `${e.index}:stop`
+            : e.type,
+    );
+    expect(summary).toEqual([
+      "message_start",
+      "0:start:thinking",
+      "0:thinking_delta",
+      "0:signature_delta",
+      "0:stop",
+      "1:start:text",
+      "1:text_delta",
+      "1:stop",
+      "2:start:tool_use",
+      "2:input_json_delta",
+      "2:input_json_delta",
+      "2:stop",
+      "message_delta",
+      "message_stop",
+    ]);
+    expect(events.at(-2)).toMatchObject({ delta: { stop_reason: "tool_use" } });
+    expect(sseEvents({ chunks: ["a"] }).at(-2)).toMatchObject({
+      delta: { stop_reason: "end_turn" },
+    });
   });
 
   it("取最后一条用户消息的文本（字符串或文本块）", () => {

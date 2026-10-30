@@ -7,6 +7,9 @@
 //   node scripts/contract-core-rpc.mjs --entry <js> [--node <exe>]   指定入口与运行时（同 smoke-core-rpc.mjs）
 //   node scripts/contract-core-rpc.mjs --case prompt   只跑一条用例（可重复）
 //
+// stream 用例把真实 Core 的记录交给桌面端会话 store（apps/desktop/src/stores/session-store.ts）重建，
+// 验收第 7.4 节：流式重建出的消息与 message_end 的最终消息一致，agent_settled 才解锁输入。
+//
 // 每条用例单独起一个 Core 进程与一个 Faux 模型服务（core-contract/faux-model.mjs），配置与会话目录在临时目录，
 // --offline 运行；模型请求只发到 127.0.0.1 上的 Faux 服务。
 // 记录类型对照 packages/protocol（Node 24 直接加载其 .ts 源码，类型注解在加载时擦除）。
@@ -27,6 +30,18 @@ import {
   startFauxModel,
 } from "./core-contract/faux-model.mjs";
 import { CoreTargetError, coreEnv, prepareCoreTarget } from "./core-target.mjs";
+
+// 桌面端会话 store：apps/desktop 不是 ESM 包（无 "type": "module"，Next.js 配置按 CommonJS 约定），
+// Node 加载其 .ts 源码时会按 ES 模块重新解析并告警 MODULE_TYPELESS_PACKAGE_JSON；这条告警与契约无关，只滤掉它
+const emitWarning = process.emitWarning;
+process.emitWarning = (warning, ...rest) => {
+  const code = typeof rest[0] === "object" ? rest[0]?.code : rest[1];
+  if (code !== "MODULE_TYPELESS_PACKAGE_JSON") emitWarning.call(process, warning, ...rest);
+};
+const { applyChunks, initialSessionState } = await import(
+  "../apps/desktop/src/stores/session-store.ts"
+);
+process.emitWarning = emitWarning;
 
 const { values: args } = parseArgs({
   options: {
@@ -137,6 +152,132 @@ async function expectIdleState(core, expected) {
       `messageCount 应为 ${expected.messageCount}，实际 ${state.data.messageCount}`,
     );
   return state;
+}
+
+// ---------- 流式重建（第 7.4 节） ----------
+
+/** 内容块中流式重建关心的部分：签名等只在 message_end 里出现的供应商字段不比较 */
+function blockSummary(block) {
+  switch (block?.type) {
+    case "text":
+      return { type: "text", text: block.text };
+    case "thinking":
+      return { type: "thinking", thinking: block.thinking };
+    case "toolCall":
+      return { type: "toolCall", id: block.id, name: block.name, arguments: block.arguments };
+    default:
+      return block;
+  }
+}
+/** 消息内容的摘要；用户消息的 content 可能是字符串，原样比较 */
+const contentSummary = (message) =>
+  Array.isArray(message?.content) ? message.content.map(blockSummary) : message?.content;
+
+/**
+ * Core 层的流式不变量：每条助手消息的每个内容块，增量依次拼接 = *_end 的完整内容 = message_end 中的该块。
+ * 返回检查过的助手消息数
+ */
+function checkStreamInvariants(core, fromIndex) {
+  let open; // 当前消息：{ blocks: Map<index, { kind, text }>, ends: Map<index, content> }
+  let checked = 0;
+  for (const r of core.records.slice(fromIndex)) {
+    if (r.type === "message_start" && r.message?.role === "assistant") {
+      open = { blocks: new Map(), ends: new Map() };
+    } else if (r.type === "message_update" && open) {
+      const e = r.assistantMessageEvent;
+      const i = e.contentIndex;
+      if (/_start$/.test(e.type)) {
+        check(!open.blocks.has(i), `contentIndex ${i} 重复 start：${json(e)}`);
+        open.blocks.set(i, { kind: e.type.replace("_start", ""), text: "" });
+      } else if (/_delta$/.test(e.type)) {
+        const b = open.blocks.get(i);
+        check(b && `${b.kind}_delta` === e.type, `增量没有对应的 start：${json(e)}`);
+        check(!open.ends.has(i), `块 ${i} 已 end 后仍有增量：${json(e)}`);
+        b.text += e.delta;
+      } else if (/_end$/.test(e.type)) {
+        const b = open.blocks.get(i);
+        check(b && `${b.kind}_end` === e.type, `end 没有对应的 start：${json(e)}`);
+        if (e.type === "toolcall_end") {
+          check(
+            json(JSON.parse(b.text)) === json(e.toolCall.arguments),
+            `toolcall_delta 拼接的参数与 toolcall_end 不符：${json(b.text)} / ${json(e.toolCall.arguments)}`,
+          );
+          open.ends.set(i, blockSummary(e.toolCall));
+        } else {
+          check(
+            b.text === e.content,
+            `${b.kind}_delta 拼接结果与 *_end 不符：${json(b.text)} / ${json(e.content)}`,
+          );
+          open.ends.set(
+            i,
+            blockSummary(
+              b.kind === "text"
+                ? { type: "text", text: e.content }
+                : { type: "thinking", thinking: e.content },
+            ),
+          );
+        }
+      }
+    } else if (r.type === "message_end" && r.message?.role === "assistant" && open) {
+      const final = contentSummary(r.message);
+      check(
+        open.ends.size === final.length,
+        `message_end 有 ${final.length} 个块，流中 end 了 ${open.ends.size} 个`,
+      );
+      for (const [i, block] of open.ends)
+        check(
+          json(block) === json(final[i]),
+          `块 ${i} 的 *_end 与 message_end 不符：${json(block)} / ${json(final[i])}`,
+        );
+      open = undefined;
+      checked++;
+    }
+  }
+  return checked;
+}
+
+/**
+ * 把真实 Core 的记录按不同批次大小交给桌面端会话 store（每批一次 applyChunks，同 16ms 合批），检查：
+ * 每条 message_end 到达前，store 中流式重建的消息内容与最终消息一致；agent_start 到 agent_settled 之间锁定输入，
+ * agent_end 之后不解锁；全部应用后 store 的消息（system 除外）与 get_messages 一致。
+ */
+function checkStoreReplay(records, history) {
+  for (const size of [1, 3, 16, records.length]) {
+    let state = initialSessionState;
+    let settled = true;
+    let batch = [];
+    const flush = () => {
+      if (batch.length) state = applyChunks(state, [{ records: batch, gap: false }]);
+      batch = [];
+    };
+    for (const r of records) {
+      if (r.type === "message_end") {
+        // 在 message_end 之前切开批次，取此刻 store 里流式重建的结果
+        flush();
+        check(state.streamingMessage, `批次 ${size}：message_end 前 store 应处于流式输出中`);
+        const streamed = state.messages.at(-1);
+        check(
+          json(contentSummary(streamed)) === json(contentSummary(r.message)),
+          `批次 ${size}：流式重建的消息与 message_end 不符：${json(contentSummary(streamed))} / ${json(contentSummary(r.message))}`,
+        );
+      }
+      if (r.type === "agent_start") settled = false;
+      if (r.type === "agent_settled") settled = true;
+      batch.push(r);
+      if (batch.length >= size || r.type === "agent_end" || r.type === "agent_settled") {
+        flush();
+        check(state.running === !settled, `批次 ${size}：${r.type} 之后 running 应为 ${!settled}`);
+      }
+    }
+    flush();
+    check(!state.running && !state.streamingMessage, `批次 ${size}：本轮结束后应解锁且无流式消息`);
+    // system 消息不比较：事件流与 get_messages 中的 system 消息各自生成（时间戳、toolsAdded 等字段不同）
+    const timeline = state.messages.filter((m) => m.role !== "system");
+    check(
+      json(timeline) === json(history),
+      `批次 ${size}：store 重建的消息与 get_messages 不一致：${json(timeline)} / ${json(history)}`,
+    );
+  }
 }
 
 // ---------- 用例 ----------
@@ -289,6 +430,70 @@ const cases = {
     checkFauxRequests(faux);
     checkKnownRecords(core);
   },
+  /**
+   * stream：一轮含思考、文本、工具调用（读文件）与第二次模型回复的运行；验证 Core 的流式不变量，
+   * 并用桌面端会话 store 重建，流式结果须与最终消息一致（第 7.4 节，第 4 周验收：假模型流式输出与最终消息一致）
+   */
+  async stream({ core, faux, workDir }) {
+    writeFileSync(join(workDir, "hello.txt"), "乾元\n");
+    faux.enqueue({
+      blocks: [
+        { type: "thinking", chunks: ["先读", "一下\u2028文件。"], signature: "faux-sig" },
+        { type: "text", chunks: ["我来", "读取 ", "hello.txt。"] },
+        {
+          type: "tool_use",
+          id: "toolu_faux_1",
+          name: "read",
+          chunks: ['{"pa', 'th":"hel', 'lo.txt"}'],
+        },
+      ],
+    });
+    faux.enqueue({ chunks: ["文件内容是", "「乾元」", "。"] });
+
+    const from = core.records.length;
+    const r = await core.request({ type: "prompt", message: "读一下 hello.txt" });
+    check(r.success === true && r.data?.disposition === "started", `prompt 响应异常：${json(r)}`);
+    await core.waitFor((x) => x.type === "agent_settled", {
+      label: "agent_settled",
+      fromIndex: from,
+    });
+
+    const ends = core.records
+      .slice(from)
+      .filter((x) => x.type === "message_end" && x.message?.role === "assistant");
+    check(ends.length === 2, `本轮应有两条助手消息（工具调用与最终回答）：${ends.length}`);
+    check(
+      json(contentSummary(ends[0].message).map((b) => b.type)) ===
+        json(["thinking", "text", "toolCall"]),
+      `第一条助手消息应为思考、文本、工具调用：${json(contentSummary(ends[0].message))}`,
+    );
+    check(
+      ends[0].message.stopReason === "toolUse",
+      `第一条 stopReason 应为 toolUse：${ends[0].message.stopReason}`,
+    );
+    check(
+      textOf(ends[1].message) === "文件内容是「乾元」。",
+      `最终回答不符：${json(textOf(ends[1].message))}`,
+    );
+    const toolEnd = core.records
+      .slice(from)
+      .find((x) => x.type === "tool_execution_end" && x.toolCallId === "toolu_faux_1");
+    check(toolEnd && toolEnd.isError === false, `read 工具应执行成功：${json(toolEnd)}`);
+
+    check(checkStreamInvariants(core, from) === 2, "应检查到两条助手消息的流式不变量");
+
+    const messages = await core.request({ type: "get_messages" });
+    check(messages.success === true, `get_messages 失败：${json(messages)}`);
+    const history = messages.data.messages.filter((m) => m.role !== "system");
+    checkStoreReplay(
+      core.records.slice(from).filter((x) => x.type !== "response"),
+      history,
+    );
+
+    await expectIdleState(core, {});
+    checkFauxRequests(faux);
+    checkKnownRecords(core);
+  },
 };
 
 // ---------- 运行 ----------
@@ -319,7 +524,7 @@ async function runCase(name, target) {
         no_proxy: "127.0.0.1,localhost",
       },
     });
-    await cases[name]({ core, faux });
+    await cases[name]({ core, faux, workDir });
     // 有序退出：关闭 stdin 后 Core 应以 0 退出；stdout 须读完（否则残余未计入，检查不完整），
     // 关闭阶段到达的记录同样要符合协议，且不得有非法行（含不以 LF 结尾的残余）
     const code = await core.stop();

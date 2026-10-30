@@ -74,7 +74,16 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
         update({ type: "toolcall_delta", contentIndex: 0, delta: '{"path":' }),
       ]),
     ]);
-    expect(s.messages[0]).toMatchObject({ content: [{ type: "toolCall", argsText: '{"path":' }] });
+    expect(s.messages[0]).toMatchObject({
+      content: [{ type: "toolCall", argsText: '{"path":', arguments: {} }],
+    });
+    // 参数 JSON 完整后即解析出来供界面显示
+    const partial = applyChunks(s, [
+      chunk([update({ type: "toolcall_delta", contentIndex: 0, delta: '"a"}' })]),
+    ]);
+    expect(partial.messages[0]).toMatchObject({
+      content: [{ type: "toolCall", argsText: '{"path":"a"}', arguments: { path: "a" } }],
+    });
     const call = { type: "toolCall", id: "c1", name: "read", arguments: { path: "a" } };
     const s2 = applyChunks(s, [
       chunk([update({ type: "toolcall_end", contentIndex: 0, toolCall: call })]),
@@ -136,5 +145,84 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     ]);
     expect(s.lastError).toBe("忙");
     expect(applyChunks(s, [chunk([{ type: "agent_start" }])]).lastError).toBeUndefined();
+  });
+
+  it("增量只追加到已 start、未 end 的同类型块；越界索引忽略", () => {
+    const s = applyChunks(initialSessionState, [
+      chunk([
+        { type: "message_start", message: msg({ role: "assistant", content: [] }) },
+        // 没有 start 的增量：不凭空建块
+        update({ type: "text_delta", contentIndex: 0, delta: "孤儿" }),
+        update({ type: "text_start", contentIndex: 0 }),
+        update({ type: "text_delta", contentIndex: 0, delta: "甲" }),
+        // 类型不符、索引越界（会留下空洞）的增量都忽略
+        update({ type: "thinking_delta", contentIndex: 0, delta: "错" }),
+        update({ type: "text_start", contentIndex: 5 }),
+        update({ type: "text_end", contentIndex: 0, content: "甲乙" }),
+        // 定稿之后的增量不再改动该块
+        update({ type: "text_delta", contentIndex: 0, delta: "迟到" }),
+      ]),
+    ]);
+    expect(s.messages[0]).toMatchObject({ content: [{ type: "text", text: "甲乙" }] });
+    expect((s.messages[0] as { content: unknown[] }).content).toHaveLength(1);
+    expect(s.liveBlocks).toEqual([]);
+  });
+
+  it("message_update 携带的用量写到流式消息上；message_start 不改动记录本身", () => {
+    const started = msg({ role: "assistant", content: [] });
+    const s = applyChunks(initialSessionState, [
+      chunk([
+        { type: "message_start", message: started },
+        {
+          type: "message_update",
+          usage: usage(5, 7),
+          assistantMessageEvent: { type: "text_start", contentIndex: 0 },
+        } as CoreRecord,
+        update({ type: "text_delta", contentIndex: 0, delta: "字" }),
+      ]),
+    ]);
+    expect(s.messages[0]).toMatchObject({ usage: u, content: [{ type: "text", text: "字" }] });
+    expect(started).toEqual({ role: "assistant", content: [] });
+  });
+
+  it("流式途中出现缺口：之后这条消息的增量全部忽略，等 message_end 整条替换", () => {
+    const s1 = applyChunks(initialSessionState, [
+      chunk([
+        { type: "agent_start" },
+        { type: "message_start", message: msg({ role: "assistant", content: [] }) },
+        update({ type: "text_start", contentIndex: 0 }),
+        update({ type: "text_delta", contentIndex: 0, delta: "前" }),
+      ]),
+    ]);
+    // 丢掉的记录里可能有这条消息的 message_end 和下一条的 message_start：之后的增量不能确定属于哪条消息
+    const s2 = applyChunks(s1, [
+      chunk(
+        [
+          update({ type: "text_delta", contentIndex: 0, delta: "后" }),
+          update({ type: "text_start", contentIndex: 1 }),
+          update({ type: "text_end", contentIndex: 0, content: "别的消息" }),
+        ],
+        true,
+      ),
+    ]);
+    expect(s2.needsResync).toBe(true);
+    expect(s2.streamBroken).toBe(true);
+    expect(s2.messages).toEqual(s1.messages);
+
+    const final = msg({ role: "assistant", content: [{ type: "text", text: "完整" }] });
+    const s3 = applyChunks(s2, [chunk([{ type: "message_end", message: final }])]);
+    expect(s3.messages).toEqual([final]);
+    expect(s3.streamBroken).toBe(false);
+    expect(s3.streamingMessage).toBe(false);
+
+    // 下一条消息重新开始正常流式重建
+    const s4 = applyChunks(s3, [
+      chunk([
+        { type: "message_start", message: msg({ role: "assistant", content: [] }) },
+        update({ type: "text_start", contentIndex: 0 }),
+        update({ type: "text_delta", contentIndex: 0, delta: "新" }),
+      ]),
+    ]);
+    expect(s4.messages[1]).toMatchObject({ content: [{ type: "text", text: "新" }] });
   });
 });
