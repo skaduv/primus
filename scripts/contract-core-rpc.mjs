@@ -493,10 +493,15 @@ const cases = {
       q.body?.messages?.some(
         (m) =>
           Array.isArray(m.content) &&
-          m.content.some((c) => c.type === "tool_result" && json(c).includes("乾元")),
+          m.content.some(
+            (c) =>
+              c.type === "tool_result" &&
+              c.tool_use_id === "toolu_faux_1" &&
+              json(c).includes("乾元"),
+          ),
       ),
     );
-    check(followUp, "第二次模型请求应带上含文件内容的 tool_result");
+    check(followUp, "第二次模型请求应带上 tool_use_id 为 toolu_faux_1、含文件内容的 tool_result");
 
     check(checkStreamInvariants(core, from) === 2, "应检查到两条助手消息的流式不变量");
 
