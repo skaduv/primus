@@ -212,9 +212,10 @@ impl<S: BatchSink + Clone> Sessions<S> {
         }
         if let Some(bridge) = &entry.bridge {
             match bridge.send(record) {
-                // 写线程已结束（Core 的 stdin 已断开，进程正在退出）：与进程已退出同样处理，标为未运行
+                // 写线程已结束（Core 的 stdin 已断开）：发送报告未运行，需重启恢复。进程此刻仍在，
+                // 不标 evicted：evicted 只表示进程已不在，否则仍在输出回复的会话会被当作空闲淘汰、截断回复；
+                // 进程退出后下次发送的 try_wait 或拉起时的清理会再标记
                 Err(BridgeError::Closed) => {
-                    entry.evicted = true;
                     return Err(SessionError::NotRunning(key.to_owned()));
                 }
                 r => r?,
@@ -720,6 +721,29 @@ process.stdin.on("data", (chunk) => {
             sessions.finish_launch(&supervisor, "gone", 0, failed),
             Err(SessionError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn finish_launch_success_after_close_stops_new_core() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let a = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        // 模拟重启拉起成功、尚未放回桥时会话被关闭：取出新桥并从表中移除（不经 close，进程仍在）
+        let bridge = sessions
+            .entries()
+            .get_mut(&a)
+            .and_then(|e| e.bridge.take())
+            .unwrap();
+        let pid = supervisor.with_process(&a, |p| p.pid()).unwrap();
+        sessions.entries().remove(&a);
+        assert!(matches!(
+            sessions.finish_launch(&supervisor, &a, 0, Ok(bridge)),
+            Err(SessionError::NotFound(_))
+        ));
+        assert!(supervisor.running_keys().is_empty());
+        assert!(!pid_alive(pid), "会话已关闭时拉起成功的新进程应已结束");
     }
 
     #[test]

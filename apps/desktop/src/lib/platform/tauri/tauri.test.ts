@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { COMMANDS } from "../types";
+import { COMMANDS, CORE_NOT_RUNNING, PlatformError } from "../types";
 
 // vi.mock 会被提升到文件顶部，用 vi.hoisted 定义它引用的替身
 const { invoke, FakeChannel } = vi.hoisted(() => {
@@ -50,6 +50,14 @@ describe("Tauri 平台实现", () => {
     const batch = { sessionKey: "ws1:s1", seq: 1, records: [], dropped: 0 };
     args.onEvent.onmessage(batch);
     expect(onBatch).toHaveBeenCalledWith(batch);
+  });
+
+  it("结构化拒绝值转成带 code 的 PlatformError", async () => {
+    invoke.mockRejectedValueOnce({ code: CORE_NOT_RUNNING, message: "会话的内核未运行" });
+    const p = createTauriPlatform();
+    const error = await p.coreSend("k", { id: "k-1", type: "get_state" }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PlatformError);
+    expect(error).toMatchObject({ code: CORE_NOT_RUNNING, message: "会话的内核未运行" });
   });
 
   it("app_info 标记运行环境为 tauri", async () => {
