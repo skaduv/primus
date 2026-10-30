@@ -259,10 +259,24 @@ impl<S: BatchSink + Clone> Sessions<S> {
         sink: S,
         first_seq: u64,
     ) -> Result<Bridge, SessionError> {
-        // 被淘汰的会话在其进程结束之前标记，发送方先看到 NotRunning
-        // 超出上限只淘汰空闲会话；正在运行一轮的会话不淘汰
-        let busy = self.busy_keys();
-        supervisor.spawn_evicting(key, opts, &busy, |evicted| self.mark_evicted(evicted))?;
+        // 超出上限只淘汰空闲会话（正在运行一轮、或已写入 prompt 未响应的不淘汰）。挑选淘汰对象与
+        // 发送（写入 prompt 即记忙碌）持同一把会话表锁：挑中的会话之后不会再收到 prompt。
+        // 被淘汰的会话在锁内标记（发送方随即看到 NotRunning），进程在锁外结束
+        let evicted = {
+            let mut entries = self.entries();
+            let (_, evicted) = supervisor.spawn_with(key, opts, |k| {
+                entries
+                    .get(k)
+                    .is_some_and(|e| !e.evicted && e.bridge.as_ref().is_some_and(Bridge::is_busy))
+            })?;
+            for k in evicted.keys() {
+                if let Some(entry) = entries.get_mut(&k) {
+                    entry.evicted = true;
+                }
+            }
+            evicted
+        };
+        drop(evicted);
         let pipes = supervisor.with_process(key, |p| (p.take_stdin(), p.take_stdout()));
         let Some((Some(stdin), Some(stdout))) = pipes else {
             supervisor.stop(key);
@@ -276,32 +290,6 @@ impl<S: BatchSink + Clone> Sessions<S> {
             supervisor.stop(key);
             e.into()
         })
-    }
-}
-
-impl<S> Sessions<S> {
-    /// 正在运行一轮（Core 已发 agent_start、未发 agent_settled）的会话
-    fn busy_keys(&self) -> Vec<String> {
-        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        entries
-            .iter()
-            .filter(|(_, e)| !e.evicted && e.bridge.as_ref().is_some_and(Bridge::is_busy))
-            .map(|(k, _)| k.clone())
-            .collect()
-    }
-
-    /// 因进程上限被结束的会话：标为已淘汰，之后的发送得到 NotRunning。
-    /// 桥留在表里（进程已结束，线程随 EOF 退出），重启时照常 `finish` 取得最后序号接着编号
-    fn mark_evicted(&self, keys: &[String]) {
-        if keys.is_empty() {
-            return;
-        }
-        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
-        for key in keys {
-            if let Some(entry) = entries.get_mut(key) {
-                entry.evicted = true;
-            }
-        }
     }
 }
 
@@ -602,6 +590,49 @@ process.stdin.on("data", (chunk) => {
             )
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_settled");
+        let b = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        assert_eq!(supervisor.running_keys(), vec![b.clone()]);
+        sessions.close(&supervisor, &a);
+        sessions.close(&supervisor, &b);
+    }
+
+    #[test]
+    fn prompt_written_before_agent_start_is_not_evicted() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        supervisor.set_max_processes(1);
+        let sink = Collect::default();
+        let a = sessions
+            .open(&supervisor, &paths, "", None, sink.clone())
+            .unwrap();
+        // prompt 刚写入、Core 还没回 agent_start（回显 Core 只回显，不会回）：已算忙碌，不淘汰
+        sessions
+            .send(
+                &supervisor,
+                &a,
+                &serde_json::json!({ "type": "prompt", "message": "hi" }),
+            )
+            .unwrap();
+        let result = sessions.open(&supervisor, &paths, "", None, Collect::default());
+        assert!(
+            matches!(
+                result,
+                Err(SessionError::Supervisor(SupervisorError::LimitReached(1)))
+            ),
+            "已写入 prompt 的会话不应被淘汰"
+        );
+        assert_eq!(supervisor.running_keys(), vec![a.clone()]);
+        // 响应为拒绝（未开始）后即空闲，可以淘汰
+        sessions
+            .send(
+                &supervisor,
+                &a,
+                &serde_json::json!({ "type": "response", "command": "prompt", "success": false }),
+            )
+            .unwrap();
+        sink.wait_for(1, |r| r["type"] == "response");
         let b = sessions
             .open(&supervisor, &paths, "", None, Collect::default())
             .unwrap();

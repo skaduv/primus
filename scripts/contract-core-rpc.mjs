@@ -447,7 +447,9 @@ const cases = {
 
   /**
    * resume：模拟薄壳的 core_restart。新会话以 --session-id 启动，一轮之后结束进程，
-   * 用同一 ID 重新拉起：历史从会话文件恢复，下一轮的模型上下文仍含重启前的问答
+   * 用同一 ID 重新拉起：历史从会话文件恢复，下一轮的模型上下文仍含重启前的问答。
+   * 第二轮之后不关 stdin、直接强制结束（同薄壳 stop_for_restart），再次打开：两轮都已落盘，
+   * 第三轮的模型上下文含前两轮
    */
   async resume({ core, faux, startCore }) {
     faux.enqueue({ chunks: ["记住了。"] });
@@ -512,11 +514,11 @@ const cases = {
       console.error(`--- 重启后的 Core stderr ---\n${resumed.stderr}`);
       throw err;
     } finally {
-      const resumedCode = await resumed.stop();
-      check(resumedCode === 0, `重启后的 Core 关闭 stdin 应以 0 退出，实际 ${resumedCode}`);
+      // 不走有序退出：每轮结束即落盘的 Core 才经得起强制结束
+      await resumed.kill();
     }
 
-    // 再次用同一 ID 打开：重启后的一轮也已写入会话文件
+    // 再次用同一 ID 打开：强制结束前的一轮也已写入会话文件
     const reopened = startCore(["--session-id", RESUME_SESSION_ID]);
     try {
       const messages = await reopened.request({ type: "get_messages" });
@@ -533,6 +535,29 @@ const cases = {
             ["assistant", "是乾元。"],
           ]),
         `再次打开后历史应含两轮问答：${json(history)}`,
+      );
+
+      faux.enqueue({ chunks: ["第三答。"] });
+      const next = reopened.records.length;
+      const p = await reopened.request({ type: "prompt", message: "第三问" });
+      check(p.success === true, `再次打开后 prompt 响应异常：${json(p)}`);
+      await reopened.waitFor((x) => x.type === "agent_settled", {
+        label: "再次打开后的 agent_settled",
+        fromIndex: next,
+      });
+      const request = faux.requests.find((q) => lastUserText(q.body) === "第三问");
+      check(request, "Faux 模型服务未收到再次打开后的请求");
+      const sent = request.body.messages.map((m) => [m.role, requestText(m)]);
+      check(
+        json(sent) ===
+          json([
+            ["user", "记住：乾元"],
+            ["assistant", "记住了。"],
+            ["user", "刚才记的是什么？"],
+            ["assistant", "是乾元。"],
+            ["user", "第三问"],
+          ]),
+        `再次打开后的模型上下文应含两轮问答：${json(sent)}`,
       );
       checkKnownRecords(reopened);
     } finally {

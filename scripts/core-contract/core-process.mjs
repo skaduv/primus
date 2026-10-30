@@ -165,6 +165,18 @@ export class CoreProcess {
   }
 
   /**
+   * 不关闭 stdin，直接 SIGKILL 结束进程（模拟薄壳重启时的强制结束），返回退出码（被强制结束时为 null）。
+   * 之后同 stop 等 stdout 读完（最多 drainMs）。已退出时直接返回记录的退出码。
+   */
+  async kill({ drainMs = 2_000 } = {}) {
+    if (!this.exited) {
+      this.#child.kill("SIGKILL");
+      await this.#exitPromise;
+    }
+    return this.stop({ drainMs });
+  }
+
+  /**
    * 关闭 stdin 请求有序退出（rpc.md「Shutdown」），返回退出码。timeoutMs 内未退出则发 SIGTERM，
    * 再过 killGraceMs 仍未退出（如忽略了 SIGTERM）则发 SIGKILL；被强制结束时退出码为 null。
    * 退出后再等 stdout 读完（最多 drainMs：Core 的子进程若仍持有管道，stdout 可能迟迟不结束），

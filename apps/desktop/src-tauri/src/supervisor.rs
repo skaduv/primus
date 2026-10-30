@@ -407,6 +407,31 @@ impl CoreProcess {
     }
 }
 
+/// 拉起时腾出的进程：因上限被淘汰的，以及已自行退出、被移出表的。drop 时结束（不要在持有监管器锁时 drop）。
+#[derive(Default)]
+pub(crate) struct Evicted {
+    evicted: Vec<(String, CoreProcess)>,
+    exited: Vec<CoreProcess>,
+}
+
+impl Evicted {
+    /// 因进程上限被淘汰的会话（不含已自行退出的）。
+    pub(crate) fn keys(&self) -> Vec<String> {
+        self.evicted.iter().map(|(k, _)| k.clone()).collect()
+    }
+}
+
+impl Drop for Evicted {
+    fn drop(&mut self) {
+        for (_, process) in self.evicted.drain(..) {
+            process.kill();
+        }
+        for process in self.exited.drain(..) {
+            process.kill();
+        }
+    }
+}
+
 /// 崩溃计数：窗口内达到上限即不再自动重启（第 5.5 节）。
 #[derive(Debug, Clone)]
 pub(crate) struct CrashTracker {
@@ -525,30 +550,50 @@ impl Supervisor {
         busy: &[String],
         before_kill: impl FnOnce(&[String]),
     ) -> Result<u32, SupervisorError> {
+        let (pid, evicted) = self.spawn_with(key, opts, |k| busy.iter().any(|b| b == k))?;
+        before_kill(&evicted.keys());
+        Ok(pid)
+    }
+
+    /// 拉起会话的 Core；超出上限时按 `is_busy` 只挑空闲进程淘汰，返回被淘汰的进程（在 drop 时结束）。
+    /// `is_busy` 在监管器锁内、挑选淘汰对象的同时求值：调用方让它与“进入忙碌”（写入 prompt）持同一把锁，
+    /// 挑中后、结束前也不会有会话变为忙碌。被淘汰的进程由调用方在锁外 drop。
+    pub(crate) fn spawn_with(
+        &self,
+        key: &str,
+        opts: &LaunchOptions,
+        is_busy: impl Fn(&str) -> bool,
+    ) -> Result<(u32, Evicted), SupervisorError> {
         self.layout.check()?;
-        let mut evicted = Vec::new();
-        let result = self.spawn_locked(key, opts, busy, &mut evicted);
-        let keys: Vec<String> = evicted.iter().map(|(key, _)| key.clone()).collect();
-        before_kill(&keys);
-        // 被淘汰的进程在锁外结束
-        for (_, process) in evicted {
-            process.kill();
-        }
-        result
+        let mut evicted = Evicted::default();
+        let result = self.spawn_locked(key, opts, &is_busy, &mut evicted);
+        result.map(|pid| (pid, evicted))
     }
 
     fn spawn_locked(
         &self,
         key: &str,
         opts: &LaunchOptions,
-        busy: &[String],
-        evicted: &mut Vec<(String, CoreProcess)>,
+        is_busy: &dyn Fn(&str) -> bool,
+        evicted: &mut Evicted,
     ) -> Result<u32, SupervisorError> {
         let mut state = self.state();
         if state.procs.contains_key(key) {
             return Err(SupervisorError::AlreadyRunning(key.to_owned()));
         }
         let now = Instant::now();
+        // 已自行退出的进程不占名额：移出并计一次崩溃（同 reap_exited），由调用方在锁外收尾
+        let exited: Vec<String> = state
+            .procs
+            .iter_mut()
+            .filter_map(|(k, p)| matches!(p.try_wait(), Ok(Some(_))).then(|| k.clone()))
+            .collect();
+        for k in exited {
+            if let Some(process) = state.procs.remove(&k) {
+                state.crashes.entry(k).or_default().record(now);
+                evicted.exited.push(process);
+            }
+        }
         if let Some(tracker) = state.crashes.get_mut(key)
             && !tracker.allows_restart(now)
         {
@@ -556,7 +601,7 @@ impl Supervisor {
         }
         // 拉起前确认放得下：其他进程中空闲的个数足以腾出位置，否则拒绝（不淘汰正在工作的会话）
         let max = self.max_processes();
-        let idle = state.procs.keys().filter(|k| !busy.contains(k)).count();
+        let idle = state.procs.keys().filter(|k| !is_busy(k)).count();
         if state.procs.len() + 1 > max + idle {
             return Err(SupervisorError::LimitReached(max));
         }
@@ -568,14 +613,14 @@ impl Supervisor {
             let Some(lru) = state
                 .procs
                 .iter()
-                .filter(|(k, _)| k.as_str() != key && !busy.contains(k))
+                .filter(|(k, _)| k.as_str() != key && !is_busy(k))
                 .max_by_key(|(_, p)| p.idle_for())
                 .map(|(k, _)| k.clone())
             else {
                 break;
             };
             if let Some(process) = state.procs.remove(&lru) {
-                evicted.push((lru, process));
+                evicted.evicted.push((lru, process));
             }
         }
         Ok(pid)
@@ -1047,6 +1092,32 @@ process.stderr.write("line one\nline two\r\nline three\n");
         assert_eq!(supervisor.stop("b").map(|t| t.len()), Some(0));
         assert!(supervisor.running_keys().is_empty());
         assert!(supervisor.stop("b").is_none());
+    }
+
+    #[test]
+    fn exited_process_frees_its_slot_and_counts_as_crash() {
+        let tmp = TempDir::new();
+        let supervisor = Supervisor::new(fake_layout(&tmp.0, IDLE), data_paths(&tmp.0)).unwrap();
+        supervisor.set_max_processes(1);
+        supervisor.spawn("a", &opts(&tmp.0)).unwrap();
+        supervisor.with_process("a", |p| {
+            p.child.kill().unwrap();
+            p.child.wait().unwrap();
+        });
+        // 即使调用方仍把 a 当作忙碌，已退出的进程也不占名额，也不算被淘汰
+        let mut evicted = vec!["x".to_owned()];
+        supervisor
+            .spawn_evicting("b", &opts(&tmp.0), &["a".to_owned()], |keys| {
+                evicted = keys.to_vec();
+            })
+            .unwrap();
+        assert!(evicted.is_empty());
+        assert_eq!(supervisor.running_keys(), vec!["b".to_owned()]);
+        assert_eq!(
+            supervisor.state().crashes.get("a").map(|t| t.history.len()),
+            Some(1)
+        );
+        supervisor.stop("b");
     }
 
     #[test]
