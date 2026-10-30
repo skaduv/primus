@@ -9,6 +9,11 @@
 //   const faux = await startFauxModel();
 //   faux.enqueue({ chunks: ["你好", "。"] });          // 下一次模型请求的回复；队列为空时回复 DEFAULT_REPLY
 //   faux.enqueue({ chunks: [...], delayMs: 100 });     // 每个增量之间等待，用于 abort
+//   faux.enqueue({ blocks: [                           // 多个内容块（流式重建用例）：思考、文本、工具调用
+//     { type: "thinking", chunks: ["想", "一想"], signature: "sig" },
+//     { type: "text", chunks: ["好的"] },
+//     { type: "tool_use", id: "toolu_1", name: "read", chunks: ['{"path":', '"a.txt"}'] },
+//   ] });                                              // 含 tool_use 时 stop_reason 为 tool_use
 //   faux.requests                                      // 收到的请求（路径、请求体、是否被客户端提前断开）
 //   await faux.close();
 import { createServer } from "node:http";
@@ -43,9 +48,55 @@ export function fauxModelsJson(baseUrl) {
   };
 }
 
+/** 一次回复的内容块：{ chunks } 是只有一个文本块的简写 */
+export function replyBlocks(reply) {
+  return reply.blocks ?? [{ type: "text", chunks: reply.chunks }];
+}
+
+/** 一个内容块的 content_block_start、增量与 content_block_stop（Anthropic Messages 流式格式） */
+function blockEvents(block, index) {
+  const delta = (d) => ({ type: "content_block_delta", index, delta: d });
+  switch (block.type) {
+    case "text":
+      return [
+        { type: "content_block_start", index, content_block: { type: "text", text: "" } },
+        ...block.chunks.map((text) => delta({ type: "text_delta", text })),
+        { type: "content_block_stop", index },
+      ];
+    case "thinking":
+      return [
+        {
+          type: "content_block_start",
+          index,
+          content_block: { type: "thinking", thinking: "", signature: "" },
+        },
+        ...block.chunks.map((thinking) => delta({ type: "thinking_delta", thinking })),
+        ...(block.signature
+          ? [delta({ type: "signature_delta", signature: block.signature })]
+          : []),
+        { type: "content_block_stop", index },
+      ];
+    case "tool_use":
+      return [
+        {
+          type: "content_block_start",
+          index,
+          content_block: { type: "tool_use", id: block.id, name: block.name, input: {} },
+        },
+        // chunks 是参数 JSON 的片段，拼起来须是完整 JSON
+        ...block.chunks.map((partial_json) => delta({ type: "input_json_delta", partial_json })),
+        { type: "content_block_stop", index },
+      ];
+    default:
+      throw new Error(`Faux 模型不支持的内容块类型：${block.type}`);
+  }
+}
+
 /** 把一次回复编码为 Anthropic Messages 的 SSE 事件序列（不含增量之间的延迟） */
-export function sseEvents(chunks, { messageId = "msg_faux", model = FAUX_MODEL } = {}) {
-  const text = chunks.join("");
+export function sseEvents(reply, { messageId = "msg_faux", model = FAUX_MODEL } = {}) {
+  const blocks = replyBlocks(reply);
+  const size = blocks.flatMap((b) => b.chunks).join("").length;
+  const toolUse = blocks.some((b) => b.type === "tool_use");
   return [
     {
       type: "message_start",
@@ -60,17 +111,11 @@ export function sseEvents(chunks, { messageId = "msg_faux", model = FAUX_MODEL }
         usage: { input_tokens: 1, output_tokens: 0 },
       },
     },
-    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-    ...chunks.map((chunk) => ({
-      type: "content_block_delta",
-      index: 0,
-      delta: { type: "text_delta", text: chunk },
-    })),
-    { type: "content_block_stop", index: 0 },
+    ...blocks.flatMap(blockEvents),
     {
       type: "message_delta",
-      delta: { stop_reason: "end_turn", stop_sequence: null },
-      usage: { output_tokens: Math.max(1, Math.ceil(text.length / 4)) },
+      delta: { stop_reason: toolUse ? "tool_use" : "end_turn", stop_sequence: null },
+      usage: { output_tokens: Math.max(1, Math.ceil(size / 4)) },
     },
     { type: "message_stop" },
   ];
@@ -130,7 +175,7 @@ export async function startFauxModel() {
       const record = { path: req.url, body, completed: false, clientAborted: false };
       requests.push(record);
 
-      const events = sseEvents(reply.chunks, { messageId: `msg_faux_${requests.length}` });
+      const events = sseEvents(reply, { messageId: `msg_faux_${requests.length}` });
       res.writeHead(200, {
         "content-type": "text/event-stream",
         "cache-control": "no-cache",
@@ -152,7 +197,7 @@ export async function startFauxModel() {
         }
         const event = events[i++];
         res.write(encodeSse(event));
-        // 只在文本增量之间等待，其余事件立即发出
+        // 只在增量之间等待，其余事件立即发出
         const delay = event.type === "content_block_delta" ? (reply.delayMs ?? 0) : 0;
         timer = setTimeout(next, delay);
       };

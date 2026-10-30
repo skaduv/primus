@@ -34,8 +34,18 @@ export interface SessionState {
   needsResync: boolean;
   /** 时间线消息；最后一条可能仍在流式输出 */
   messages: AgentMessage[];
-  /** 当前是否有消息在流式输出（message_start 到 message_end 之间） */
+  /** 当前是否有消息在流式输出（message_start 到 message_end 之间），即 messages 的最后一条 */
   streamingMessage: boolean;
+  /**
+   * 正在流式输出、且自 *_start 起增量连续未断的内容块索引。增量只追加到这些块；
+   * *_end 定稿后移出，之后的增量不再改动它。
+   */
+  liveBlocks: number[];
+  /**
+   * 流式输出途中发现缺口：期间可能丢了增量，甚至丢了 message_end 与下一条消息的 message_start。
+   * 此后忽略这条消息的 message_update（不能确定它们属于哪条消息），等 message_end 整条替换或 get_messages 覆盖历史。
+   */
+  streamBroken: boolean;
   /** agent_start 到 agent_settled 之间为 true，期间锁定输入 */
   running: boolean;
   toolRuns: Record<string, ToolRun>;
@@ -47,55 +57,100 @@ export const initialSessionState: SessionState = {
   needsResync: false,
   messages: [],
   streamingMessage: false,
+  liveBlocks: [],
+  streamBroken: false,
   running: false,
   toolRuns: {},
 };
 
-function applyUpdate(content: TimelineContent[], e: AssistantMessageEvent): void {
-  // start / done / error 不作用于内容块（正常运行中由 message_start / message_end 承担）
+/** 末尾（忽略空白）是不是 `}`：完整的 JSON 对象必然以它结尾 */
+function endsWithBrace(text: string): boolean {
+  for (let i = text.length - 1; i >= 0; i--) {
+    const c = text[i];
+    if (c === " " || c === "\n" || c === "\r" || c === "\t") continue;
+    return c === "}";
+  }
+  return false;
+}
+
+/**
+ * 流式参数尽量解析成对象供界面显示；不完整的 JSON 保留上一次成功解析的结果。
+ * 只在末尾是 `}` 时才尝试解析：参数被切成大量小片时，避免每片都重解析整段文本（总代价随长度平方增长）。
+ */
+function parseArgs(text: string): Record<string, unknown> | undefined {
+  if (!endsWithBrace(text)) return undefined;
+  try {
+    const value: unknown = JSON.parse(text);
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 按第 7.4 节把一个增量事件作用到流式消息的内容块上：
+ * *_start 新建空块并开始接收增量；*_delta 只追加到同类型、仍在接收增量的块；*_end 用完整内容替换并定稿。
+ * start / done / error 不作用于内容块（正常运行中由 message_start / message_end 承担）。
+ */
+function applyUpdate(
+  draft: SessionState,
+  content: TimelineContent[],
+  e: AssistantMessageEvent,
+): void {
   if (!("contentIndex" in e)) return;
   const i = e.contentIndex;
+  // 索引只能指向已有的块或紧接着的新块；越界说明流已错乱，忽略以免产生空洞
+  if (!Number.isInteger(i) || i < 0 || i > content.length) return;
+  const live = draft.liveBlocks.includes(i);
+  const block = content[i];
   switch (e.type) {
     case "text_start":
       content[i] = { type: "text", text: "" };
+      if (!live) draft.liveBlocks.push(i);
       return;
     case "thinking_start":
       content[i] = { type: "thinking", thinking: "" };
+      if (!live) draft.liveBlocks.push(i);
       return;
     case "toolcall_start":
       content[i] = { type: "toolCall", id: e.id, name: e.toolName, arguments: {}, argsText: "" };
+      if (!live) draft.liveBlocks.push(i);
       return;
-    case "text_delta": {
-      const block = content[i];
-      if (block?.type === "text") block.text += e.delta;
-      else content[i] = { type: "text", text: e.delta };
+    case "text_delta":
+      if (live && block?.type === "text") block.text += e.delta;
       return;
-    }
-    case "thinking_delta": {
-      const block = content[i];
-      if (block?.type === "thinking") block.thinking += e.delta;
-      else content[i] = { type: "thinking", thinking: e.delta };
+    case "thinking_delta":
+      if (live && block?.type === "thinking") block.thinking += e.delta;
       return;
-    }
-    case "toolcall_delta": {
-      const block = content[i];
-      if (block?.type === "toolCall") {
+    case "toolcall_delta":
+      if (live && block?.type === "toolCall") {
         const call = block as StreamingToolCall;
         call.argsText = (call.argsText ?? "") + e.delta;
+        const args = parseArgs(call.argsText);
+        if (args) call.arguments = args;
       }
       return;
-    }
-    // *_end 携带完整内容，替换累积结果
+    // *_end 携带完整内容，替换累积结果；该块定稿
     case "text_end":
       content[i] = { type: "text", text: e.content };
-      return;
+      break;
     case "thinking_end":
       content[i] = { type: "thinking", thinking: e.content };
-      return;
+      break;
     case "toolcall_end":
       content[i] = e.toolCall;
-      return;
+      break;
   }
+  draft.liveBlocks = draft.liveBlocks.filter((x) => x !== i);
+}
+
+/** 结束当前流式消息的状态（不改动消息本身） */
+function endStream(draft: SessionState): void {
+  draft.streamingMessage = false;
+  draft.liveBlocks = [];
+  draft.streamBroken = false;
 }
 
 function applyRecord(draft: SessionState, record: CoreRecord): void {
@@ -111,7 +166,7 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       // 那条消息由它的 message_end 补上。
       if (r.command === "get_messages" && Array.isArray(r.data?.messages)) {
         draft.messages = r.data.messages;
-        draft.streamingMessage = false;
+        endStream(draft);
         draft.needsResync = false;
       }
       // get_state 校正运行状态（缺号时可能错过了 agent_start / agent_settled）
@@ -126,31 +181,31 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       return;
     case "agent_settled":
       draft.running = false;
-      draft.streamingMessage = false;
+      endStream(draft);
       return;
     case "message_start": {
-      const { message } = record as { message: AgentMessage };
-      const copy = { ...message } as AgentMessage & { content?: unknown };
-      if (Array.isArray(copy.content)) copy.content = [...copy.content];
-      draft.messages.push(copy);
+      // 复制一份再累积增量：不改动记录本身（记录可能被其他地方持有）
+      draft.messages.push(structuredClone(record.message));
       draft.streamingMessage = true;
+      draft.liveBlocks = [];
+      draft.streamBroken = false;
       return;
     }
     case "message_update": {
-      const { assistantMessageEvent } = record as { assistantMessageEvent: AssistantMessageEvent };
-      if (!draft.streamingMessage) return;
-      const last = draft.messages.at(-1) as { role: string; content?: unknown } | undefined;
+      if (!draft.streamingMessage || draft.streamBroken) return;
+      const last = draft.messages.at(-1);
       if (last?.role !== "assistant" || !Array.isArray(last.content)) return;
-      applyUpdate(last.content as TimelineContent[], assistantMessageEvent);
+      last.usage = record.usage;
+      applyUpdate(draft, last.content as TimelineContent[], record.assistantMessageEvent);
       return;
     }
     case "message_end": {
       // message_end 是权威的最终版本，整条替换
-      const { message } = record as { message: AgentMessage };
+      const { message } = record;
       if (draft.streamingMessage && draft.messages.length > 0)
         draft.messages[draft.messages.length - 1] = message;
       else draft.messages.push(message);
-      draft.streamingMessage = false;
+      endStream(draft);
       return;
     }
     case "tool_execution_start": {
@@ -194,7 +249,14 @@ export interface RecordChunk {
 export function applyChunks(state: SessionState, chunks: readonly RecordChunk[]): SessionState {
   return produce(state, (draft) => {
     for (const chunk of chunks) {
-      if (chunk.gap) draft.needsResync = true;
+      if (chunk.gap) {
+        draft.needsResync = true;
+        // 流式途中丢了记录：这条消息之后的增量不再可信（见 streamBroken）
+        if (draft.streamingMessage) {
+          draft.streamBroken = true;
+          draft.liveBlocks = [];
+        }
+      }
       for (const record of chunk.records) applyRecord(draft, record);
     }
   });
