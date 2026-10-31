@@ -303,6 +303,15 @@ export function signingConfig(env = process.env) {
 }
 
 /**
+ * updater 私钥文件路径（TAURI_SIGNING_PRIVATE_KEY_PATH）解析后的绝对路径：tauri signer 经
+ * `pnpm --filter @primus/desktop` 在 apps/desktop 下运行，相对路径以该目录为基准；未配置路径时返回 null。
+ */
+export function updaterKeyFile(env = process.env, base = join(root, "apps/desktop")) {
+  const keyPath = env.TAURI_SIGNING_PRIVATE_KEY_PATH;
+  return keyPath ? resolve(base, keyPath) : null;
+}
+
+/**
  * signtool.exe 路径：PRIMUS_SIGNTOOL 优先；否则取 Windows SDK（Windows Kits\10\bin\<版本>\<主机架构>）
  * 中版本最新的一个（GitHub 托管运行器装了 SDK，但 signtool 不在 PATH）；都没有时退回 PATH 中的 signtool。
  */
@@ -465,6 +474,10 @@ async function main() {
   // 签名配置先查：配一半（只有证书指纹没有时间戳服务器、有私钥没公钥等）在编译前就拒绝
   const signing = signingConfig();
   if (signing.problems.length) fail(`签名配置有误：\n  ${signing.problems.join("\n  ")}`);
+  // 私钥文件不存在时在编译前就失败，而不是签完 exe 与 MSI 后才在 tauri signer 处失败（--dry-run 不读文件）
+  const keyFile = updaterKeyFile();
+  if (!dryRun && keyFile && !existsSync(keyFile))
+    fail(`TAURI_SIGNING_PRIVATE_KEY_PATH 指向的文件不存在：${keyFile}`);
   const signtool = signing.authenticode ? resolveSigntool() : null;
   console.log(
     `签名：代码签名${signing.authenticode ? `已配置（${signtool}）` : "未配置"}，updater 签名${signing.updater ? "已配置" : "未配置"}`,

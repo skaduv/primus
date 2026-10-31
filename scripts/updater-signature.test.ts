@@ -64,6 +64,18 @@ describe("updater-signature", () => {
     expect(() => verifyUpdaterSignature(HELLO, TAURI_SIG, other.pubkey)).toThrow("与文件内容不符");
   });
 
+  it("trusted comment 含多个 version 字段时取第一个，与 updater 一致", () => {
+    const { pubkey, signFile } = makeKeyAndSigner();
+    const data = Buffer.from("x");
+    const { sig } = signFile(data, {
+      comment: "timestamp:1\tfile:a.msi\tversion:1.2.2\tversion:1.2.3",
+    });
+    expect(() => verifyUpdaterSignature(data, sig, pubkey, { version: "1.2.3" })).toThrow(
+      "绑定的版本 1.2.2 与安装包版本 1.2.3 不一致",
+    );
+    expect(verifyUpdaterSignature(data, sig, pubkey, { version: "1.2.2" }).version).toBe("1.2.2");
+  });
+
   it("支持预哈希（ED）与原文（Ed）两种算法", () => {
     const { pubkey, signFile } = makeKeyAndSigner();
     const data = Buffer.from("msi bytes");

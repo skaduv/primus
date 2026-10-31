@@ -74,7 +74,10 @@ export function trustedCommentFields(comment) {
   const fields = {};
   for (const part of comment.split("\t")) {
     const at = part.indexOf(":");
-    if (at > 0) fields[part.slice(0, at)] = part.slice(at + 1);
+    if (at <= 0) continue;
+    const key = part.slice(0, at);
+    // 同名字段取第一个，与 tauri-plugin-updater 的 signed_version（find_map）一致
+    if (!Object.hasOwn(fields, key)) fields[key] = part.slice(at + 1);
   }
   return fields;
 }

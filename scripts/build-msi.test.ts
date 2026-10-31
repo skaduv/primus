@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
@@ -20,6 +21,7 @@ import {
   signingConfig,
   signtoolArgs,
   signtoolVerifyArgs,
+  updaterKeyFile,
   WXS,
   wixBuildArgs,
 } from "./build-msi.mjs";
@@ -194,6 +196,22 @@ describe("build-msi", () => {
       "AB",
       "a.msi",
     ]);
+  });
+
+  it("updater 私钥路径以 apps/desktop 为基准解析（与 tauri signer 一致），绝对路径原样保留", () => {
+    expect(updaterKeyFile({})).toBeNull();
+    const base = resolve("/repo/apps/desktop");
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: "k.key" }, base)).toBe(
+      resolve(base, "k.key"),
+    );
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: "../../k.key" }, base)).toBe(
+      resolve("/repo/k.key"),
+    );
+    const abs = resolve("/keys/updater.key");
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: abs }, base)).toBe(abs);
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: "k" })).toBe(
+      resolve(fileURLToPath(new URL("..", import.meta.url)), "apps/desktop", "k"),
+    );
   });
 
   it("签名配置：成对配置才签名，配一半或 PRIMUS_REQUIRE_SIGNING=1 而缺配置时报错", () => {
