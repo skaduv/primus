@@ -4,7 +4,7 @@
       "name": "开发 OpenAI Responses",
       "baseUrl": "https://example.com/v1",
       "api": "openai-responses",
-      "apiKey": "<开发用 key，仅放在 .dev-data/dev-models.json>",
+      "apiKey": "$PRIMUS_DEV_OPENAI_API_KEY",
       "models": [
         {
           "id": "<模型 id>",
@@ -20,7 +20,7 @@
       "name": "开发 Anthropic Messages",
       "baseUrl": "https://example.com",
       "api": "anthropic-messages",
-      "apiKey": "<开发用 key，仅放在 .dev-data/dev-models.json>",
+      "apiKey": "$PRIMUS_DEV_ANTHROPIC_API_KEY",
       "models": [
         {
           "id": "<模型 id>",
