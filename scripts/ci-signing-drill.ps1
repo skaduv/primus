@@ -4,7 +4,7 @@
 #
 #   - 证书：New-SelfSignedCertificate 生成到 CurrentUser\My（私钥不可导出、2 天后过期），公钥证书导入
 #     LocalMachine\Root 与 TrustedPublisher，使 signtool verify /pa 在本运行器上能建立信任链
-#     （GitHub 托管运行器以管理员运行，导入不弹窗；运行器用完即销毁）
+#     （GitHub 托管运行器以管理员运行，导入不弹窗；运行器用完即销毁，因此脚本拒绝在自托管运行器上运行）
 #   - updater 密钥：tauri signer generate 写到 RUNNER_TEMP，随机口令
 #   - 写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL、TAURI_SIGNING_PRIVATE_KEY_PATH、
 #     TAURI_SIGNING_PRIVATE_KEY_PASSWORD（已打码）、TAURI_SIGNING_PUBLIC_KEY、PRIMUS_REQUIRE_SIGNING=1
@@ -15,7 +15,10 @@ param(
   [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
 $ErrorActionPreference = "Stop"
-if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP) { throw "只能在 GitHub Actions 运行器上运行（会改动本机受信任根证书）" }
+# 自托管运行器同样有 GITHUB_ENV / RUNNER_TEMP，但不会用完即销毁，导入的演练证书会被长期信任：只允许 GitHub 托管运行器
+if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP -or $env:RUNNER_ENVIRONMENT -ne "github-hosted") {
+  throw "只能在 GitHub 托管运行器上运行（会改动本机受信任根证书；RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT）"
+}
 
 $cert = New-SelfSignedCertificate -Type CodeSigningCert `
   -Subject "CN=Primus CI Signing Drill, O=Primus CI" `
