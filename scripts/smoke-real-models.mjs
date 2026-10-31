@@ -11,7 +11,13 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CoreProcess } from "./core-contract/core-process.mjs";
 import { prepareCoreTarget, repoRoot } from "./core-target.mjs";
-import { hasOnlyAllowedApis, resolveApiKey, smokeEnv } from "./real-models-config.mjs";
+import {
+  hasModelId,
+  hasModelLevelApiKey,
+  hasOnlyAllowedApis,
+  resolveApiKey,
+  smokeEnv,
+} from "./real-models-config.mjs";
 
 // 供应商 ID 参与临时目录拼接，只允许安全字符（排除路径分隔符、"."、".."）
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -57,6 +63,16 @@ try {
     }
     if (!hasOnlyAllowedApis(provider)) {
       console.error(`✗ ${label}：只允许 openai-responses / anthropic-messages`);
+      failed++;
+      continue;
+    }
+    if (!hasModelId(provider)) {
+      console.error(`✗ ${label}：models 的第一个模型缺少 id`);
+      failed++;
+      continue;
+    }
+    if (hasModelLevelApiKey(provider)) {
+      console.error(`✗ ${label}：apiKey 只能设在供应商级，模型级不允许`);
       failed++;
       continue;
     }

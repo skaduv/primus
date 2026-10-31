@@ -1,4 +1,5 @@
 import { execSync } from "node:child_process";
+import { resolve } from "node:path";
 import { coreEnv } from "./core-target.mjs";
 
 const ALLOWED_APIS = new Set(["openai-responses", "anthropic-messages"]);
@@ -23,6 +24,17 @@ export function hasOnlyAllowedApis(provider) {
   const apis = (provider.models ?? []).map((model) => model.api ?? provider.api);
   if (provider.api !== undefined) apis.push(provider.api);
   return apis.length > 0 && apis.every((api) => ALLOWED_APIS.has(api));
+}
+
+/** 冒烟只用 models 的第一个模型，它必须带非空字符串 id，否则 Core 会收到 --model undefined。 */
+export function hasModelId(provider) {
+  const id = provider.models?.[0]?.id;
+  return typeof id === "string" && id.length > 0;
+}
+
+/** apiKey 只允许设在供应商级：模型级字段会随整个供应商原样写入临时 models.json。 */
+export function hasModelLevelApiKey(provider) {
+  return (provider.models ?? []).some((model) => model.apiKey !== undefined);
 }
 
 function executeKeyCommand(command, env) {
@@ -70,6 +82,10 @@ export function smokeEnv({ home, coreDir, tmpDir, apiKey, extraEnv = {}, env = p
   const inherited = Object.fromEntries(
     Object.entries(env).filter(([name]) => allowed.has(name.toUpperCase())),
   );
+  // Core 在沙箱工作目录启动，相对路径的自定义 CA 要先按当前目录解析成绝对路径
+  if (inherited.NODE_EXTRA_CA_CERTS) {
+    inherited.NODE_EXTRA_CA_CERTS = resolve(inherited.NODE_EXTRA_CA_CERTS);
+  }
   return {
     ...coreEnv({ home, coreDir, env: inherited }),
     ...extraEnv,

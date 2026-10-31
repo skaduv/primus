@@ -1,6 +1,13 @@
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
-import { hasOnlyAllowedApis, resolveApiKey, smokeEnv } from "./real-models-config.mjs";
+import {
+  hasModelId,
+  hasModelLevelApiKey,
+  hasOnlyAllowedApis,
+  resolveApiKey,
+  smokeEnv,
+} from "./real-models-config.mjs";
 
 describe("真实模型配置", () => {
   it("校验供应商级与全部模型的协议，模型可继承供应商协议", () => {
@@ -18,6 +25,21 @@ describe("真实模型配置", () => {
     ).toBe(false);
     expect(hasOnlyAllowedApis({ api: "forbidden-api", models: [] })).toBe(false);
     expect(hasOnlyAllowedApis({ models: [{ id: "a" }] })).toBe(false);
+    expect(hasOnlyAllowedApis({ models: [] })).toBe(false);
+  });
+
+  it("第一个模型必须有非空 id", () => {
+    expect(hasModelId({ models: [{ id: "a" }] })).toBe(true);
+    expect(hasModelId({ models: [] })).toBe(false);
+    expect(hasModelId({})).toBe(false);
+    expect(hasModelId({ models: [{ id: "" }] })).toBe(false);
+    expect(hasModelId({ models: [{ name: "a" }] })).toBe(false);
+  });
+
+  it("拒绝模型级 apiKey", () => {
+    expect(hasModelLevelApiKey({ apiKey: "$K", models: [{ id: "a" }] })).toBe(false);
+    expect(hasModelLevelApiKey({ models: [{ id: "a", apiKey: "plain" }] })).toBe(true);
+    expect(hasModelLevelApiKey({ models: [{ id: "a" }, { id: "b", apiKey: "$K" }] })).toBe(true);
   });
 
   it("环境变量引用保留原配置，拒绝缺失变量与明文 key", () => {
@@ -69,11 +91,13 @@ describe("真实模型配置", () => {
       HTTPS_PROXY: "http://proxy",
       HTTP_PROXY: "http://proxy",
       NO_PROXY: "localhost",
-      NODE_EXTRA_CA_CERTS: "ca.pem",
+      NODE_EXTRA_CA_CERTS: resolve("ca.pem"),
       TEST_KEY: "secret",
       TEMP: "tmp",
       TMP: "tmp",
     });
     expect(result.UNRELATED_SECRET).toBeUndefined();
+    // 相对 CA 路径按当前目录解析成绝对路径，且不改动传入的环境
+    expect(env.NODE_EXTRA_CA_CERTS).toBe("ca.pem");
   });
 });
