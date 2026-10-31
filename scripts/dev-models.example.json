@@ -1,0 +1,36 @@
+{
+  "providers": {
+    "dev-openai": {
+      "name": "开发 OpenAI Responses",
+      "baseUrl": "https://example.com/v1",
+      "api": "openai-responses",
+      "apiKey": "$PRIMUS_DEV_OPENAI_API_KEY",
+      "models": [
+        {
+          "id": "<模型 id>",
+          "name": "<模型 id>",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 4096
+        }
+      ]
+    },
+    "dev-anthropic": {
+      "name": "开发 Anthropic Messages",
+      "baseUrl": "https://example.com",
+      "api": "anthropic-messages",
+      "apiKey": "$PRIMUS_DEV_ANTHROPIC_API_KEY",
+      "models": [
+        {
+          "id": "<模型 id>",
+          "name": "<模型 id>",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 4096
+        }
+      ]
+    }
+  }
+}

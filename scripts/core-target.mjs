@@ -71,9 +71,9 @@ export function prepareCoreTarget({ dist = false, entry, node, sandbox }) {
  * 薄壳启动 Core 时的环境变量（技术方案第 4.4 节）：配置与会话目录指向 coreDir，HOME / USERPROFILE 指向 home
  * （若 Core 忽略 PRIMUS_CODING_AGENT_DIR 回退到主目录，会在 home/.primus 下留下痕迹），清空 NODE_OPTIONS。
  */
-export function coreEnv({ home, coreDir }) {
+export function coreEnv({ home, coreDir, env = process.env }) {
   return {
-    ...process.env,
+    ...env,
     HOME: home,
     USERPROFILE: home,
     PRIMUS_CODING_AGENT_DIR: coreDir,
