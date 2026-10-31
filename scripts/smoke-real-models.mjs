@@ -7,16 +7,24 @@
 // 字面量 key 直接拒绝；Core 在运行时按引用取值，写给 Core 的临时 models.json 里也只有引用。
 // 用法：PRIMUS_DEV_OPENAI_API_KEY=… PRIMUS_DEV_ANTHROPIC_API_KEY=… node scripts/smoke-real-models.mjs [--models <path>] [--provider <id>] [--timeout <ms>]
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { CoreProcess } from "./core-contract/core-process.mjs";
-import { coreEnv, prepareCoreTarget } from "./core-target.mjs";
+import { coreEnv, prepareCoreTarget, repoRoot } from "./core-target.mjs";
 
 const ALLOWED_APIS = new Set(["openai-responses", "anthropic-messages"]);
 // 供应商 ID 参与临时目录拼接，只允许安全字符（排除路径分隔符、"."、".."）
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const ENV_REF = /^\$([A-Za-z_][A-Za-z0-9_]*)$/;
+// Core 只继承进程启动与取密钥命令所需的基础变量，以及配置显式引用的密钥变量。
+const INHERITED_ENV = new Set([
+  "PATH",
+  "SYSTEMROOT",
+  "SYSTEMDRIVE",
+  "COMSPEC",
+  "PATHEXT",
+  "WINDIR",
+]);
 
 /** apiKey 必须是引用而非字面量；"$NAME" 时还要求该环境变量已设置。返回错误说明或 undefined */
 function checkApiKey(apiKey) {
@@ -27,6 +35,17 @@ function checkApiKey(apiKey) {
   if (!process.env[env[1]]) return `环境变量 ${env[1]} 未设置`;
   return undefined;
 }
+
+function smokeEnv({ home, coreDir, tmpDir, apiKey }) {
+  const keyEnv = ENV_REF.exec(apiKey)?.[1];
+  const allowed = new Set(INHERITED_ENV);
+  if (keyEnv) allowed.add(keyEnv.toUpperCase());
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => allowed.has(name.toUpperCase())),
+  );
+  return { ...coreEnv({ home, coreDir, env }), TEMP: tmpDir, TMP: tmpDir };
+}
+
 const { values: args } = parseArgs({
   options: {
     models: { type: "string", default: resolve(".dev-data/dev-models.json") },
@@ -50,18 +69,23 @@ const textOf = (message) =>
     .map((c) => c.text)
     .join("");
 
-const sandbox = mkdtempSync(join(tmpdir(), "primus-real-models-"));
+const devDataDir = resolve(repoRoot, ".dev-data");
+mkdirSync(devDataDir, { recursive: true });
+const sandbox = mkdtempSync(join(devDataDir, "real-models-"));
 let failed = 0;
 try {
   const target = prepareCoreTarget({ sandbox: join(sandbox, "target") });
   for (const [id, provider] of providers) {
-    const label = `${id}（${provider.api}）`;
+    const firstModel = provider.models?.[0];
+    const model = firstModel?.id;
+    const api = firstModel?.api ?? provider.api;
+    const label = `${id}（${api}）`;
     if (!PROVIDER_ID.test(id)) {
       console.error(`✗ ${JSON.stringify(id)}：供应商 ID 只能包含字母、数字、- 和 _`);
       failed++;
       continue;
     }
-    if (!ALLOWED_APIS.has(provider.api)) {
+    if (!ALLOWED_APIS.has(api)) {
       console.error(`✗ ${label}：只允许 openai-responses / anthropic-messages`);
       failed++;
       continue;
@@ -72,19 +96,20 @@ try {
       failed++;
       continue;
     }
-    const model = provider.models?.[0]?.id;
     const coreDir = join(sandbox, id, "core");
     const workDir = join(sandbox, id, "work");
+    const tmpDir = join(sandbox, id, "tmp");
     mkdirSync(coreDir, { recursive: true });
     mkdirSync(workDir, { recursive: true });
+    mkdirSync(tmpDir, { recursive: true });
     writeFileSync(join(coreDir, "models.json"), JSON.stringify({ providers: { [id]: provider } }));
     const secret = `乾元-${Math.random().toString(36).slice(2, 8)}`;
     writeFileSync(join(workDir, "口令.txt"), `口令是：${secret}\n`);
     const core = new CoreProcess({
       ...target,
-      args: ["--provider", id, "--model", model, "--no-session"],
+      args: ["--provider", id, "--model", model, "--no-session", "--tools", "read"],
       cwd: workDir,
-      env: coreEnv({ home: join(sandbox, id), coreDir }),
+      env: smokeEnv({ home: join(sandbox, id), coreDir, tmpDir, apiKey: provider.apiKey }),
     });
     const started = Date.now();
     try {
@@ -104,23 +129,19 @@ try {
       });
       const records = core.records.slice(from);
       const tools = records.filter((x) => x.type === "tool_execution_end");
-      const errors = records.filter((x) => x.type === "message_end" && x.message?.errorMessage);
-      if (errors.length)
+      const finalMessage = records
+        .filter((x) => x.type === "message_end" && x.message?.role === "assistant")
+        .at(-1)?.message;
+      if (finalMessage?.errorMessage)
+        throw new Error(`模型报错：${finalMessage.errorMessage.slice(0, 300)}`);
+      if (
+        !tools.some((t) => t.toolName === "read" && !t.isError && textOf(t.result).includes(secret))
+      ) {
         throw new Error(
-          `模型报错：${errors
-            .map((e) => e.message.errorMessage)
-            .join("；")
-            .slice(0, 300)}`,
-        );
-      if (!tools.some((t) => t.toolName === "read" && !t.isError)) {
-        throw new Error(
-          `没有成功的 read 工具调用：${JSON.stringify(tools.map((t) => [t.toolName, t.isError]))}`,
+          `没有成功读取并返回口令的 read 工具调用：${JSON.stringify(tools.map((t) => [t.toolName, t.isError]))}`,
         );
       }
-      const answer = records
-        .filter((x) => x.type === "message_end" && x.message?.role === "assistant")
-        .map((x) => textOf(x.message))
-        .at(-1);
+      const answer = textOf(finalMessage);
       if (!answer?.includes(secret))
         throw new Error(`回复未包含口令 ${secret}：${JSON.stringify(answer)}`);
       console.log(`✓ ${label} ${model}：调用 read 并复述口令（${Date.now() - started} ms）`);
