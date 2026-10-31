@@ -2,6 +2,7 @@
 // 真实模型冒烟（第 4 周第 3 项，仅限开发）：用开发用 models.json（明文 key，放在已 gitignore 的
 // .dev-data/dev-models.json，或 --models 指定）对其中每个供应商拉起 Core，各完成一次含工具调用的对话：
 // 让模型用 read 工具读取临时目录里的文件并复述其中的口令，检查 tool_execution_end 成功且回复含口令。
+// 模板见 scripts/dev-models.example.json（复制到 .dev-data/dev-models.json 后填入端点、key 与模型）。
 // 用法：node scripts/smoke-real-models.mjs [--models <path>] [--provider <id>]
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
