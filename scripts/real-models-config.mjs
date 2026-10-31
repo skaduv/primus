@@ -26,10 +26,13 @@ export function hasOnlyAllowedApis(provider) {
   return apis.length > 0 && apis.every((api) => ALLOWED_APIS.has(api));
 }
 
-/** 冒烟只用 models 的第一个模型，它必须带非空字符串 id，否则 Core 会收到 --model undefined。 */
+/**
+ * 冒烟只用 models 的第一个模型，它必须带非空字符串 id，否则 Core 会收到 --model undefined；
+ * id 会作为命令行参数传给 spawn，含 NUL 字符时 spawn 会直接抛错。
+ */
 export function hasModelId(provider) {
   const id = provider.models?.[0]?.id;
-  return typeof id === "string" && id.length > 0;
+  return typeof id === "string" && id.length > 0 && !id.includes("\u0000");
 }
 
 /** apiKey 只允许设在供应商级：模型级字段会随整个供应商原样写入临时 models.json。 */
@@ -82,9 +85,12 @@ export function smokeEnv({ home, coreDir, tmpDir, apiKey, extraEnv = {}, env = p
   const inherited = Object.fromEntries(
     Object.entries(env).filter(([name]) => allowed.has(name.toUpperCase())),
   );
-  // Core 在沙箱工作目录启动，相对路径的自定义 CA 要先按当前目录解析成绝对路径
-  if (inherited.NODE_EXTRA_CA_CERTS) {
-    inherited.NODE_EXTRA_CA_CERTS = resolve(inherited.NODE_EXTRA_CA_CERTS);
+  // Core 在沙箱工作目录启动，相对路径的自定义 CA 要先按当前目录解析成绝对路径；
+  // Windows 环境变量名不区分大小写，与上面的过滤规则一致，按大小写不敏感匹配。
+  for (const name of Object.keys(inherited)) {
+    if (name.toUpperCase() === "NODE_EXTRA_CA_CERTS" && inherited[name]) {
+      inherited[name] = resolve(inherited[name]);
+    }
   }
   return {
     ...coreEnv({ home, coreDir, env: inherited }),

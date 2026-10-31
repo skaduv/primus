@@ -34,6 +34,7 @@ describe("真实模型配置", () => {
     expect(hasModelId({})).toBe(false);
     expect(hasModelId({ models: [{ id: "" }] })).toBe(false);
     expect(hasModelId({ models: [{ name: "a" }] })).toBe(false);
+    expect(hasModelId({ models: [{ id: "a\u0000b" }] })).toBe(false);
   });
 
   it("拒绝模型级 apiKey", () => {
@@ -99,5 +100,16 @@ describe("真实模型配置", () => {
     expect(result.UNRELATED_SECRET).toBeUndefined();
     // 相对 CA 路径按当前目录解析成绝对路径，且不改动传入的环境
     expect(env.NODE_EXTRA_CA_CERTS).toBe("ca.pem");
+  });
+
+  it("大小写不同的 NODE_EXTRA_CA_CERTS 也解析成绝对路径", () => {
+    const result = smokeEnv({
+      home: "home",
+      coreDir: "core",
+      tmpDir: "tmp",
+      apiKey: "$TEST_KEY",
+      env: { node_extra_ca_certs: "ca.pem", TEST_KEY: "secret" },
+    });
+    expect(result.node_extra_ca_certs).toBe(resolve("ca.pem"));
   });
 });

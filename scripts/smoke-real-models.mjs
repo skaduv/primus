@@ -97,18 +97,26 @@ try {
     );
     const secret = `乾元-${Math.random().toString(36).slice(2, 8)}`;
     writeFileSync(join(workDir, "口令.txt"), `口令是：${secret}\n`);
-    const core = new CoreProcess({
-      ...target,
-      args: ["--provider", id, "--model", model, "--no-session", "--tools", "read"],
-      cwd: workDir,
-      env: smokeEnv({
-        home: join(sandbox, id),
-        coreDir,
-        tmpDir,
-        apiKey: auth.config,
-        extraEnv: auth.extraEnv,
-      }),
-    });
+    // spawn 可能因参数或环境变量非法同步抛错；只记为本供应商失败，继续测试后面的供应商
+    let core;
+    try {
+      core = new CoreProcess({
+        ...target,
+        args: ["--provider", id, "--model", model, "--no-session", "--tools", "read"],
+        cwd: workDir,
+        env: smokeEnv({
+          home: join(sandbox, id),
+          coreDir,
+          tmpDir,
+          apiKey: auth.config,
+          extraEnv: auth.extraEnv,
+        }),
+      });
+    } catch (err) {
+      console.error(`✗ ${label} ${model}：Core 启动失败：${err.message}`);
+      failed++;
+      continue;
+    }
     const started = Date.now();
     try {
       const from = core.records.length;
