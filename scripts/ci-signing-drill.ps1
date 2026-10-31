@@ -25,8 +25,32 @@ $cert = New-SelfSignedCertificate -Type CodeSigningCert `
   -NotAfter (Get-Date).AddDays(2)
 $cer = Join-Path $env:RUNNER_TEMP "primus-ci-signing-drill.cer"
 Export-Certificate -Cert $cert -FilePath $cer | Out-Null
-Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-Import-Certificate -FilePath $cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher | Out-Null
+# 运行器镜像不同，写本机证书存储的权限也不同（windows-11-arm 的 VS2026 镜像上 Import-Certificate 写
+# LocalMachine\Root 报 E_ACCESSDENIED）：依次尝试 Import-Certificate → certutil -addstore → 以 RunAs 提升的
+# certutil（UAC 对管理员自动批准时不弹窗），全部失败才报错，并打印当前令牌是否提升以便排查。
+$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+$elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+Write-Host "当前进程$(if ($elevated) { '已' } else { '未' })以管理员权限运行（$([Security.Principal.WindowsIdentity]::GetCurrent().Name)）"
+function Add-MachineTrust([string]$Store) {
+  try {
+    Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\$Store" -ErrorAction Stop | Out-Null
+    return
+  } catch {
+    Write-Host "Import-Certificate 写 LocalMachine\$Store 失败：$($_.Exception.Message)，改用 certutil"
+  }
+  & certutil.exe -f -addstore $Store $cer | Out-Host
+  if ($LASTEXITCODE -eq 0) { return }
+  Write-Host "certutil -addstore $Store 失败（退出码 $LASTEXITCODE），改用提升后的 certutil"
+  $p = Start-Process -FilePath certutil.exe -ArgumentList @("-f", "-addstore", $Store, "`"$cer`"") -Verb RunAs -Wait -PassThru -WindowStyle Hidden
+  if ($p.ExitCode -ne 0) { throw "无法把演练证书加入 LocalMachine\$Store（提升后的 certutil 退出码 $($p.ExitCode)）" }
+}
+Add-MachineTrust "Root"
+Add-MachineTrust "TrustedPublisher"
+foreach ($store in "Root", "TrustedPublisher") {
+  if (-not (Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object Thumbprint -eq $cert.Thumbprint)) {
+    throw "演练证书未出现在 LocalMachine\$store 中"
+  }
+}
 Write-Host "演练证书：$($cert.Subject)，指纹 $($cert.Thumbprint)，有效期至 $($cert.NotAfter)"
 
 $key = Join-Path $env:RUNNER_TEMP "primus-ci-updater.key"
