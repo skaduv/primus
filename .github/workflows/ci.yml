@@ -218,7 +218,13 @@ jobs:
         run: pnpm check:tauri-imports
 
       # 第 3.3.1 节：tauri build --no-bundle 编译 Primus.exe → wix build（WiX 7，-culture zh-CN，
-      # bindpath app/core/runtime）生成 MSI；证书与 updater 私钥未配置时跳过签名
+      # bindpath app/core/runtime）生成 MSI；签名用上一步的演练证书与密钥（PRIMUS_REQUIRE_SIGNING=1，缺一不可）
+      # 第 3.3.4 节签名流程演练：临时生成一次性自签名代码签名证书与 updater 密钥（只在本运行器受信任），
+      # 让下一步完整执行 签 Primus.exe → 签 MSI → tauri signer 生成并校验 .sig → signtool verify /pa 三个文件
+      - name: 准备签名演练（一次性证书与 updater 密钥）
+        shell: pwsh
+        run: ./scripts/ci-signing-drill.ps1
+
       - name: 构建 MSI（tauri build --no-bundle → wix build -arch x64）
         run: node scripts/build-msi.mjs --arch x64
 
@@ -238,6 +244,7 @@ jobs:
           path: |
             out/Primus_*_x64_zh-CN.msi
             out/Primus_*_x64_zh-CN.msi.sha256
+            out/Primus_*_x64_zh-CN.msi.sig
             out/Primus_*_x64-setup.exe
             out/Primus_*_x64-setup.exe.sha256
           retention-days: 7
@@ -355,6 +362,12 @@ jobs:
       - name: 构建第一方扩展（primus-bundle.js）
         run: pnpm build:extensions
 
+      # 第 3.3.4 节签名流程演练：临时生成一次性自签名代码签名证书与 updater 密钥（只在本运行器受信任），
+      # 让下一步完整执行 签 Primus.exe → 签 MSI → tauri signer 生成并校验 .sig → signtool verify /pa 三个文件
+      - name: 准备签名演练（一次性证书与 updater 密钥）
+        shell: pwsh
+        run: ./scripts/ci-signing-drill.ps1
+
       - name: 构建 MSI（tauri build --no-bundle → wix build -arch arm64）
         run: node scripts/build-msi.mjs --arch arm64
 
@@ -372,6 +385,7 @@ jobs:
           path: |
             out/Primus_*_arm64_zh-CN.msi
             out/Primus_*_arm64_zh-CN.msi.sha256
+            out/Primus_*_arm64_zh-CN.msi.sig
             out/Primus_*_arm64-setup.exe
             out/Primus_*_arm64-setup.exe.sha256
           retention-days: 7

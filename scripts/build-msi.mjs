@@ -8,7 +8,10 @@
 //      -bindpath app / core / runtime，-d ProductVersion=<主.次.修订.构建>，
 //      -d ShellDir=<src-tauri>（图标与许可 RTF），-d WebView2Setup=<WebView2 引导程序>）
 //   4. signtool 签名 MSI（配置了证书时），写 SHA-256 校验文件
-//   5. tauri signer sign 生成 updater 签名 .sig（配置了 TAURI_SIGNING_PRIVATE_KEY 时）
+//   5. tauri signer sign --app-version <版本> 生成 updater 签名 .sig（配置了 updater 私钥时），
+//      随即按 tauri-plugin-updater 的规则用 TAURI_SIGNING_PUBLIC_KEY 校验（scripts/updater-signature.mjs）
+//   6. signtool verify /pa 校验 Primus.exe、node.exe 与 MSI（配置了证书时，第 3.3.4 节第 4 步）
+//   内置 node.exe 在构建前就校验 OpenJS 官方签名（有效且签名者为 OpenJS Foundation），不论是否配置证书
 //
 // 前提：pnpm build:core --platform win-<架构>（dist/agent-core 与 dist/runtime，运行时平台须与 --arch 一致）
 // 与 pnpm build:extensions（primus-bundle.js）已完成；
@@ -33,17 +36,31 @@
 // 签名所需环境变量（证书与私钥只保存在 CI 密钥库，第 22.3 节）：
 //   PRIMUS_SIGN_CERT_SHA1      代码签名证书指纹（signtool /sha1）
 //   PRIMUS_SIGN_TIMESTAMP_URL  RFC 3161 时间戳服务器（signtool /tr）
-//   PRIMUS_SIGNTOOL            signtool.exe 路径（默认取 PATH 中的 signtool）
-//   TAURI_SIGNING_PRIVATE_KEY[/_PASSWORD]  updater 签名私钥（tauri signer 读取）
-// 未配置时跳过对应签名并提示（开发与 PR 构建）。
+//   PRIMUS_SIGNTOOL            signtool.exe 路径（默认取 Windows SDK 中最新版本的 signtool，找不到再用 PATH）
+//   TAURI_SIGNING_PRIVATE_KEY 或 TAURI_SIGNING_PRIVATE_KEY_PATH
+//                              updater 签名私钥（前者为私钥内容，后者为私钥文件路径；tauri signer sign 读取）
+//   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  updater 私钥口令
+//   TAURI_SIGNING_PUBLIC_KEY   updater 公钥（与 tauri.conf.json plugins.updater.pubkey 同格式），校验 .sig 用
+//   PRIMUS_REQUIRE_SIGNING=1   证书与 updater 密钥必须都配置齐，否则拒绝构建（发布与 CI 签名演练用）
+// 证书指纹与时间戳服务器须成对配置、updater 私钥须配公钥，配一半拒绝构建；都不配时跳过签名并提示（开发与 PR 构建）。
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { MANIFEST_FILE, verifyManifest } from "./core-dist.mjs";
+import { verifyUpdaterSignature } from "./updater-signature.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const tauriDir = join(root, "apps/desktop/src-tauri");
@@ -253,6 +270,84 @@ export function signtoolArgs(file, env = process.env) {
   return ["sign", "/fd", "sha256", "/tr", tsa, "/td", "sha256", "/sha1", sha1, file];
 }
 
+/** signtool 校验参数（第 3.3.4 节第 4 步）：/pa 按默认 Authenticode 策略校验，/all 校验文件上的全部签名 */
+export function signtoolVerifyArgs(file) {
+  return ["verify", "/pa", "/all", file];
+}
+
+/**
+ * 签名配置（第 3.3.4 节）：证书指纹与时间戳服务器成对配置才签 Authenticode；updater 私钥（内容或路径二选一）
+ * 须同时给公钥，生成 .sig 后立即校验。配一半一律视为配置错误（problems 非空），免得发布出半签名的安装包；
+ * PRIMUS_REQUIRE_SIGNING=1 时两类签名都必须配置。
+ */
+export function signingConfig(env = process.env) {
+  const problems = [];
+  const sha1 = env.PRIMUS_SIGN_CERT_SHA1;
+  const tsa = env.PRIMUS_SIGN_TIMESTAMP_URL;
+  if (Boolean(sha1) !== Boolean(tsa))
+    problems.push("PRIMUS_SIGN_CERT_SHA1 与 PRIMUS_SIGN_TIMESTAMP_URL 必须同时配置");
+  const keyValue = env.TAURI_SIGNING_PRIVATE_KEY;
+  const keyPath = env.TAURI_SIGNING_PRIVATE_KEY_PATH;
+  const pubkey = env.TAURI_SIGNING_PUBLIC_KEY;
+  if (keyValue && keyPath)
+    problems.push("TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PRIVATE_KEY_PATH 只能配置一个");
+  if ((keyValue || keyPath) && !pubkey)
+    problems.push("配置了 updater 私钥时必须同时配置 TAURI_SIGNING_PUBLIC_KEY（用于校验 .sig）");
+  if (!keyValue && !keyPath && pubkey)
+    problems.push("配置了 TAURI_SIGNING_PUBLIC_KEY 但没有 updater 私钥");
+  const authenticode = Boolean(sha1 && tsa);
+  const updater = Boolean((keyValue || keyPath) && pubkey);
+  if (env.PRIMUS_REQUIRE_SIGNING === "1" && !(authenticode && updater))
+    problems.push("PRIMUS_REQUIRE_SIGNING=1 要求同时配置代码签名证书与 updater 签名密钥");
+  return { authenticode, updater, problems };
+}
+
+/**
+ * updater 私钥文件路径（TAURI_SIGNING_PRIVATE_KEY_PATH）解析后的绝对路径：tauri signer 经
+ * `pnpm --filter @primus/desktop` 在 apps/desktop 下运行，相对路径以该目录为基准；未配置路径时返回 null。
+ */
+export function updaterKeyFile(env = process.env, base = join(root, "apps/desktop")) {
+  const keyPath = env.TAURI_SIGNING_PRIVATE_KEY_PATH;
+  return keyPath ? resolve(base, keyPath) : null;
+}
+
+/**
+ * signtool.exe 路径：PRIMUS_SIGNTOOL 优先；否则取 Windows SDK（Windows Kits\10\bin\<版本>\<主机架构>）
+ * 中版本最新的一个（GitHub 托管运行器装了 SDK，但 signtool 不在 PATH）；都没有时退回 PATH 中的 signtool。
+ */
+export function resolveSigntool(
+  env = process.env,
+  { hostArch = process.arch, exists = existsSync, list = readdirSync } = {},
+) {
+  if (env.PRIMUS_SIGNTOOL) return env.PRIMUS_SIGNTOOL;
+  const bin = win32.join(
+    env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)",
+    "Windows Kits",
+    "10",
+    "bin",
+  );
+  let versions = [];
+  try {
+    versions = list(bin).filter((name) => /^10\.\d+\.\d+\.\d+$/.test(name));
+  } catch {
+    return "signtool";
+  }
+  const numeric = (v) => v.split(".").map(Number);
+  versions.sort((a, b) => {
+    const [x, y] = [numeric(a), numeric(b)];
+    for (let i = 0; i < 4; i++) if (x[i] !== y[i]) return y[i] - x[i];
+    return 0;
+  });
+  // arm64 主机优先用原生 arm64 版本，没有时 x64 版本可在仿真下运行
+  const dirs = hostArch === "arm64" ? ["arm64", "x64"] : ["x64"];
+  for (const version of versions)
+    for (const dir of dirs) {
+      const candidate = win32.join(bin, version, dir, "signtool.exe");
+      if (exists(candidate)) return candidate;
+    }
+  return "signtool";
+}
+
 /**
  * Authenticode 签名（Windows PowerShell 自带 Get-AuthenticodeSignature；路径经环境变量传入，免转义）。
  * 从 pwsh 7 启动时继承的 PSModulePath 指向 PowerShell 7 的模块，Windows PowerShell 5.1 会加载
@@ -291,6 +386,11 @@ export function isTrustedMicrosoftSignature({ Status, Subject }) {
   return Status === "Valid" && /(^|,\s*)O="?Microsoft Corporation"?(,|$)/.test(Subject ?? "");
 }
 
+/** 内置 node.exe 须保留有效的 OpenJS 官方签名（第 3.3.4 节第 1 步，不重签） */
+export function isTrustedOpenJsSignature({ Status, Subject }) {
+  return Status === "Valid" && /(^|,\s*)O="?OpenJS Foundation"?(,|$)/.test(Subject ?? "");
+}
+
 async function prepareWebView2(file, { download }) {
   if (!existsSync(file)) {
     if (!download) fail(`未找到 WebView2 引导程序：${file}`);
@@ -324,18 +424,24 @@ async function main() {
 
   // wix、signtool 是 exe，直接启动（参数原样传递，路径含空格与中文也无需转义）；
   // pnpm 在 Windows 上是 .cmd，Node 不允许不经 shell 启动 .cmd，只有它走 shell，路径参数加引号
-  const run = (command, commandArgs, { capture = false, shell = false } = {}) => {
+  const run = (command, commandArgs, { capture = false, shell = false, attempts = 1 } = {}) => {
     console.log(`\n> ${[command, ...commandArgs].join(" ")}`);
     if (dryRun) return "";
-    const r = spawnSync(command, commandArgs, {
-      cwd: root,
-      stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
-      encoding: "utf8",
-      shell,
-    });
-    if (r.error) fail(`无法启动 ${command}：${r.error.message}`);
-    if (r.status !== 0) fail(`命令失败（退出码 ${r.status}）：${command} ${commandArgs.join(" ")}`);
-    return capture ? r.stdout : "";
+    for (let attempt = 1; ; attempt++) {
+      const r = spawnSync(command, commandArgs, {
+        cwd: root,
+        stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+        encoding: "utf8",
+        shell,
+      });
+      if (r.error) fail(`无法启动 ${command}：${r.error.message}`);
+      if (r.status === 0) return capture ? r.stdout : "";
+      if (attempt >= attempts)
+        fail(`命令失败（退出码 ${r.status}）：${command} ${commandArgs.join(" ")}`);
+      // 只用于 signtool sign：时间戳服务器偶发超时，稍等重试（签名失败不会改动文件）
+      console.log(`  第 ${attempt} 次失败（退出码 ${r.status}），5 秒后重试`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5000);
+    }
   };
   const [pnpm, ...pnpmPrefix] = (process.env.PRIMUS_PNPM ?? "pnpm").split(" ").filter(Boolean);
   const runPnpm = (pnpmArgs) => run(pnpm, [...pnpmPrefix, ...pnpmArgs], { shell: isWindows });
@@ -362,7 +468,20 @@ async function main() {
   const appDir = join(cargoTargetRoot(), target.releaseDir);
   const coreDir = join(root, "dist/agent-core");
   const runtimeDir = join(root, "dist/runtime");
+  const nodeExe = join(runtimeDir, "node.exe");
   console.log(`乾元 Primus MSI：版本 ${version} → ProductVersion ${productVersion}，架构 ${arch}`);
+
+  // 签名配置先查：配一半（只有证书指纹没有时间戳服务器、有私钥没公钥等）在编译前就拒绝
+  const signing = signingConfig();
+  if (signing.problems.length) fail(`签名配置有误：\n  ${signing.problems.join("\n  ")}`);
+  // 私钥文件不存在时在编译前就失败，而不是签完 exe 与 MSI 后才在 tauri signer 处失败（--dry-run 不读文件）
+  const keyFile = updaterKeyFile();
+  if (!dryRun && keyFile && !existsSync(keyFile))
+    fail(`TAURI_SIGNING_PRIVATE_KEY_PATH 指向的文件不存在：${keyFile}`);
+  const signtool = signing.authenticode ? resolveSigntool() : null;
+  console.log(
+    `签名：代码签名${signing.authenticode ? `已配置（${signtool}）` : "未配置"}，updater 签名${signing.updater ? "已配置" : "未配置"}`,
+  );
 
   // 0. 前提：Core 产物与 manifest 一致、第一方扩展已打包、内置运行时就位、WiX 版本与基线一致
   if (!dryRun) {
@@ -374,8 +493,15 @@ async function main() {
     if (problems.length) fail(`dist/agent-core 与 manifest 不符：\n  ${problems.join("\n  ")}`);
     if (!existsSync(join(coreDir, "extensions/primus-bundle.js")))
       fail("未找到 dist/agent-core/extensions/primus-bundle.js，请先运行 pnpm build:extensions");
-    if (!existsSync(join(runtimeDir, "node.exe")))
+    if (!existsSync(nodeExe))
       fail(`未找到 dist/runtime/node.exe，请先运行 pnpm build:core --platform ${nodePlatform}`);
+    // node.exe 不重签，构建前确认官方签名完好（第 3.3.4 节第 1 步）
+    const nodeSignature = authenticode(nodeExe);
+    if (!isTrustedOpenJsSignature(nodeSignature))
+      fail(
+        `内置 node.exe 的签名不是有效的 OpenJS 官方签名：${nodeSignature.Status} ${nodeSignature.Subject}`,
+      );
+    console.log(`✓ 内置 node.exe 保留 OpenJS 官方签名（${nodeSignature.Subject}）`);
     // 内置运行时须与目标架构一致：x64 的 node.exe 打进 arm64 包（或反之）会在仿真下运行甚至无法启动
     const problem = checkRuntimePlatform(manifest, arch);
     if (problem) fail(problem);
@@ -420,9 +546,8 @@ async function main() {
   }
 
   // 2. 签名 Primus.exe
-  const signtool = process.env.PRIMUS_SIGNTOOL ?? "signtool";
   const signExe = signtoolArgs(exe);
-  if (signExe) run(signtool, signExe);
+  if (signExe) run(signtool, signExe, { attempts: 3 });
   else
     console.log(
       "\n· 未配置 PRIMUS_SIGN_CERT_SHA1 / PRIMUS_SIGN_TIMESTAMP_URL，跳过 Primus.exe 签名",
@@ -431,8 +556,11 @@ async function main() {
   if (!dryRun)
     writeFileSync(stampFile, `${JSON.stringify(exeStamp(version, statSync(exe), arch))}\n`);
 
-  // 3. WiX 7 构建 MSI
-  if (!dryRun) mkdirSync(outDir, { recursive: true });
+  // 3. WiX 7 构建 MSI；先删掉上次构建留下的 .sig，免得新 MSI 旁边留着旧签名
+  if (!dryRun) {
+    mkdirSync(outDir, { recursive: true });
+    rmSync(`${msi}.sig`, { force: true });
+  }
   run(
     "wix",
     wixBuildArgs({ arch, appDir, coreDir, runtimeDir, webview2Setup, productVersion, out: msi }),
@@ -440,17 +568,45 @@ async function main() {
 
   // 4. 签名 MSI，写 SHA-256 校验文件
   const signMsi = signtoolArgs(msi);
-  if (signMsi) run(signtool, signMsi);
+  if (signMsi) run(signtool, signMsi, { attempts: 3 });
   else console.log("\n· 未配置代码签名证书，跳过 MSI 签名");
   if (!dryRun) {
     const digest = createHash("sha256").update(readFileSync(msi)).digest("hex");
     writeFileSync(`${msi}.sha256`, `${digest}  ${basename(msi)}\n`);
   }
 
-  // 5. updater 签名（.sig 写在 MSI 旁边）
-  if (process.env.TAURI_SIGNING_PRIVATE_KEY)
-    runPnpm(["--filter", "@primus/desktop", "tauri", "signer", "sign", quoted(msi)]);
-  else console.log("\n· 未配置 TAURI_SIGNING_PRIVATE_KEY，跳过 updater 签名（.sig）");
+  // 5. updater 签名（.sig 写在 MSI 旁边），绑定应用版本后立即按 updater 规则校验
+  if (signing.updater) {
+    runPnpm([
+      "--filter",
+      "@primus/desktop",
+      "tauri",
+      "signer",
+      "sign",
+      "--app-version",
+      version,
+      quoted(msi),
+    ]);
+    if (!dryRun) {
+      try {
+        verifyUpdaterSignature(
+          readFileSync(msi),
+          readFileSync(`${msi}.sig`, "utf8"),
+          process.env.TAURI_SIGNING_PUBLIC_KEY,
+          { version },
+        );
+      } catch (e) {
+        fail(`${basename(msi)}.sig 校验失败：${e.message}`);
+      }
+      console.log(`✓ updater 签名有效（${basename(msi)}.sig，version ${version}）`);
+    }
+  } else console.log("\n· 未配置 updater 签名密钥，跳过 updater 签名（.sig）");
+
+  // 6. signtool verify /pa 校验三个文件（第 3.3.4 节第 4 步）
+  if (signing.authenticode) {
+    for (const file of [exe, nodeExe, msi]) run(signtool, signtoolVerifyArgs(file));
+    if (!dryRun) console.log("✓ signtool verify /pa：Primus.exe、node.exe、MSI 均通过");
+  }
 
   console.log(`\n✓ ${dryRun ? "（演练）" : ""}MSI：${msi}`);
   if (!dryRun) console.log(`  SHA-256：${readFileSync(`${msi}.sha256`, "utf8").split(" ")[0]}`);

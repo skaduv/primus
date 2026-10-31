@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
@@ -13,9 +14,14 @@ import {
   compareMsiVersions,
   exeStamp,
   isTrustedMicrosoftSignature,
+  isTrustedOpenJsSignature,
   msiFileName,
   msiProductVersion,
+  resolveSigntool,
+  signingConfig,
   signtoolArgs,
+  signtoolVerifyArgs,
+  updaterKeyFile,
   WXS,
   wixBuildArgs,
 } from "./build-msi.mjs";
@@ -192,6 +198,109 @@ describe("build-msi", () => {
     ]);
   });
 
+  it("updater 私钥路径以 apps/desktop 为基准解析（与 tauri signer 一致），绝对路径原样保留", () => {
+    expect(updaterKeyFile({})).toBeNull();
+    const base = resolve("/repo/apps/desktop");
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: "k.key" }, base)).toBe(
+      resolve(base, "k.key"),
+    );
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: "../../k.key" }, base)).toBe(
+      resolve("/repo/k.key"),
+    );
+    const abs = resolve("/keys/updater.key");
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: abs }, base)).toBe(abs);
+    expect(updaterKeyFile({ TAURI_SIGNING_PRIVATE_KEY_PATH: "k" })).toBe(
+      resolve(fileURLToPath(new URL("..", import.meta.url)), "apps/desktop", "k"),
+    );
+  });
+
+  it("签名配置：成对配置才签名，配一半或 PRIMUS_REQUIRE_SIGNING=1 而缺配置时报错", () => {
+    expect(signingConfig({})).toEqual({ authenticode: false, updater: false, problems: [] });
+    const full = {
+      PRIMUS_SIGN_CERT_SHA1: "AB",
+      PRIMUS_SIGN_TIMESTAMP_URL: "http://t",
+      TAURI_SIGNING_PRIVATE_KEY_PATH: "k",
+      TAURI_SIGNING_PUBLIC_KEY: "p",
+      PRIMUS_REQUIRE_SIGNING: "1",
+    };
+    expect(signingConfig(full)).toEqual({ authenticode: true, updater: true, problems: [] });
+    expect(signingConfig({ PRIMUS_SIGN_CERT_SHA1: "AB" }).problems).toEqual([
+      "PRIMUS_SIGN_CERT_SHA1 与 PRIMUS_SIGN_TIMESTAMP_URL 必须同时配置",
+    ]);
+    expect(signingConfig({ TAURI_SIGNING_PRIVATE_KEY: "k" }).problems[0]).toContain(
+      "必须同时配置 TAURI_SIGNING_PUBLIC_KEY",
+    );
+    expect(signingConfig({ TAURI_SIGNING_PUBLIC_KEY: "p" }).problems[0]).toContain(
+      "没有 updater 私钥",
+    );
+    expect(signingConfig({ ...full, TAURI_SIGNING_PRIVATE_KEY: "k" }).problems[0]).toContain(
+      "只能配置一个",
+    );
+    const { problems } = signingConfig({
+      PRIMUS_REQUIRE_SIGNING: "1",
+      PRIMUS_SIGN_CERT_SHA1: "AB",
+      PRIMUS_SIGN_TIMESTAMP_URL: "http://t",
+    });
+    expect(problems).toEqual([
+      "PRIMUS_REQUIRE_SIGNING=1 要求同时配置代码签名证书与 updater 签名密钥",
+    ]);
+  });
+
+  it("signtool verify 用 /pa 校验全部签名", () => {
+    expect(signtoolVerifyArgs("C:/a b/Primus.exe")).toEqual([
+      "verify",
+      "/pa",
+      "/all",
+      "C:/a b/Primus.exe",
+    ]);
+  });
+
+  it("signtool 优先取环境变量，其次 Windows SDK 中最新版本，找不到退回 PATH", () => {
+    const bin = "C:\\Program Files (x86)\\Windows Kits\\10\\bin";
+    const present = new Set([
+      `${bin}\\10.0.19041.0\\x64\\signtool.exe`,
+      `${bin}\\10.0.26100.0\\x64\\signtool.exe`,
+      `${bin}\\10.0.26100.0\\arm64\\signtool.exe`,
+      `${bin}\\10.0.9200.0\\x64\\signtool.exe`,
+    ]);
+    const fs = {
+      exists: (f: string) => present.has(f),
+      list: () => ["10.0.9200.0", "10.0.26100.0", "10.0.19041.0", "x64"],
+    };
+    expect(resolveSigntool({ PRIMUS_SIGNTOOL: "D:/st.exe" }, fs)).toBe("D:/st.exe");
+    expect(resolveSigntool({}, { ...fs, hostArch: "x64" })).toBe(
+      `${bin}\\10.0.26100.0\\x64\\signtool.exe`,
+    );
+    expect(resolveSigntool({}, { ...fs, hostArch: "arm64" })).toBe(
+      `${bin}\\10.0.26100.0\\arm64\\signtool.exe`,
+    );
+    expect(resolveSigntool({ "ProgramFiles(x86)": "E:\\PF" }, { ...fs, hostArch: "x64" })).toBe(
+      "signtool",
+    );
+    expect(
+      resolveSigntool(
+        {},
+        {
+          hostArch: "x64",
+          exists: () => false,
+          list: () => {
+            throw new Error("ENOENT");
+          },
+        },
+      ),
+    ).toBe("signtool");
+  });
+
+  it("内置 node.exe 只接受有效的 OpenJS Foundation 签名", () => {
+    const subject =
+      'CN="OpenJS Foundation", O="OpenJS Foundation", L=San Francisco, S=California, C=US';
+    expect(isTrustedOpenJsSignature({ Status: "Valid", Subject: subject })).toBe(true);
+    expect(isTrustedOpenJsSignature({ Status: "NotSigned", Subject: subject })).toBe(false);
+    expect(
+      isTrustedOpenJsSignature({ Status: "Valid", Subject: "CN=Evil, O=OpenJS Foundation Fake" }),
+    ).toBe(false);
+  });
+
   it("Primus.wxs 引用的 bindpath 与预处理变量都由脚本传入，UpgradeCode 已固定", () => {
     const wxs = readFileSync(WXS, "utf8");
     const args: string[] = wixBuildArgs({
@@ -323,6 +432,59 @@ describe("build-msi", () => {
     });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain("不支持的架构 x86");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "--dry-run 在配置签名时按顺序签名、生成并校验 .sig、最后 signtool verify",
+    () => {
+      const env = {
+        ...process.env,
+        PRIMUS_SIGN_CERT_SHA1: "ABCD",
+        PRIMUS_SIGN_TIMESTAMP_URL: "http://ts.example",
+        PRIMUS_SIGNTOOL: "st.exe",
+        TAURI_SIGNING_PRIVATE_KEY_PATH: "k.key",
+        TAURI_SIGNING_PUBLIC_KEY: "pub",
+        PRIMUS_REQUIRE_SIGNING: "1",
+      };
+      const dry = spawnSync(
+        process.execPath,
+        [SCRIPT, "--dry-run", "--arch", HOST_ARCH, "--version", "1.2.3"],
+        {
+          encoding: "utf8",
+          env,
+        },
+      );
+      expect(dry.status).toBe(0);
+      const out = dry.stdout;
+      const at = (needle: string) => {
+        const i = out.indexOf(needle);
+        expect(i, needle).toBeGreaterThanOrEqual(0);
+        return i;
+      };
+      const signExe = at("st.exe sign /fd sha256 /tr http://ts.example /td sha256 /sha1 ABCD ");
+      const wix = at("wix build");
+      const signMsi = out.indexOf("st.exe sign", signExe + 1);
+      const sig = at("tauri signer sign --app-version 1.2.3 ");
+      const verifyExe = at("st.exe verify /pa /all ");
+      expect(signExe).toBeLessThan(wix);
+      expect(wix).toBeLessThan(signMsi);
+      expect(signMsi).toBeLessThan(sig);
+      expect(sig).toBeLessThan(verifyExe);
+      expect(out.match(/st\.exe verify \/pa \/all /g)).toHaveLength(3);
+      expect(out).toMatch(/verify \/pa \/all \S*Primus\.exe/);
+      expect(out).toMatch(/verify \/pa \/all \S*node\.exe/);
+      expect(out).toMatch(/verify \/pa \/all \S*Primus_1\.2\.3_\w+_zh-CN\.msi/);
+    },
+  );
+
+  it("签名配一半时在编译前拒绝构建", () => {
+    const r = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", HOST_ARCH], {
+      encoding: "utf8",
+      env: { ...process.env, PRIMUS_SIGN_CERT_SHA1: "ABCD", PRIMUS_SIGN_TIMESTAMP_URL: "" },
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("PRIMUS_SIGN_CERT_SHA1 与 PRIMUS_SIGN_TIMESTAMP_URL 必须同时配置");
+    expect(r.stdout).not.toContain("tauri build");
   });
 
   it("--version 覆盖与 --skip-tauri 同用时拒绝构建", () => {
