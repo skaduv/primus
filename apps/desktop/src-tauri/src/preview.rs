@@ -231,8 +231,13 @@ const MAX_LINK_HOPS: usize = 8;
 fn link_target(path: &Path) -> Option<Metadata> {
     let mut hops = 0;
     let first = local_link(path, &mut hops)?;
-    let resolved = resolve_local(path.parent()?, &first, &mut hops)?;
-    std::fs::metadata(&resolved).ok()
+    // 相对目标里的 `..` 要从所在文件夹的真实位置回退：所在文件夹本身可能经由链接打开（`/tmp/shortcut` → `/data/project`）。
+    // 所在文件夹已由 `read_dir` 打开过，规范化它不会访问新的位置。
+    let parent = path.parent()?;
+    let base = std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    let resolved = resolve_local(&base, &first, &mut hops)?;
+    // 解析出的路径已确认每一级都不是链接，最后一级也不跟随
+    std::fs::symlink_metadata(&resolved).ok()
 }
 
 /// 读链接本身的目标（不跟随），网络 / 设备路径为 None；累计级数超过 [`MAX_LINK_HOPS`] 也为 None
@@ -645,6 +650,29 @@ mod tests {
         assert!(!find("via").dir && find("via").size.is_none());
         assert_eq!(find("via_local").size, Some(3));
         assert!(find("dotdot").dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_parent_link_resolves_from_real_folder() {
+        let dir = std::env::temp_dir().join(format!("primus-preview-alias-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("data").join("project")).unwrap();
+        std::fs::create_dir_all(dir.join("data").join("sibling")).unwrap();
+        std::os::unix::fs::symlink("../sibling", dir.join("data").join("project").join("child"))
+            .unwrap();
+        // 经由别名文件夹打开：`..` 应从 data/project 回退到 data/sibling
+        std::os::unix::fs::symlink(dir.join("data").join("project"), dir.join("shortcut")).unwrap();
+        let listing = list_dir(&dir.join("shortcut"), |_, _| false).unwrap();
+        assert!(
+            listing
+                .entries
+                .iter()
+                .find(|e| e.name == "child")
+                .unwrap()
+                .dir
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
