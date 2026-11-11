@@ -187,7 +187,7 @@ describe("上下文卡片", () => {
     expect(hit(card)).toBe("—");
   });
 
-  it("压缩后占用未知：只提示、没有数值与进度段；未打开会话时压缩与开关不可用", async () => {
+  it("压缩后占用未知：只提示、没有数值与进度段；未打开会话时不能压缩，自动压缩开关仍可切换（打开后补发）", async () => {
     render(
       <ContextButton
         {...base}
@@ -213,7 +213,7 @@ describe("上下文卡片", () => {
           name: `${c.autoCompact}（${c.autoCompactScope}）`,
         }) as HTMLInputElement
       ).disabled,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("token 紧凑写法", () => {

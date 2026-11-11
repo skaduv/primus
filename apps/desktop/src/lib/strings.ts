@@ -204,6 +204,12 @@ export const strings = {
       stoppingRetry: "正在停止",
     },
     attach: "添加附件",
+    add: {
+      title: "添加",
+      files: "文件",
+      planHint: "先出计划，批准后再执行",
+      planOnHint: "已开启，再点关闭",
+    },
     removeAttachment: "移除附件",
     expandInput: "展开编辑",
     collapseInput: "收起",
@@ -354,6 +360,7 @@ export const strings = {
     plan: {
       toggle: "计划模式",
       short: "计划",
+      turnOff: "关闭计划模式",
       on: "计划模式已开启：先只读调研、提交计划，批准后再执行（Shift+Tab 切换）",
       off: "开启计划模式：先出计划，批准后再执行（Shift+Tab 切换）",
       card: "计划",

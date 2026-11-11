@@ -1,9 +1,9 @@
 "use client";
 
-// 输入框周边的弹出菜单：选择工作区、权限模式；以及附件（本地路径引用）小标签。
+// 输入框周边的弹出菜单：“+”添加菜单、选择工作区、权限模式；以及附件（本地路径引用）小标签。
 import { appendFileTags } from "@primus/protocol";
 import { DropdownMenu as Menu } from "radix-ui";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { FileIcon, Icon, type IconName } from "@/components/icons";
 import {
   GlassPopover,
@@ -269,6 +269,107 @@ export function PermissionPicker({
             );
           })}
         </Menu.RadioGroup>
+      </GlassPopoverContent>
+    </GlassPopover>
+  );
+}
+
+/** “+”菜单的一行：图标、名称、名称后的灰色说明；右侧可放快捷键或勾选标记 */
+function AddRow({
+  icon,
+  label,
+  hint,
+  trailing,
+}: {
+  icon: IconName;
+  label: string;
+  hint?: string;
+  trailing?: ReactNode;
+}) {
+  return (
+    <>
+      <Icon name={icon} size="sm" className="shrink-0 text-muted" />
+      <span className="min-w-0 flex-1 truncate">
+        {label}
+        {hint && <span className="ml-2 text-muted">{hint}</span>}
+      </span>
+      {trailing}
+    </>
+  );
+}
+
+/**
+ * 输入框左下角的“+”菜单：与模型选择同款的玻璃弹层，向上展开。
+ * “添加”小节：文件（系统对话框，只引用本地路径；薄壳不支持时不显示）、计划模式（勾选项，Shift+Tab 同样切换）。
+ * 以后的功能（目标、绘图、插件等）按小节加在这里
+ */
+export function AddMenu({
+  canPickFiles,
+  filesDisabled,
+  onPickFiles,
+  planOn,
+  onPlanChange,
+  children,
+}: {
+  canPickFiles: boolean;
+  /** 发送中不能再加附件 */
+  filesDisabled?: boolean;
+  onPickFiles: () => void;
+  planOn: boolean;
+  onPlanChange: (on: boolean) => void;
+  children: ReactNode;
+}) {
+  const labelId = useId();
+  return (
+    <GlassPopover>
+      <GlassPopoverTrigger asChild>{children}</GlassPopoverTrigger>
+      <GlassPopoverContent
+        side="top"
+        sideOffset={10}
+        tint={0.8}
+        minWidth={280}
+        className="max-w-[360px]"
+      >
+        <Menu.Group aria-labelledby={labelId}>
+          <Menu.Label
+            id={labelId}
+            className="truncate px-4 pt-0.5 pb-1 text-2xs font-medium text-muted"
+          >
+            {t.add.title}
+          </Menu.Label>
+          {canPickFiles && (
+            <Menu.Item
+              className={rowClass}
+              textValue={t.add.files}
+              disabled={filesDisabled}
+              onSelect={onPickFiles}
+            >
+              <AddRow icon="attach" label={t.add.files} />
+            </Menu.Item>
+          )}
+          <Menu.CheckboxItem
+            className={rowClass}
+            textValue={t.plan.toggle}
+            checked={planOn}
+            onCheckedChange={(v) => onPlanChange(v === true)}
+          >
+            <AddRow
+              icon="bulb"
+              label={t.plan.toggle}
+              hint={planOn ? t.add.planOnHint : t.add.planHint}
+              trailing={
+                <span className="flex shrink-0 items-center gap-2">
+                  <kbd className="font-sans text-2xs text-muted">Shift+Tab</kbd>
+                  <span aria-hidden className="flex w-3.5 justify-center">
+                    <Menu.ItemIndicator>
+                      <Icon name="check" size="sm" />
+                    </Menu.ItemIndicator>
+                  </span>
+                </span>
+              }
+            />
+          </Menu.CheckboxItem>
+        </Menu.Group>
       </GlassPopoverContent>
     </GlassPopover>
   );

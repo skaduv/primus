@@ -68,7 +68,7 @@ export interface ContextCardProps {
   stats?: ContextStatsData;
   autoCompaction?: boolean;
   compacting?: boolean;
-  /** 会话已打开：压缩与自动压缩开关可用 */
+  /** 会话已打开：可以立即压缩；自动压缩开关在打开前也可切换（打开后补发），打开后要等读到 Core 的值 */
   connected: boolean;
   /** 运行中不能压缩 */
   busy?: boolean;
@@ -260,7 +260,7 @@ function ContextCard({
           <Switch
             ariaLabel={`${c.autoCompact}（${c.autoCompactScope}）`}
             checked={autoCompaction ?? true}
-            disabled={!connected || autoCompaction === undefined}
+            disabled={connected && autoCompaction === undefined}
             onCheckedChange={onAutoCompactionChange}
             className="origin-left scale-[0.8] -mr-2"
           />

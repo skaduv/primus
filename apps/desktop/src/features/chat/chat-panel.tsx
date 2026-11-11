@@ -40,6 +40,7 @@ import { useAttachments } from "./attachments/use-attachments";
 import { composerGhostClass } from "./composer-ghost";
 import { ComposerLip } from "./composer-lip";
 import {
+  AddMenu,
   failure,
   PermissionPicker,
   permissionMeta,
@@ -241,6 +242,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const setWorkspace = useAppStore((s) => s.setWorkspace);
   const permissionMode = useAppStore((s) => s.permissionMode);
   const setPermissionMode = useAppStore((s) => s.setPermissionMode);
+  // 对话前（会话未打开）显示用户选的自动压缩；打开后以 Core 的值为准（打开时已把选择发给 Core）
+  const chosenAutoCompaction = useAppStore((s) => s.autoCompaction);
   // 提交中（等待会话打开与 prompt 响应）：阻止重复提交，并锁定输入，避免成功后清掉期间新增的内容
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -926,20 +929,22 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   )}
                 </div>
                 <div className="@container/bar flex min-w-0 items-center gap-2.5 text-xs text-muted">
-                  {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
-                  {canPickFiles && (
-                    <Tooltip content={t.attach} wrap>
-                      <button
-                        type="button"
-                        aria-label={t.attach}
-                        disabled={submitting}
-                        onClick={() => void pickFiles()}
-                        className={composerGhostClass({ icon: true })}
-                      >
-                        <Icon name="plus" size="sm" />
-                      </button>
-                    </Tooltip>
-                  )}
+                  {/* “+”菜单：添加文件（只引用本地路径）、计划模式；与模型选择同款弹层 */}
+                  <AddMenu
+                    canPickFiles={canPickFiles}
+                    filesDisabled={submitting}
+                    onPickFiles={() => void pickFiles()}
+                    planOn={planOn}
+                    onPlanChange={(on) => void setPlanMode(on)}
+                  >
+                    <button
+                      type="button"
+                      aria-label={t.add.title}
+                      className={composerGhostClass({ icon: true })}
+                    >
+                      <Icon name="plus" size="sm" />
+                    </button>
+                  </AddMenu>
                   <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
                     {/* 完全访问：文字与图标用警示色；其他档位是普通的弱化幽灵按钮 */}
                     <button
@@ -957,19 +962,21 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span>{t.permissions[permissionMode].short}</span>
                     </button>
                   </PermissionPicker>
-                  {/* 计划模式：先只读调研并提交计划，批准后再执行；开启时用强调色 */}
-                  <Tooltip content={planOn ? t.plan.on : t.plan.off} wrap>
-                    <button
-                      type="button"
-                      aria-label={t.plan.toggle}
-                      aria-pressed={planOn}
-                      onClick={togglePlan}
-                      className={composerGhostClass({ tone: planOn ? "accent" : "muted" })}
-                    >
-                      <Icon name="list-check" size="sm" />
-                      <span>{t.plan.short}</span>
-                    </button>
-                  </Tooltip>
+                  {/* 计划模式开启时的标记（强调色）：点击关闭；开启在“+”菜单或 Shift+Tab */}
+                  {planOn && (
+                    <Tooltip content={t.plan.on} wrap>
+                      <button
+                        type="button"
+                        aria-label={t.plan.turnOff}
+                        onClick={togglePlan}
+                        className={composerGhostClass({ tone: "accent", className: "group/plan" })}
+                      >
+                        <Icon name="bulb" size="sm" className="group-hover/plan:hidden" />
+                        <Icon name="x" size="sm" className="hidden group-hover/plan:block" />
+                        <span>{t.plan.short}</span>
+                      </button>
+                    </Tooltip>
+                  )}
                   <span className="flex-1" />
                   <ModelPicker
                     models={models}
@@ -990,7 +997,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     <ContextButton
                       usage={state.contextUsage}
                       sessionUsage={state.sessionUsage}
-                      autoCompaction={state.autoCompaction}
+                      autoCompaction={state.autoCompaction ?? chosenAutoCompaction}
                       compacting={state.compacting}
                       stats={state.contextStats}
                       connected={connected}

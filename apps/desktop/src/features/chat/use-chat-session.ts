@@ -274,6 +274,13 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           setPendingPlan(undefined);
         } else failures.push(res.error || PLAN_COMMAND);
       }
+      // 自动压缩：用户选过（含对话前切换）就随会话开始的状态一起发给 Core；没选过沿用 Core 的设置
+      const compaction = useAppStore.getState().autoCompaction;
+      if (compaction !== undefined) {
+        const res = await client.request("set_auto_compaction", { enabled: compaction });
+        // 没设上不影响对话：撤销这次选择，开关回到 Core 的实际值（get_state 随后读回）
+        if (!res.success) useAppStore.getState().setAutoCompaction(undefined);
+      }
       await Promise.all([
         client.request("get_state"),
         client.request("get_available_thinking_levels"),
@@ -615,7 +622,11 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   const setAutoCompaction = useCallback(
     async (enabled: boolean): Promise<boolean> => {
       const c = conn.current;
-      if (!c) return false;
+      const app = useAppStore.getState();
+      const chosen = app.autoCompaction;
+      app.setAutoCompaction(enabled);
+      // 会话还没打开（尚未对话）：只记下，打开会话时随当前状态发给 Core
+      if (!c) return true;
       const previous = store.getState().autoCompaction;
       const seq = ++autoCompactionSeq.current;
       store.setState(
@@ -645,6 +656,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         return true;
       } catch (e) {
         settle(previous);
+        // 只回滚自己这次的选择（之后又切换过就不动）
+        if (seq === autoCompactionSeq.current) useAppStore.getState().setAutoCompaction(chosen);
         fail(e);
         return false;
       }
