@@ -224,31 +224,78 @@ pub(crate) fn list_dir(
 /// 最多沿多少级链接（链接指向链接）检查目标
 const MAX_LINK_HOPS: usize = 8;
 
-/// 链接（含多级链接）最终指向的元数据。任一级指向网络路径（`\\server\share`、`//server/share`、`\\?\UNC\`）
-/// 或设备路径时返回 None，不读取目标元数据：读取 UNC 目标的元数据就会向对方服务器发起 SMB 认证。
-/// 每一级只用 `read_link` / `symlink_metadata` 读链接本身，不跟随到目标。
+/// 链接（含多级链接、含目标路径中间的链接）最终指向的元数据。任一级指向网络路径（`\\server\share`、
+/// `//server/share`、`\\?\UNC\`）或设备路径时返回 None，不读取目标元数据：读取 UNC 目标的元数据就会向对方服务器
+/// 发起 SMB 认证。目标路径逐个组成部分检查（[`resolve_local`]），中间某一级是链接的（如 `C:\redirect\file` 中的
+/// `C:\redirect`）也先检查它的目标，确认整条路径都不经过链接后才读取最终的元数据。
 fn link_target(path: &Path) -> Option<Metadata> {
-    let mut current = path.to_path_buf();
-    for _ in 0..MAX_LINK_HOPS {
-        let meta = std::fs::symlink_metadata(&current).ok()?;
-        if !meta.file_type().is_symlink() {
-            return std::fs::metadata(&current).ok();
-        }
-        let raw = std::fs::read_link(&current).ok()?;
-        let text = raw.to_string_lossy();
-        let local = local_link_target(&text, cfg!(windows))?;
-        // 没去掉前缀时用原路径（保留非 UTF-8 字符）
-        let next = if local.len() == text.len() {
-            raw.clone()
-        } else {
-            PathBuf::from(local)
-        };
-        current = match current.parent() {
-            Some(parent) => parent.join(next),
-            None => next,
-        };
+    let mut hops = 0;
+    let first = local_link(path, &mut hops)?;
+    let resolved = resolve_local(path.parent()?, &first, &mut hops)?;
+    std::fs::metadata(&resolved).ok()
+}
+
+/// 读链接本身的目标（不跟随），网络 / 设备路径为 None；累计级数超过 [`MAX_LINK_HOPS`] 也为 None
+fn local_link(path: &Path, hops: &mut usize) -> Option<PathBuf> {
+    *hops += 1;
+    if *hops > MAX_LINK_HOPS {
+        return None;
     }
-    None
+    let raw = std::fs::read_link(path).ok()?;
+    let text = raw.to_string_lossy();
+    let local = local_link_target(&text, cfg!(windows))?;
+    // 没去掉前缀时用原路径（保留非 UTF-8 字符）
+    Some(if local.len() == text.len() {
+        raw.clone()
+    } else {
+        PathBuf::from(local)
+    })
+}
+
+/// 把链接目标 `target`（相对时基于 `base`）逐个组成部分解析成不含链接的路径：每一级先用 `symlink_metadata`
+/// 读该级本身（它之前的各级已确认不是链接，不会跟随到别处），是链接的换成它的目标继续解析。
+/// 解析出的路径除 `base` 自身外不经过任何链接，之后再 `metadata` 不会跟随到未检查的目标。
+fn resolve_local(base: &Path, target: &Path, hops: &mut usize) -> Option<PathBuf> {
+    use std::path::Component;
+    let mut resolved = if target.has_root() || target.is_absolute() {
+        PathBuf::new()
+    } else {
+        base.to_path_buf()
+    };
+    // 待解析的组成部分（栈顶在末尾）
+    let mut pending: Vec<PathBuf> = target
+        .components()
+        .rev()
+        .map(|c| PathBuf::from(c.as_os_str()))
+        .collect();
+    while let Some(part) = pending.pop() {
+        match part.components().next() {
+            Some(Component::Prefix(_) | Component::RootDir) => resolved.push(&part),
+            Some(Component::CurDir) | None => {}
+            Some(Component::ParentDir) => {
+                // 已解析部分不含链接，按字面去掉最后一级即可
+                resolved.pop();
+            }
+            Some(Component::Normal(name)) => {
+                let candidate = resolved.join(name);
+                let meta = std::fs::symlink_metadata(&candidate).ok()?;
+                if !meta.file_type().is_symlink() {
+                    resolved = candidate;
+                    continue;
+                }
+                let next = local_link(&candidate, hops)?;
+                if next.has_root() || next.is_absolute() {
+                    resolved = PathBuf::new();
+                }
+                pending.extend(
+                    next.components()
+                        .rev()
+                        .map(|c| PathBuf::from(c.as_os_str())),
+                );
+            }
+        }
+    }
+    Some(resolved)
 }
 
 /// 链接目标的本机形式：网络 / 设备路径为 None。Windows 目录联接的目标带 `\\?\` 前缀（`\\?\C:\x`），
@@ -575,6 +622,29 @@ mod tests {
             assert!(!find(name).dir && find(name).size.is_none(), "{name}");
         }
         assert!(find("relative").dir && find("relative2").dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn intermediate_link_to_network_path_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("primus-preview-mid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::fs::write(dir.join("real").join("f"), b"abc").unwrap();
+        // `redirect` 指向 `//tmp`（按网络路径拒绝）；`via` 指向 `redirect/<本目录名>`：若跟随了中间链接会解析到本目录
+        std::os::unix::fs::symlink("//tmp", dir.join("redirect")).unwrap();
+        let name = dir.file_name().unwrap();
+        std::os::unix::fs::symlink(dir.join("redirect").join(name), dir.join("via")).unwrap();
+        // 中间一级是指向本机的链接时照常解析
+        std::os::unix::fs::symlink("real", dir.join("local")).unwrap();
+        std::os::unix::fs::symlink(dir.join("local").join("f"), dir.join("via_local")).unwrap();
+        std::os::unix::fs::symlink("local/../real", dir.join("dotdot")).unwrap();
+        let listing = list_dir(&dir, |_, _| false).unwrap();
+        let find = |n: &str| listing.entries.iter().find(|e| e.name == n).unwrap();
+        assert!(!find("via").dir && find("via").size.is_none());
+        assert_eq!(find("via_local").size, Some(3));
+        assert!(find("dotdot").dir);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
