@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
+import { AskCard } from "./ask-card";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 import { useAttachments } from "./attachments/use-attachments";
 import { composerGhostClass } from "./composer-ghost";
@@ -222,6 +223,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     setPlanMode,
     approvePlan,
     revisePlan,
+    answerAsk,
   } = useChatSession({
     sessionPath: tab?.sessionPath,
     workspace: tab?.workspace,
@@ -798,7 +800,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             {pendingUi && (
               <ApprovalCard key={pendingUi.id} request={pendingUi} onRespond={respondUi} />
             )}
-            {!pendingUi && awaitingPlan?.id && (
+            {!pendingUi && state.ask && (
+              <AskCard
+                key={state.ask.id}
+                ask={state.ask}
+                onAnswer={(answers) => void answerAsk({ id: state.ask?.id ?? "", answers })}
+                onCancel={() => void answerAsk({ id: state.ask?.id ?? "", cancel: true })}
+              />
+            )}
+            {!pendingUi && !state.ask && awaitingPlan?.id && (
               <PlanApproval
                 key={awaitingPlan.id}
                 title={awaitingPlan.plan?.title}

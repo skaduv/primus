@@ -1,5 +1,6 @@
 import {
   ASK_USER_TOOL,
+  ASK_WIDGET,
   PLAN_COMMAND,
   PLAN_SUBMIT_TOOL,
   PLAN_WIDGET,
@@ -246,9 +247,54 @@ describe("primus-plan", () => {
     expect(lastWidget(TODO_WIDGET).items).toHaveLength(2);
   });
 
-  it("ask_user：逐题提问，“其他”转文本输入；没有界面时报错", async () => {
+  it("ask_user：推 primus:ask 等回答，选项或自己写的想法都能回；关闭提问时停下", async () => {
+    const { tools, ctx, cmd, lastWidget } = setup();
+    const ask = tools[ASK_USER_TOOL] as Tool;
+    const questions = [
+      {
+        id: "auth",
+        header: "认证",
+        question: "用哪种认证？",
+        options: [{ label: "JWT", description: "无状态" }, { label: "Session" }],
+      },
+      { id: "cache", question: "缓存？", options: [{ label: "内存" }, { label: "无" }] },
+    ];
+    const pending = ask.execute("t", { questions }, undefined, undefined, ctx);
+    await Promise.resolve();
+    expect(lastWidget(ASK_WIDGET)).toEqual({
+      id: "a1",
+      questions: [
+        {
+          ...questions[0],
+          options: [{ label: "JWT", description: "无状态" }, { label: "Session" }],
+        },
+        questions[1],
+      ],
+    });
+    await cmd(
+      `answer ${JSON.stringify({ id: "a1", answers: { auth: { selected: "JWT" }, cache: { other: " 用 Redis " } } })}`,
+    );
+    const r = await pending;
+    expect(JSON.parse(r.content[0]?.text ?? "")).toEqual({
+      answers: { auth: { selected: "JWT" }, cache: { other: "用 Redis" } },
+    });
+    // 回答后清除提问卡片
+    expect(ctx.ui.setWidget.mock.calls.at(-1)).toEqual([ASK_WIDGET, undefined]);
+    const second = ask.execute("t", { questions: [questions[1]] }, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`answer ${JSON.stringify({ id: "a2", cancel: true })}`);
+    const cancelled = await second;
+    expect(cancelled.isError).toBe(true);
+    expect(cancelled.terminate).toBe(true);
+    // 没有等待中的提问：提示一下，不报错
+    await cmd(`answer ${JSON.stringify({ id: "a9", answers: { x: { selected: "1" } } })}`);
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith("没有等待回答的问题", "warning");
+  });
+
+  it("ask_user：没有 setWidget 时逐题 select，“其他”转文本输入；没有界面时报错", async () => {
     const { tools, ctx } = setup();
     const ask = tools[ASK_USER_TOOL] as Tool;
+    const noWidget = { ...ctx, ui: { ...ctx.ui, setWidget: undefined } };
     ctx.ui.select.mockResolvedValueOnce("JWT：无状态").mockResolvedValueOnce("其他（自己填写）");
     ctx.ui.input.mockResolvedValueOnce("用 Redis");
     const r = await ask.execute(
@@ -266,10 +312,10 @@ describe("primus-plan", () => {
       },
       undefined,
       undefined,
-      ctx,
+      noWidget,
     );
     expect(JSON.parse(r.content[0]?.text ?? "")).toEqual({
-      answers: { auth: { selected: "JWT" }, cache: { selected: "other", other: "用 Redis" } },
+      answers: { auth: { selected: "JWT" }, cache: { other: "用 Redis" } },
     });
     expect(ctx.ui.select.mock.calls[0]?.[0]).toBe("认证｜用哪种认证？");
     const noUi = await ask.execute(

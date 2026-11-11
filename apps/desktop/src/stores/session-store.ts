@@ -15,6 +15,8 @@ import type {
   ToolResult,
 } from "@primus/protocol";
 import {
+  ASK_WIDGET,
+  type AskData,
   CONTEXT_STATS_WIDGET,
   isDialogRequest,
   isPlanPhase,
@@ -108,6 +110,8 @@ export interface SessionState {
   previewRequest?: PreviewData;
   /** 计划模式（primus-plan 经 setWidget("primus:plan") 推送）：当前阶段与最近一次提交的计划；扩展未推送前为 undefined */
   plan?: PlanData;
+  /** ask_user 等待回答的问题（primus:ask）；没有时为 undefined */
+  ask?: AskData;
   /** 待办清单（primus-plan 的 todo 工具，经 setWidget("primus:todo") 推送；整体替换） */
   todos: TodoItem[];
   /** 自动压缩开关（get_state 的 autoCompactionEnabled；切换时乐观更新，set_auto_compaction 失败回滚）。Core 的全局持久设置 */
@@ -306,6 +310,17 @@ function applyPlanWidget(draft: SessionState, key: string, lines: string[] | und
 
 /** 即发即弃的 setWidget：只处理前端认识的 `primus:*` 主题，其余忽略 */
 function applyWidget(draft: SessionState, key: string, lines: string[] | undefined): void {
+  if (key === ASK_WIDGET) {
+    const data =
+      lines === undefined
+        ? undefined
+        : (parsePrimusData(key, lines)?.data as Partial<AskData> | undefined);
+    draft.ask =
+      data && typeof data.id === "string" && Array.isArray(data.questions) && data.questions.length
+        ? (data as AskData)
+        : undefined;
+    return;
+  }
   if (key === PLAN_WIDGET || key === TODO_WIDGET) {
     applyPlanWidget(draft, key, lines);
     return;

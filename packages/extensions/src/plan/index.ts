@@ -7,13 +7,18 @@
 //   Core 自己发起的回合（messageType 不是 user）不注入、不改变模式。
 // - plan_submit：结构化计划，推 primus:plan 给前端，阻塞到 `/primus-plan approve|revise`、关闭计划模式或用户停止。
 // - todo：完整清单整体替换，推 primus:todo；计划中不可用；批准计划时按步骤预填。
-// - ask_user：选择题，v1 逐题复用 select / input 对话框。
+// - ask_user：选择题。推 primus:ask 给前端显示提问卡片（选项 + 最后一行自己写想法），阻塞到
+//   `/primus-plan answer <JSON>` 或用户停止；没有 setWidget 的界面退回逐题 select / input 对话框。
 // - 状态经 appendEntry("primus-plan") 持久化，session_start 时恢复；计划 Markdown 写到 <Core 目录>/plans/。
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   ASK_USER_TOOL,
+  ASK_WIDGET,
+  type AskAnswer,
+  type AskAnswerArgs,
+  type AskQuestion,
   normalizeTodoItems,
   PLAN_COMMAND,
   PLAN_SUBMIT_TOOL,
@@ -47,7 +52,7 @@ export const ENTRY_TYPE = "primus-plan";
 export const CONTEXT_TYPE = "primus-plan-context";
 /** 计划渲染成 Markdown 后的上限（字符） */
 const MAX_PLAN_CHARS = 60_000;
-const MAX_STEPS = 30;
+const MAX_STEPS = 12;
 
 export interface PersistedPlan {
   v: 1;
@@ -323,6 +328,9 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   let state = initialPlanState();
   /** 等待审批的计划：id → 兑现函数 */
   const pending = new Map<string, (d: Decision) => void>();
+  /** 等待回答的 ask_user：id → 兑现函数（undefined 表示用户关闭了提问） */
+  const pendingAsk = new Map<string, (a: Record<string, AskAnswer> | undefined) => void>();
+  let askCount = 0;
   let api: PlanApi | undefined;
   let lastCtx: PlanContext | undefined;
 
@@ -551,19 +559,12 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     return result(finished ? t.allDone : t.updated(done, items.length), { items });
   }
 
-  async function askUser(
-    params: unknown,
-    signal: AbortSignal | undefined,
-    ctx: PlanContext,
-  ): Promise<ToolResult> {
+  /** 校验并规范化 ask_user 的问题；不合法时返回原因 */
+  function normalizeQuestions(raw: unknown): AskQuestion[] | string {
     const t = TEXT.askUser;
-    const raw = (params as { questions?: unknown } | null)?.questions;
     if (!Array.isArray(raw) || raw.length === 0 || raw.length > 3)
-      return result(t.invalid("需要 1–3 个问题"), undefined, { isError: true });
-    const select = ctx.ui?.select;
-    if (ctx.hasUI !== true || typeof select !== "function")
-      return result(t.noUi, undefined, { isError: true });
-    const answers: Record<string, { selected: string; other?: string }> = {};
+      return t.invalid("需要 1–3 个问题");
+    const out: AskQuestion[] = [];
     for (const [i, q] of raw.entries()) {
       const question = q as {
         id?: unknown;
@@ -572,7 +573,7 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
         options?: unknown;
       };
       if (typeof question?.question !== "string" || !question.question.trim())
-        return result(t.invalid(`第 ${i + 1} 题缺少 question`), undefined, { isError: true });
+        return t.invalid(`第 ${i + 1} 题缺少 question`);
       const options = Array.isArray(question.options)
         ? question.options
             .map((o) => (o as { label?: unknown; description?: unknown } | null) ?? {})
@@ -580,30 +581,100 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
               (o): o is { label: string; description?: unknown } =>
                 typeof o.label === "string" && o.label.trim() !== "",
             )
+            .map((o) => ({
+              label: o.label.trim(),
+              ...(typeof o.description === "string" && o.description.trim()
+                ? { description: o.description.trim() }
+                : {}),
+            }))
         : [];
       if (options.length < 2 || options.length > 4)
-        return result(t.invalid(`第 ${i + 1} 题需要 2–4 个选项`), undefined, { isError: true });
-      const labels = options.map((o) =>
-        typeof o.description === "string" && o.description.trim()
-          ? `${o.label.trim()}：${o.description.trim()}`
-          : o.label.trim(),
+        return t.invalid(`第 ${i + 1} 题需要 2–4 个选项`);
+      const header = typeof question.header === "string" ? question.header.trim() : "";
+      out.push({
+        id:
+          typeof question.id === "string" && question.id.trim() ? question.id.trim() : `q${i + 1}`,
+        ...(header ? { header } : {}),
+        question: question.question.trim(),
+        options,
+      });
+    }
+    return out;
+  }
+
+  async function askUser(
+    params: unknown,
+    signal: AbortSignal | undefined,
+    ctx: PlanContext,
+  ): Promise<ToolResult> {
+    lastCtx = ctx;
+    const t = TEXT.askUser;
+    const questions = normalizeQuestions((params as { questions?: unknown } | null)?.questions);
+    if (typeof questions === "string") return result(questions, undefined, { isError: true });
+    if (ctx.hasUI !== true) return result(t.noUi, undefined, { isError: true });
+    const setWidget = ctx.ui?.setWidget;
+    if (typeof setWidget === "function") {
+      askCount++;
+      const id = `a${askCount}`;
+      setWidget(ASK_WIDGET, [JSON.stringify({ v: 1, type: "ask", data: { id, questions } })]);
+      const answers = await new Promise<Record<string, AskAnswer> | undefined>((resolve) => {
+        pendingAsk.set(id, resolve);
+        if (signal?.aborted) resolve(undefined);
+        signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+      });
+      pendingAsk.delete(id);
+      setWidget(ASK_WIDGET, undefined);
+      if (!answers)
+        return result(t.unanswered, { answers: {} }, { isError: true, terminate: true });
+      return result(JSON.stringify({ answers }), { answers });
+    }
+    // 没有提问卡片的界面：逐题 select，“其他”再弹输入框
+    const select = ctx.ui?.select;
+    if (typeof select !== "function") return result(t.noUi, undefined, { isError: true });
+    const answers: Record<string, AskAnswer> = {};
+    for (const q of questions) {
+      const labels = q.options.map((o) =>
+        o.description ? `${o.label}：${o.description}` : o.label,
       );
-      const header = typeof question.header === "string" && question.header.trim();
-      const title = header ? `${header}｜${question.question.trim()}` : question.question.trim();
+      const title = q.header ? `${q.header}｜${q.question}` : q.question;
       const choice = await select(title, [...labels, t.other], { signal });
       if (choice === undefined) return result(t.unanswered, { answers }, { isError: true });
-      const id =
-        typeof question.id === "string" && question.id.trim() ? question.id.trim() : `q${i + 1}`;
       if (choice === t.other) {
         const text = await ctx.ui?.input?.(title, t.otherPrompt, { signal });
-        if (text === undefined) return result(t.unanswered, { answers }, { isError: true });
-        answers[id] = { selected: "other", other: text };
+        if (text === undefined || !text.trim())
+          return result(t.unanswered, { answers }, { isError: true });
+        answers[q.id] = { other: text.trim() };
       } else {
-        const idx = labels.indexOf(choice);
-        answers[id] = { selected: options[idx]?.label.trim() ?? choice };
+        answers[q.id] = { selected: q.options[labels.indexOf(choice)]?.label ?? choice };
       }
     }
     return result(JSON.stringify({ answers }), { answers });
+  }
+
+  /** `/primus-plan answer <JSON>`：兑现等待中的 ask_user（只收已知题目的合法回答） */
+  function answer(args: AskAnswerArgs, ctx: PlanContext): void {
+    const resolve = pendingAsk.get(args.id);
+    if (!resolve) {
+      ctx.ui?.notify?.(TEXT.command.noPendingAsk, "warning");
+      return;
+    }
+    if (args.cancel === true) {
+      resolve(undefined);
+      return;
+    }
+    const answers: Record<string, AskAnswer> = {};
+    for (const [qid, a] of Object.entries(args.answers ?? {})) {
+      const v = a as { selected?: unknown; other?: unknown } | null;
+      if (typeof v?.selected === "string" && v.selected.trim())
+        answers[qid] = { selected: v.selected.trim() };
+      else if (typeof v?.other === "string" && v.other.trim())
+        answers[qid] = { other: v.other.trim() };
+    }
+    if (Object.keys(answers).length === 0) {
+      ctx.ui?.notify?.(TEXT.command.badJson, "error");
+      return;
+    }
+    resolve(answers);
   }
 
   async function command(args: string, ctx: PlanContext): Promise<void> {
@@ -626,6 +697,15 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       case "status":
         publish(ctx);
         return;
+      case "answer": {
+        const parsed = parseJson<AskAnswerArgs>(rest);
+        if (!parsed || typeof parsed.id !== "string") {
+          ctx.ui?.notify?.(c.badJson, "error");
+          return;
+        }
+        answer(parsed, ctx);
+        return;
+      }
       case "approve":
       case "revise": {
         const parsed = parseJson<PlanApproveArgs & PlanReviseArgs>(rest);
@@ -712,6 +792,10 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
 
     pi.on("session_start", (_event, ctx) => {
       lastCtx = ctx;
+      // 会话（重新）开始：之前没回答的提问已失效
+      for (const resolve of pendingAsk.values()) resolve(undefined);
+      pendingAsk.clear();
+      ctx.ui?.setWidget?.(ASK_WIDGET, undefined);
       restore(ctx);
       syncGate();
       publish(ctx);

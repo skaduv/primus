@@ -1,5 +1,6 @@
 import {
   type AgentMessage,
+  type AskData,
   type AssistantMessage,
   type CoreRecord,
   PLAN_SUBMIT_TOOL,
@@ -440,6 +441,31 @@ export const MOCK_PLAN: PlanDoc = {
   risks: ["标题里有中文标点时锚点可能不一致"],
   verification: ["在预览里逐个点击目录链接"],
   assumptions: ["只处理二级标题"],
+};
+
+/** 计划前演示用的 ask_user 提问（primus:ask） */
+export const MOCK_ASK: AskData = {
+  id: "a1",
+  questions: [
+    {
+      id: "toc_depth",
+      header: "目录层级",
+      question: "目录要包含哪几级标题？",
+      options: [
+        { label: "只到二级（推荐）", description: "简洁，适合短 README" },
+        { label: "二级和三级", description: "更细，适合章节多的文档" },
+      ],
+    },
+    {
+      id: "position",
+      header: "位置",
+      question: "目录放在哪里？",
+      options: [
+        { label: "开头说明之后", description: "先看到项目是什么" },
+        { label: "最开头", description: "打开就能跳转" },
+      ],
+    },
+  ],
 };
 
 /** 计划模式下的一次 prompt：读取一次文件后调用 plan_submit，停在等待审批（不结束这一轮） */

@@ -2,11 +2,20 @@
 
 // 输入框上沿后面的“唇条”：一条灰色小舌，显示当前 Git 分支与工作区（工作区选择从底栏移到这里，功能不变）。
 // 不是 Git 仓库时不显示分支；会话开始后工作区锁定，只显示名称。
-// 有待办（primus-plan 的计划步骤 / todo）时唇条正中显示进度与当前步骤，悬停或键盘聚焦弹出全部步骤。
-// 布局是三栏网格（左：分支与工作区；中：计划进度；右：空），两侧等宽，中间一栏始终居中。
+// 有待办（primus-plan 的计划步骤 / todo）时唇条正中显示进度与当前步骤（进行中的用转动图标），
+// 悬停或键盘聚焦弹出全部步骤。左侧分支与工作区位置固定；进度在整条唇条里居中，左边让开工作区，
+// 右边放不下时文字渐隐截断。
 import { currentTodo, type TodoItem } from "@primus/protocol";
 import { HoverCard } from "radix-ui";
-import { useEffect, useId, useState } from "react";
+import {
+  type CSSProperties,
+  type RefObject,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { Icon } from "@/components/icons";
 import { GlassSurface } from "@/components/ui/glass-surface";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -35,23 +44,85 @@ function useGitBranch(path: string | null): Branch | null {
   return path && branch?.path === path ? branch.value : null;
 }
 
-/** 一个待办的状态标记：完成为对勾、跳过为横线、进行中为强调色圆点、未开始为空心圆 */
-function TodoMark({ status }: { status: TodoItem["status"] }) {
+/** 一个待办的状态标记：完成为对勾、跳过为横线、进行中为转动的加载图标（强调色）、未开始为空心圆 */
+export function TodoMark({ status }: { status: TodoItem["status"] }) {
   if (status === "completed") return <Icon name="check" size="xs" className="text-muted" />;
   if (status === "skipped") return <Icon name="minus" size="xs" className="text-muted" />;
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "m-[3px] size-1.5 shrink-0 rounded-full",
-        status === "in_progress" ? "bg-accent" : "ring-1 ring-current",
-      )}
-    />
-  );
+  if (status === "in_progress")
+    return (
+      <Icon
+        name="loader"
+        size="sm"
+        label={strings.chat.todoStatus.in_progress}
+        className="session-spinner shrink-0 text-accent"
+      />
+    );
+  return <span aria-hidden className="m-[3px] size-2 shrink-0 rounded-full ring-1 ring-current" />;
 }
 
-/** 唇条中间的计划进度：当前步骤一行；悬停或键盘聚焦弹出全部步骤（与模型选择同款的玻璃弹层） */
-export function TodoProgress({ items }: { items: readonly TodoItem[] }) {
+/**
+ * 计划进度在唇条里的位置：在整条唇条里水平居中；左边不压到工作区（让到它右侧 16px 之后），
+ * 右边放不下时由文字渐隐截断。返回定位样式与文字是否溢出（溢出时加渐隐遮罩）
+ */
+function useCenteredSlot(
+  lip: RefObject<HTMLDivElement | null>,
+  left: RefObject<HTMLDivElement | null>,
+  slot: RefObject<HTMLButtonElement | null>,
+  text: RefObject<HTMLSpanElement | null>,
+  /** 显示内容的摘要：变化时重新测量（尺寸变化由 ResizeObserver 处理） */
+  contentKey: string,
+): { style: CSSProperties; overflow: boolean } {
+  const [layout, setLayout] = useState<{ style: CSSProperties; overflow: boolean }>({
+    style: { left: "50%", translate: "-50% 0", maxWidth: "50%" },
+    overflow: false,
+  });
+  // biome-ignore lint/correctness/useExhaustiveDependencies: contentKey 不在回调里读取，只用来在内容变化时重新测量
+  useLayoutEffect(() => {
+    const lipEl = lip.current;
+    const slotEl = slot.current;
+    const textEl = text.current;
+    if (!lipEl || !slotEl || !textEl) return;
+    const measure = () => {
+      const width = lipEl.clientWidth;
+      const pad = Number.parseFloat(getComputedStyle(lipEl).paddingRight) || 14;
+      const leftEl = left.current;
+      const leftEdge =
+        leftEl && leftEl.offsetWidth > 0 ? leftEl.offsetLeft + leftEl.offsetWidth + 16 : pad;
+      // 不截断时的宽度：按钮宽度减去文字可见宽度，加上文字完整宽度
+      const natural = slotEl.offsetWidth - textEl.clientWidth + textEl.scrollWidth;
+      const x = Math.max(leftEdge, (width - natural) / 2);
+      const maxWidth = Math.max(0, width - pad - x);
+      setLayout({
+        style: { left: x, maxWidth },
+        overflow: natural > maxWidth + 0.5,
+      });
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(lipEl);
+    if (left.current) ro.observe(left.current);
+    return () => ro.disconnect();
+  }, [lip, left, slot, text, contentKey]);
+  return layout;
+}
+
+/** 计划进度：当前步骤一行；悬停或键盘聚焦弹出全部步骤（与模型选择同款的玻璃弹层） */
+export function TodoProgress({
+  items,
+  slotRef,
+  textRef,
+  style,
+  overflow = false,
+}: {
+  items: readonly TodoItem[];
+  slotRef?: RefObject<HTMLButtonElement | null>;
+  textRef?: RefObject<HTMLSpanElement | null>;
+  /** 唇条算好的位置（绝对定位）；缺省时随文档流 */
+  style?: CSSProperties;
+  /** 文字放不下：右端渐隐 */
+  overflow?: boolean;
+}) {
   const current = currentTodo(items);
   const labelId = useId();
   if (!current) return null;
@@ -61,15 +132,30 @@ export function TodoProgress({ items }: { items: readonly TodoItem[] }) {
       <HoverCard.Trigger asChild>
         {/* 按钮只为能被键盘聚焦（聚焦同样弹出全部步骤），点击没有动作 */}
         <button
+          ref={slotRef}
           type="button"
+          style={style}
           aria-label={`${t.lip.todo} ${done}/${items.length}：${current.text}`}
-          className="lip-item-in flex min-w-0 max-w-full cursor-default items-center gap-1.5 rounded-md outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
+          className={cn(
+            "lip-item-in flex min-w-0 cursor-default items-center gap-1.5 rounded-md outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg",
+            style && "absolute top-0 h-8",
+          )}
         >
-          <Icon name="list-check" size="sm" className="shrink-0" />
+          <span className="flex w-3.5 shrink-0 justify-center">
+            <TodoMark status={current.status} />
+          </span>
           <span className="shrink-0 tabular-nums">
             {done}/{items.length}
           </span>
-          <span className="min-w-0 truncate text-fg/80">{current.text}</span>
+          <span
+            ref={textRef}
+            className={cn(
+              "min-w-0 overflow-hidden whitespace-nowrap text-fg/80",
+              overflow && "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),transparent)]",
+            )}
+          >
+            {current.text}
+          </span>
         </button>
       </HoverCard.Trigger>
       <HoverCard.Portal>
@@ -144,13 +230,30 @@ export function ComposerLip({
   onError: (message: string | null) => void;
 }) {
   const branch = useGitBranch(showWorkspace ? (workspace?.path ?? null) : null);
-  const hasTodo = currentTodo(todos) !== undefined;
+  const current = currentTodo(todos);
+  const hasTodo = current !== undefined;
+  const lipRef = useRef<HTMLDivElement>(null);
+  const leftRef = useRef<HTMLDivElement>(null);
+  const slotRef = useRef<HTMLButtonElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const done = todos.filter((i) => i.status === "completed" || i.status === "skipped").length;
+  const slot = useCenteredSlot(
+    lipRef,
+    leftRef,
+    slotRef,
+    textRef,
+    [current?.text, current?.status, done, todos.length, workspace?.path, branch?.name].join("|"),
+  );
   const workspacePart = showWorkspace && (workspace || !locked);
   if (!workspacePart && !hasTodo) return null;
   const item = "lip-item-in flex min-w-0 items-center gap-1.5";
   return (
-    <div className="composer-lip mx-3.5 -mb-3 grid h-11 grid-cols-[minmax(0,1fr)_minmax(0,auto)_minmax(0,1fr)] items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
-      <div className="flex min-w-0 items-center gap-4">
+    <div
+      ref={lipRef}
+      className="composer-lip relative mx-3.5 -mb-3 flex h-11 items-center rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]"
+    >
+      {/* 左侧固定：分支与工作区；计划进度绝对定位在整条唇条的正中（见 useCenteredSlot） */}
+      <div ref={leftRef} className="flex min-w-0 shrink-0 items-center gap-4">
         {workspacePart && branch && (
           <Tooltip
             key={`${workspace?.path}:${branch.name}`}
@@ -212,9 +315,13 @@ export function ComposerLip({
           </span>
         )}
       </div>
-      <div className="flex min-w-0 justify-center">
-        <TodoProgress items={todos} />
-      </div>
+      <TodoProgress
+        items={todos}
+        slotRef={slotRef}
+        textRef={textRef}
+        style={slot.style}
+        overflow={slot.overflow}
+      />
     </div>
   );
 }

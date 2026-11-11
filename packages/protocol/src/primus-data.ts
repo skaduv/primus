@@ -161,10 +161,12 @@ export function previewKindOf(path: string): Exclude<PreviewKind, "folder"> {
 
 // ---------- primus-plan：计划模式与待办（技术方案第 14.2、14.3 节） ----------
 
-/** 计划模式的扩展命令：`/primus-plan on|off|status|approve <JSON>|revise <JSON>` */
+/** 计划模式的扩展命令：`/primus-plan on|off|status|approve <JSON>|revise <JSON>|answer <JSON>` */
 export const PLAN_COMMAND = "primus-plan";
 export const PLAN_WIDGET = "primus:plan";
 export const TODO_WIDGET = "primus:todo";
+/** ask_user 等待回答的问题（前端显示提问卡片）；清除表示没有待回答的问题 */
+export const ASK_WIDGET = "primus:ask";
 /** 提交计划等待审批的工具 */
 export const PLAN_SUBMIT_TOOL = "plan_submit";
 /** 维护待办清单的工具 */
@@ -240,6 +242,37 @@ export interface PlanSubmitDetails {
   edited?: boolean;
   feedback?: string;
   path?: string;
+}
+
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+
+export interface AskQuestion {
+  id: string;
+  /** 简短标签（12 字以内），卡片的小节标题 */
+  header?: string;
+  question: string;
+  /** 2–4 个互斥选项；界面另在最后放一个输入框，用户可以不选而直接写自己的想法 */
+  options: AskOption[];
+}
+
+/** `primus:ask` 的 data：一次 ask_user 调用的全部问题 */
+export interface AskData {
+  /** a1、a2…（回答时原样带回） */
+  id: string;
+  questions: AskQuestion[];
+}
+
+/** 一题的回答：选了某个选项（selected 为选项 label），或自己写了想法（other） */
+export type AskAnswer = { selected: string } | { other: string };
+
+/** `/primus-plan answer <JSON>` 的参数；cancel 为 true 表示用户关闭了提问（不回答） */
+export interface AskAnswerArgs {
+  id: string;
+  answers?: Record<string, AskAnswer>;
+  cancel?: boolean;
 }
 
 export type TodoStatus = "pending" | "in_progress" | "completed" | "skipped";

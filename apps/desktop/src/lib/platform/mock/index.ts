@@ -1,5 +1,6 @@
 import {
   type AgentMessage,
+  ASK_WIDGET,
   type AssistantContent,
   type AssistantMessage,
   CONTEXT_STATS_COMMAND,
@@ -37,6 +38,7 @@ import {
 } from "../types";
 import {
   errorScenario,
+  MOCK_ASK,
   MOCK_NETWORK_DOWN,
   MOCK_PLAN,
   mockErrorKind,
@@ -273,6 +275,10 @@ interface MockSession {
   planPhase?: PlanPhase;
   /** 等待审批的 plan_submit 调用 ID */
   planCall?: string;
+  /** 计划模式里已经问过一次 ask_user（mock 只在第一次计划前问） */
+  asked?: boolean;
+  /** 等待回答的 ask_user：回答后用这条消息继续生成计划 */
+  askPrompt?: string;
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -600,6 +606,38 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       emit(s, planWidget({ phase: s.planPhase }));
       return;
     }
+    if (verb === "answer" && s.askPrompt !== undefined) {
+      let cancel = false;
+      try {
+        cancel = (JSON.parse(rest.join(" ")) as { cancel?: unknown }).cancel === true;
+      } catch {}
+      const message = s.askPrompt;
+      s.askPrompt = undefined;
+      emit(s, {
+        type: "extension_ui_request",
+        id: `mock-widget-${now()}-${Math.random()}`,
+        method: "setWidget",
+        widgetKey: ASK_WIDGET,
+      });
+      if (cancel) {
+        emit(
+          s,
+          { type: "agent_end", messages: [], willRetry: false },
+          { type: "agent_settled", aborted: false },
+        );
+        return;
+      }
+      // 开头的 agent_start、turn_start 与用户消息在提问前已推送
+      const plan = planScenario(message, now());
+      s.planPhase = "awaiting";
+      s.planCall = plan.callId;
+      emit(
+        s,
+        ...plan.records.slice(4),
+        planWidget({ phase: "awaiting", id: "p1", status: "awaiting", plan: MOCK_PLAN }),
+      );
+      return;
+    }
     if ((verb === "approve" || verb === "revise") && s.planCall) {
       let feedback = "";
       try {
@@ -699,6 +737,19 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
             };
           };
           next(first, later);
+          return;
+        }
+        if (s.planPhase === "planning" && !s.asked) {
+          // 第一次计划前先演示 ask_user：推提问卡片，等 `/primus-plan answer`
+          s.asked = true;
+          s.askPrompt = message;
+          const plan = planScenario(message, now());
+          emit(
+            s,
+            respond(cmd, { disposition: "started" }),
+            ...plan.records.slice(0, 4),
+            widget(ASK_WIDGET, "ask", MOCK_ASK),
+          );
           return;
         }
         if (s.planPhase === "planning") {

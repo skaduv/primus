@@ -3,13 +3,14 @@
 // 计划模式（primus-plan）的两块界面：
 // - PlanCard：时间线里 plan_submit 的计划卡片（标题、概述、步骤、风险、验证、假设），带审批结果；
 //   等待批准或刚提交的展开，其余默认收起成一行，点开再看。
-// - PlanApproval：等待批准时显示在输入框上方（与操作确认同一位置）：批准并执行、批准但每步询问、带意见继续完善。
+// - PlanApproval：等待批准时显示在输入框上方（与操作确认同一位置）：批准并执行、批准但每步询问；
+//   最后一行写修改意见即继续完善。
 import type { PlanApprovePermission, PlanDoc, PlanSubmitDetails } from "@primus/protocol";
 import { useId, useState } from "react";
 import { Icon } from "@/components/icons";
-import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
+import { ChoiceCard } from "./choice-card";
 import { MarkdownText } from "./message-content";
 
 const t = strings.chat.plan;
@@ -178,6 +179,7 @@ export function PlanCard({
   );
 }
 
+/** 等待批准的计划：与 ask_user 同款的选择卡片；最后一行直接写修改意见（不执行，继续完善） */
 export function PlanApproval({
   title,
   fullAccess,
@@ -185,100 +187,31 @@ export function PlanApproval({
   onRevise,
 }: {
   title?: string;
-  /** 当前是完全访问：主按钮保持完全访问，不降到自动编辑 */
+  /** 当前是完全访问：主选项保持完全访问，不降到自动编辑 */
   fullAccess: boolean;
   onApprove: (permission: PlanApprovePermission) => void;
   onRevise: (feedback: string) => void;
 }) {
   const a = t.approval;
-  const [revising, setRevising] = useState(false);
-  const [feedback, setFeedback] = useState("");
-  const button =
-    "rounded-full px-3.5 py-1.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-40";
   return (
-    <section
-      role="alertdialog"
-      aria-label={a.label}
-      className="mx-auto mb-2 flex w-full max-w-xl flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-sm shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
-    >
-      <div className="flex items-start gap-2.5">
-        <Icon name="list-check" className="mt-0.5 text-muted" />
-        <div className="min-w-0 flex-1">
-          <p className="font-medium text-fg">{a.title}</p>
-          {title && <p className="mt-0.5 truncate text-muted">{title}</p>}
-        </div>
-      </div>
-      {revising ? (
-        <form
-          className="flex flex-col gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const text = feedback.trim();
-            if (text) onRevise(text);
-          }}
-        >
-          <textarea
-            aria-label={a.feedbackLabel}
-            placeholder={a.feedbackPlaceholder}
-            value={feedback}
-            // biome-ignore lint/a11y/noAutofocus: 点“继续完善”后直接输入意见
-            autoFocus
-            onChange={(e) => setFeedback(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                e.currentTarget.form?.requestSubmit();
-              }
-            }}
-            rows={3}
-            className="w-full resize-none rounded-xl bg-hover/60 px-3 py-2 text-base outline-none ring-1 ring-border focus:ring-accent/40"
-          />
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => setRevising(false)}
-              className={cn(button, "text-muted hover:bg-hover hover:text-fg")}
-            >
-              {a.cancel}
-            </button>
-            <button
-              type="submit"
-              disabled={!feedback.trim()}
-              className={cn(button, "bg-fg text-surface hover:opacity-90")}
-            >
-              {a.sendFeedback}
-            </button>
-          </div>
-        </form>
-      ) : (
-        <div className="flex flex-wrap justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => setRevising(true)}
-            className={cn(button, "text-muted hover:bg-hover hover:text-fg")}
-          >
-            {a.revise}
-          </button>
-          <Tooltip content={a.approveAskHint}>
-            <button
-              type="button"
-              onClick={() => onApprove("ask")}
-              className={cn(button, "bg-hover text-fg hover:bg-hover/70")}
-            >
-              {a.approveAsk}
-            </button>
-          </Tooltip>
-          <Tooltip content={fullAccess ? undefined : a.approveEditHint}>
-            <button
-              type="button"
-              onClick={() => onApprove(fullAccess ? "keep" : "edit")}
-              className={cn(button, "bg-fg text-surface hover:opacity-90")}
-            >
-              {a.approveEdit}
-            </button>
-          </Tooltip>
-        </div>
-      )}
-    </section>
+    <ChoiceCard
+      label={a.label}
+      icon="list-check"
+      header={a.title}
+      title={title ?? a.title}
+      options={[
+        {
+          key: "edit",
+          label: a.approveEdit,
+          description: fullAccess ? a.approveKeepHint : a.approveEditHint,
+        },
+        { key: "ask", label: a.approveAsk, description: a.approveAskHint },
+      ]}
+      otherLabel={a.feedbackLabel}
+      otherPlaceholder={a.feedbackPlaceholder}
+      sendLabel={a.sendFeedback}
+      onChoose={(key) => onApprove(key === "ask" ? "ask" : fullAccess ? "keep" : "edit")}
+      onOther={onRevise}
+    />
   );
 }

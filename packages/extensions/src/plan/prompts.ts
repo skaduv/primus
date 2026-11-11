@@ -9,7 +9,12 @@ export const REMINDER_FULL = `<primus-plan-mode>
 1. 了解现状：先用只读工具（read、grep、find、ls、只读命令）查清相关代码，找出可以复用的现有实现。能从工作区查到的事不要问用户。
 2. 澄清意图：仍有会明显影响方案的不确定点时，用 ${ASK_USER_TOOL} 提问（一次 1–3 题，每题 2–4 个互斥选项，推荐项放第一个）。不要用普通文字提问。
 3. 设计方案：只给你推荐的方案，做到“决策完备”：执行时不需要再做决定。
-4. 提交计划：调用 ${PLAN_SUBMIT_TOOL}，写清背景与目标、步骤（每步涉及的文件与做法）、风险、验证方式、所做的假设。修改计划时提交完整的新版本，不要只给差异。
+4. 提交计划：调用 ${PLAN_SUBMIT_TOOL}。计划要精简、能一眼扫完，又足够照着执行：
+   - summary 一两句：要解决什么、做完是什么样。
+   - steps 3–7 条，每条一句短标题（20 字以内），按行为或子系统归类，不要逐文件罗列；需要补充时 detail 只写一行要点。
+   - 只在改动不明显时写 files，每步最多 3 个；同一模式的改动描述一次即可。
+   - verification、risks、assumptions 各 1–3 条短句，没有就省略 risks、assumptions。
+   - 不写备选方案、不写背景长文、不贴代码。修改计划时提交完整的新版本，不要只给差异。
 
 这一轮只能以 ${ASK_USER_TOOL} 或 ${PLAN_SUBMIT_TOOL} 结束。不要用文字问“这个计划可以吗”“要开始吗”：审批就是 ${PLAN_SUBMIT_TOOL}。用户只是想了解代码、不需要改动时，直接回答，不必提交计划。计划模式下不要使用 ${TODO_TOOL}。
 </primus-plan-mode>`;
@@ -29,19 +34,19 @@ export const TEXT = {
     snippet: "计划模式下提交完整计划，等待用户审批",
     guidelines: [
       `只在计划模式中调用 ${PLAN_SUBMIT_TOOL}；每次提交完整计划（完整替换上一版）。`,
-      "计划要决策完备：步骤写到执行时不必再做决定的程度，说明涉及的文件；同一模式的改动描述一次并列出代表性文件即可。",
+      "计划要精简、决策完备：summary 一两句；steps 3–7 条短标题（20 字以内），detail 最多一行；files 只在不明显时写、每步最多 3 个；verification、risks、assumptions 各 1–3 条短句。不写备选方案、不贴代码。",
     ],
     params: {
-      title: "计划标题（一句话，60 字以内）",
-      summary: "背景、目标与成功标准",
-      steps: "执行步骤，按顺序",
+      title: "计划标题（30 字以内）",
+      summary: "一两句：要解决什么、做完是什么样",
+      steps: "执行步骤，3–7 条，按顺序",
       stepId: "步骤编号（1、2、3…）",
-      stepTitle: "这一步做什么（一句话）",
-      stepDetail: "做法要点",
-      stepFiles: "涉及的文件",
-      risks: "风险与注意事项",
-      verification: "如何验证（测试、命令、手动检查）",
-      assumptions: "所做的假设",
+      stepTitle: "这一步做什么（20 字以内的短句）",
+      stepDetail: "可选，一行要点",
+      stepFiles: "可选，改动不明显时写，最多 3 个",
+      risks: "可选，1–3 条短句",
+      verification: "如何验证，1–3 条短句",
+      assumptions: "可选，1–3 条短句",
     },
     notPlanning:
       "当前不在计划模式，不需要提交计划。计划已批准就直接按计划执行；需要先做计划，请用户开启计划模式。",
@@ -77,7 +82,7 @@ export const TEXT = {
   askUser: {
     label: "询问用户",
     description:
-      "向用户提 1–3 个选择题来澄清需求或在方案之间取舍（每题 2–4 个互斥选项，推荐项放第一个并在标签后注明“（推荐）”；界面会自动加“其他”让用户自己填写，不要自己加）。不要用它请求操作权限或问“可以开始吗”。",
+      "向用户提 1–3 个选择题来澄清需求或在方案之间取舍（每题 2–4 个互斥选项，推荐项放第一个并在标签后注明“（推荐）”；界面会在选项后面放一个输入框让用户直接写自己的想法，不要自己加“其他”）。不要用它请求操作权限或问“可以开始吗”。",
     snippet: "向用户提选择题澄清需求",
     guidelines: [
       `需要用户在几个方案之间选择、或需求有会明显影响结果的歧义时，用 ${ASK_USER_TOOL} 提选择题，不要用普通文字提问；能自己查到的不要问。`,
@@ -89,7 +94,7 @@ export const TEXT = {
       question: "问题本身（一句话）",
       options: "2–4 个互斥选项",
       label: "选项（几个字）",
-      description: "选项的含义或取舍",
+      description: "一句话说明取舍（20 字以内）",
     },
     other: "其他（自己填写）",
     otherPrompt: "请输入你的回答",
@@ -99,9 +104,10 @@ export const TEXT = {
   },
   command: {
     description:
-      "计划模式：on（开启）、off（关闭）、status、approve <JSON>（批准计划）、revise <JSON>（带反馈继续完善）",
+      "计划模式：on（开启）、off（关闭）、status、approve <JSON>（批准计划）、revise <JSON>（带反馈继续完善）、answer <JSON>（回答 ask_user）",
     unknown: (arg: string) => `未知的计划命令：${arg || "（空）"}`,
     badJson: "计划命令的参数不是合法的 JSON",
     noPending: "没有等待审批的计划",
+    noPendingAsk: "没有等待回答的问题",
   },
 } as const;

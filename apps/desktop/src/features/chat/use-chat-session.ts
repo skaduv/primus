@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  type AskAnswerArgs,
   CONTEXT_STATS_COMMAND,
   type CoreBatch,
   type ExtensionUiResponse,
@@ -120,6 +121,8 @@ export interface ChatSession {
   approvePlan: (args: PlanApproveArgs) => Promise<boolean>;
   /** 不执行，带反馈继续完善（`/primus-plan revise`）；成功返回 true */
   revisePlan: (id: string, feedback: string) => Promise<boolean>;
+  /** 回答 ask_user 的提问卡片（primus:ask） */
+  answerAsk: (args: AskAnswerArgs) => Promise<boolean>;
 }
 
 export interface ChatSessionOptions {
@@ -755,6 +758,16 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     [runPlanCommand],
   );
 
+  /** 回答 ask_user（全部题目一起发回）；cancel 表示用户关闭了提问 */
+  const answerAsk = useCallback(
+    (args: AskAnswerArgs) => {
+      // 先收起卡片（扩展随后会推清除）；失败时由 lastError 提示
+      store.setState((s) => (s.ask?.id === args.id ? { ...s, ask: undefined } : s), true);
+      return runPlanCommand(`answer ${JSON.stringify(args)}`);
+    },
+    [runPlanCommand, store],
+  );
+
   const planPhase = state.plan?.phase;
   const planOn =
     pendingPlan ??
@@ -784,5 +797,6 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     setPlanMode,
     approvePlan,
     revisePlan,
+    answerAsk,
   };
 }

@@ -1,6 +1,7 @@
 import type { PlanDoc } from "@primus/protocol";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { AskCard } from "./ask-card";
 import { TodoProgress } from "./composer-lip";
 import { PlanApproval, PlanCard, planOfArgs } from "./plan-card";
 
@@ -60,14 +61,56 @@ describe("计划审批", () => {
     fireEvent.click(screen.getByRole("button", { name: "批准并执行" }));
     expect(onApprove).toHaveBeenLastCalledWith("keep");
 
-    fireEvent.click(screen.getByRole("button", { name: "继续完善" }));
+    // 最后一行直接写修改意见：空的不能发送，Enter 发送
     const send = screen.getByRole("button", { name: "发送意见" }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
-    fireEvent.change(screen.getByRole("textbox", { name: "修改意见" }), {
-      target: { value: "再加测试" },
-    });
-    fireEvent.click(send);
+    const box = screen.getByRole("textbox", { name: "修改意见" });
+    fireEvent.change(box, { target: { value: "再加测试" } });
+    fireEvent.submit(box);
     expect(onRevise).toHaveBeenCalledWith("再加测试");
+    // 数字键选择选项
+    fireEvent.keyDown(screen.getByRole("button", { name: "批准，每步询问" }), { key: "1" });
+    expect(onApprove).toHaveBeenLastCalledWith("keep");
+  });
+});
+
+describe("ask_user 提问卡片", () => {
+  const ask = {
+    id: "a1",
+    questions: [
+      {
+        id: "depth",
+        header: "目录层级",
+        question: "要几级？",
+        options: [{ label: "二级（推荐）", description: "简洁" }, { label: "三级" }],
+      },
+      { id: "pos", question: "放哪里？", options: [{ label: "开头" }, { label: "结尾" }] },
+    ],
+  };
+
+  it("逐题回答：选项或自己写的想法，答完一起发回；推荐后缀改成标记", () => {
+    const onAnswer = vi.fn();
+    render(<AskCard ask={ask} onAnswer={onAnswer} onCancel={() => {}} />);
+    expect(screen.getByText("1/2")).toBeTruthy();
+    expect(screen.getByText("目录层级")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "二级" }));
+    expect(onAnswer).not.toHaveBeenCalled();
+    expect(screen.getByText("放哪里？")).toBeTruthy();
+    const box = screen.getByRole("textbox", { name: "自己写想法" });
+    fireEvent.change(box, { target: { value: "放在徽章下面" } });
+    fireEvent.submit(box);
+    expect(onAnswer).toHaveBeenCalledWith({
+      depth: { selected: "二级（推荐）" },
+      pos: { other: "放在徽章下面" },
+    });
+  });
+
+  it("关闭或 Esc 表示不回答", () => {
+    const onCancel = vi.fn();
+    render(<AskCard ask={ask} onAnswer={() => {}} onCancel={onCancel} />);
+    fireEvent.click(screen.getByRole("button", { name: "不回答" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "三级" }), { key: "Escape" });
+    expect(onCancel).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -85,6 +128,8 @@ describe("唇条的计划进度", () => {
     const trigger = screen.getByRole("button", { name: "计划进度 1/3：扩展" });
     expect(trigger.textContent).toContain("扩展");
     expect(trigger.textContent).not.toContain("前端");
+    // 进行中的一步用转动的加载图标
+    expect(trigger.querySelector(".session-spinner")).toBeTruthy();
     rerender(<TodoProgress items={[{ id: "1", text: "a", status: "completed" }]} />);
     expect(container.textContent).toBe("");
   });

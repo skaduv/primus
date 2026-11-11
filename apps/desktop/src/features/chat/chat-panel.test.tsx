@@ -802,6 +802,39 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: t.plan.turnOff })).toBeNull());
   });
 
+  it("计划模式：先回答 ask_user 的提问卡片，再出现计划审批", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const prompts: string[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      const r = record as { type: string; message?: unknown };
+      if (r.type === "prompt") prompts.push(String(r.message));
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    await openAddMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitemcheckbox", { name: new RegExp(t.plan.toggle) }),
+    );
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "给 README 加目录" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    const card = await screen.findByRole("alertdialog", { name: t.ask.label });
+    expect(card.textContent).toContain("目录要包含哪几级标题？");
+    fireEvent.click(screen.getByRole("button", { name: "只到二级" }));
+    const box = await screen.findByRole("textbox", { name: t.ask.otherLabel });
+    fireEvent.change(box, { target: { value: "放在徽章下面" } });
+    fireEvent.submit(box);
+    expect(await screen.findByRole("alertdialog", { name: t.plan.approval.label })).toBeTruthy();
+    expect(screen.queryByRole("alertdialog", { name: t.ask.label })).toBeNull();
+    const answer = prompts.find((m) => m.startsWith("/primus-plan answer "));
+    expect(JSON.parse(answer?.slice("/primus-plan answer ".length) ?? "{}")).toEqual({
+      id: "a1",
+      answers: { toc_depth: { selected: "只到二级（推荐）" }, position: { other: "放在徽章下面" } },
+    });
+  });
+
   it("三档权限都可选，选择后发给 Core（/primus-mode），打开会话时先同步当前档位", async () => {
     const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting(platform);
