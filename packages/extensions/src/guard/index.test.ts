@@ -2,11 +2,13 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createPlanGate } from "../plan/gate.ts";
 import {
   approvalKey,
   CHOICES,
   createGuard,
   decide,
+  decidePlan,
   describeCall,
   insideWorkspace,
   isAlwaysAskCommand,
@@ -14,6 +16,8 @@ import {
   MODE_COMMAND,
   MODE_WIDGET,
   needsApproval,
+  PLAN_ASK_PREFIX,
+  PLAN_DENY_REASON,
   resolveToolPath,
 } from "./index.ts";
 
@@ -297,5 +301,48 @@ describe("primus-guard 扩展", () => {
       await handlers.tool_call?.({ toolName: "write", input: { path: ".env" } }, c),
     ).toMatchObject({ block: true });
     expect(c.ui.select).not.toHaveBeenCalled();
+  });
+});
+
+describe("primus-guard 计划模式（只读）", () => {
+  it("修改文件拒绝；只读命令放行；判断不了的询问；读取交给常规规则", () => {
+    expect(decidePlan({ toolName: "write", input: { path: "a" } })).toBe("deny");
+    expect(decidePlan({ toolName: "edit", input: { path: "a" } })).toBe("deny");
+    expect(decidePlan({ toolName: "bash", input: { command: "git status" } })).toBe("allow");
+    expect(decidePlan({ toolName: "powershell", input: { command: "Remove-Item a" } })).toBe(
+      "deny",
+    );
+    expect(decidePlan({ toolName: "bash", input: { command: "pnpm test" } })).toBe("ask");
+    expect(decidePlan({ toolName: "read", input: { path: "/etc/hosts" } })).toBe(undefined);
+    expect(
+      decidePlan(
+        { toolName: "plan_submit", input: {} },
+        { readOnlyHint: true, openWorldHint: false },
+      ),
+    ).toBe(undefined);
+    expect(decidePlan({ toolName: "mcp_write", input: {} })).toBe("ask");
+  });
+
+  it("压过完全访问：写入被拒、命令确认不给“始终允许”且标题带前缀", async () => {
+    const gate = createPlanGate();
+    const { guard } = createGuard("full", gate);
+    const { pi, handlers } = fakePi();
+    guard(pi);
+    const tool = handlers.tool_call;
+    if (!tool) throw new Error("没有注册 tool_call");
+    const write = { toolName: "write", input: { path: "a.ts" } };
+    expect(await tool(write, ctx())).toBe(undefined);
+    gate.readOnly = true;
+    expect(await tool(write, ctx())).toEqual({ block: true, reason: PLAN_DENY_REASON });
+    expect(await tool({ toolName: "bash", input: { command: "ls" } }, ctx())).toBe(undefined);
+    const c = ctx(CHOICES.allow);
+    expect(await tool({ toolName: "bash", input: { command: "pnpm test" } }, c)).toBe(undefined);
+    expect(c.ui.select).toHaveBeenCalledWith(
+      `${PLAN_ASK_PREFIX}运行命令：pnpm test`,
+      [CHOICES.allow, CHOICES.deny],
+      expect.anything(),
+    );
+    // 读取按常规规则：完全访问下工作区外读取也放行，受保护路径的写入照样拒绝
+    expect(await tool({ toolName: "read", input: { path: "/etc/hosts" } }, ctx())).toBe(undefined);
   });
 });

@@ -9,17 +9,27 @@
 // 强制推送与下载后直接执行的命令在完全访问下也询问，且不能“始终允许”。路径按 Core 的规则解析并跟随符号链接比较。
 // 没有界面（hasUI 为 false）时需要询问的调用一律拒绝；处理出错时 Core 按失败即拦截处理。
 // 当前模式经 setWidget("primus:mode") 告知前端。
+// 计划模式（primus-plan 经 plan/gate.ts 打开只读开关）压过上面三种模式：修改文件一律拒绝，命令按只读分类器
+// 放行 / 拒绝 / 询问（询问时不提供“始终允许”），其他未声明只读的工具询问（decidePlan）。
 
 import { lstatSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type PlanGate, planGate } from "../plan/gate.ts";
+import { classifyCommand } from "../plan/readonly.ts";
 
 export const MODES = ["ask", "edit", "full"] as const;
 export type PermissionMode = (typeof MODES)[number];
 
 export const MODE_COMMAND = "primus-mode";
 export const MODE_WIDGET = "primus:mode";
+
+/** 计划模式下拒绝修改时给模型的原因 */
+export const PLAN_DENY_REASON =
+  "计划模式只读：不能修改文件或运行会改动系统的命令。把要做的改动写进计划，用 plan_submit 提交给用户审批。";
+/** 计划模式下需要用户确认时标题的前缀 */
+export const PLAN_ASK_PREFIX = "计划模式：";
 
 export const CHOICES = {
   allow: "允许",
@@ -226,6 +236,27 @@ export function decide(
   return "ask";
 }
 
+/**
+ * 计划模式（primus-plan，只读）的判断，压过权限模式（完全访问也一样）：
+ * 修改文件一律拒绝；命令按只读分类器放行、拒绝或询问；读取类工具与声明只读且不联网的工具交给常规规则（返回 undefined）；
+ * 其他工具询问。受保护路径等常规规则在返回 undefined 时照常生效。
+ */
+export function decidePlan(
+  call: ToolCall,
+  annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean },
+): Decision | undefined {
+  if (EDIT_TOOLS.has(call.toolName)) return "deny";
+  if (READ_TOOLS.has(call.toolName)) return undefined;
+  if (call.toolName === "bash" || call.toolName === "powershell") {
+    const command = call.input?.command;
+    if (typeof command !== "string") return "ask";
+    const c = classifyCommand(command, call.toolName === "powershell");
+    return c === "readonly" ? "allow" : c === "write" ? "deny" : "ask";
+  }
+  if (annotations?.readOnlyHint === true && annotations.openWorldHint === false) return undefined;
+  return "ask";
+}
+
 /** 按模式判断一次工具调用是否需要询问（拒绝也算需要处理） */
 export function needsApproval(
   mode: PermissionMode,
@@ -325,7 +356,7 @@ export interface GuardState {
   alwaysAllowed: Set<string>;
 }
 
-export function createGuard(initial: PermissionMode = "ask") {
+export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = planGate) {
   const state: GuardState = { mode: initial, alwaysAllowed: new Set() };
   function guard(pi: unknown): void {
     if (!isGuardApi(pi)) return;
@@ -345,7 +376,10 @@ export function createGuard(initial: PermissionMode = "ask") {
     pi.on("tool_call", async (event: never, ctx) => {
       const call = event as ToolCall;
       const annotations = pi.getAllTools?.().find((t) => t.name === call.toolName)?.annotations;
-      const decision = decide(state.mode, call, ctx.cwd, annotations);
+      // 计划模式先判断：拒绝与放行直接生效，询问时不提供“始终允许”
+      const planDecision = gate.readOnly ? decidePlan(call, annotations) : undefined;
+      if (planDecision === "deny") return { block: true, reason: PLAN_DENY_REASON };
+      const decision = planDecision ?? decide(state.mode, call, ctx.cwd, annotations);
       if (decision === "allow") return undefined;
       if (decision === "deny")
         return {
@@ -353,13 +387,14 @@ export function createGuard(initial: PermissionMode = "ask") {
           reason: "受保护的路径（.env、.git、~/.ssh、应用数据目录）不允许写入",
         };
       const command = call.input?.command;
-      const alwaysAsk = typeof command === "string" && isAlwaysAskCommand(command);
+      const inPlan = planDecision === "ask";
+      const alwaysAsk = inPlan || (typeof command === "string" && isAlwaysAskCommand(command));
       // 用户在本会话内已对完全相同的操作选过“始终允许”（始终询问的命令除外）
       const key = approvalKey(call, ctx.cwd);
       if (!alwaysAsk && state.alwaysAllowed.has(key)) return undefined;
       if (!ctx.hasUI) return { block: true, reason: "需要确认，但当前没有可以确认的界面，已拒绝" };
       const choice = await ctx.ui.select(
-        describeCall(call, ctx.cwd),
+        `${inPlan ? PLAN_ASK_PREFIX : ""}${describeCall(call, ctx.cwd)}`,
         alwaysAsk ? [CHOICES.allow, CHOICES.deny] : [CHOICES.allow, CHOICES.always, CHOICES.deny],
         { signal: ctx.signal },
       );

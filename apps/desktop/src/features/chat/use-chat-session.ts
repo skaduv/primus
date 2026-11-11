@@ -5,6 +5,8 @@ import {
   type CoreBatch,
   type ExtensionUiResponse,
   type ImageContent,
+  PLAN_COMMAND,
+  type PlanApproveArgs,
   type ThinkingLevel,
 } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -25,6 +27,9 @@ import {
 
 /** 设置权限模式的扩展命令（primus-guard）；作为 prompt 发送，Core 直接执行，不调用模型 */
 export const modeCommand = (mode: PermissionMode) => `/primus-mode ${mode}`;
+
+/** 计划模式的扩展命令（primus-plan）；与权限模式一样作为 prompt 发送，运行中也立即执行 */
+export const planCommand = (args: string) => `/${PLAN_COMMAND} ${args}`;
 
 /**
  * 请求上下文清单的扩展命令（primus-context-stats，只读）。Core 在 prompt 路径的最前面执行已注册的扩展命令
@@ -101,6 +106,20 @@ export interface ChatSession {
   modelLocked: boolean;
   /** 重新读取 Core 的 get_available_models（模型能力以 Core 为准） */
   refreshModels: () => void;
+  /**
+   * 计划模式是否开启（计划中或等待审批）：会话打开后以扩展推来的 primus:plan 为准，
+   * 打开前以 setPlanMode 记下的选择为准
+   */
+  planOn: boolean;
+  /** 开关计划模式：会话已打开时立即发 `/primus-plan on|off`；未打开时记下，打开后再发。成功返回 true */
+  setPlanMode: (on: boolean) => Promise<boolean>;
+  /**
+   * 批准等待审批的计划：先把界面的权限模式切到批准时选的档位并同步给 Core，再发 `/primus-plan approve`。
+   * 成功返回 true
+   */
+  approvePlan: (args: PlanApproveArgs) => Promise<boolean>;
+  /** 不执行，带反馈继续完善（`/primus-plan revise`）；成功返回 true */
+  revisePlan: (id: string, feedback: string) => Promise<boolean>;
 }
 
 export interface ChatSessionOptions {
@@ -164,6 +183,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     model?: string;
     thinkingLevel?: ThinkingLevel;
   }>({});
+  // 打开前切换的计划模式（undefined 表示没有切换过）：ref 供打开流程读取，state 供界面渲染
+  const pendingPlanRef = useRef<boolean | undefined>(undefined);
+  const [pendingPlan, setPendingPlan] = useState<boolean | undefined>(undefined);
   const pendingModelRef = useRef(pendingModel);
   pendingModelRef.current = pendingModel;
   // 用户想要的思考强度：默认“中”，用户选过即以所选为准。新会话打开与切换模型后都按它设置，
@@ -243,6 +265,15 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         else failures.push(res.error || "set_thinking_level");
       }
       await syncMode(client);
+      // 打开前切换过计划模式：打开后补发（失败同样报错，下一次发送前再试）
+      const plan = pendingPlanRef.current;
+      if (plan !== undefined) {
+        const res = await client.request("prompt", { message: planCommand(plan ? "on" : "off") });
+        if (res.success) {
+          pendingPlanRef.current = undefined;
+          setPendingPlan(undefined);
+        } else failures.push(res.error || PLAN_COMMAND);
+      }
       await Promise.all([
         client.request("get_state"),
         client.request("get_available_thinking_levels"),
@@ -440,7 +471,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         if (!c) throw new Error(strings.chat.sessionNotOpen);
         // 打开时没能应用的模型选择与权限模式：发送前再应用一次（任一仍失败则不发送，并提示原因）
         const pendingChoice = pendingModelRef.current;
-        if (pendingChoice.model || pendingChoice.thinkingLevel) await applySession(c.client);
+        if (
+          pendingChoice.model ||
+          pendingChoice.thinkingLevel ||
+          pendingPlanRef.current !== undefined
+        )
+          await applySession(c.client);
         await syncMode(c.client);
         const res = await c.client.request(
           "prompt",
@@ -654,6 +690,63 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     }
   }, [setError, fail, syncUnresponsive, syncMode, requestContextStats]);
 
+  /** 发一条计划命令；会话未打开时返回 false */
+  const runPlanCommand = useCallback(
+    async (args: string): Promise<boolean> => {
+      const c = conn.current;
+      if (!c) return false;
+      try {
+        const res = await c.client.request("prompt", { message: planCommand(args) });
+        return res.success;
+      } catch (e) {
+        fail(e);
+        return false;
+      }
+    },
+    [fail],
+  );
+
+  const setPlanMode = useCallback(
+    async (on: boolean): Promise<boolean> => {
+      if (!conn.current) {
+        pendingPlanRef.current = on;
+        setPendingPlan(on);
+        return true;
+      }
+      return runPlanCommand(on ? "on" : "off");
+    },
+    [runPlanCommand],
+  );
+
+  const approvePlan = useCallback(
+    async (args: PlanApproveArgs): Promise<boolean> => {
+      const c = conn.current;
+      if (!c) return false;
+      try {
+        // 先切权限再批准：批准后模型立即开始修改，权限要先到位
+        if (args.permission === "edit" || args.permission === "ask") {
+          useAppStore.getState().setPermissionMode(args.permission);
+          await syncMode(c.client);
+        }
+      } catch (e) {
+        fail(e);
+        return false;
+      }
+      return runPlanCommand(`approve ${JSON.stringify(args)}`);
+    },
+    [runPlanCommand, syncMode, fail],
+  );
+
+  const revisePlan = useCallback(
+    (id: string, feedback: string) => runPlanCommand(`revise ${JSON.stringify({ id, feedback })}`),
+    [runPlanCommand],
+  );
+
+  const planPhase = state.plan?.phase;
+  const planOn =
+    pendingPlan ??
+    (planPhase !== undefined && (planPhase === "planning" || planPhase === "awaiting"));
+
   return {
     state,
     error: error?.message,
@@ -674,5 +767,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     requestContextStats,
     compact,
     setAutoCompaction,
+    planOn,
+    setPlanMode,
+    approvePlan,
+    revisePlan,
   };
 }

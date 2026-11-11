@@ -2,12 +2,15 @@
 
 // 输入框上沿后面的“唇条”：一条灰色小舌，显示当前 Git 分支与工作区（工作区选择从底栏移到这里，功能不变）。
 // 不是 Git 仓库时不显示分支；会话开始后工作区锁定，只显示名称。
+// 有待办（primus-plan 的计划步骤 / todo）时右侧显示进度与当前步骤，悬停或键盘聚焦显示全部步骤。
+import { currentTodo, type TodoItem } from "@primus/protocol";
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
 import type { GitBranch as Branch, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
+import { cn } from "@/lib/utils";
 import { WorkspacePicker } from "./composer-menus";
 
 const t = strings.chat;
@@ -29,13 +32,82 @@ function useGitBranch(path: string | null): Branch | null {
   return path && branch?.path === path ? branch.value : null;
 }
 
+/** 一个待办的状态标记：完成为对勾、跳过为横线、进行中为强调色圆点、未开始为空心圆 */
+function TodoMark({ status }: { status: TodoItem["status"] }) {
+  if (status === "completed") return <Icon name="check" size="xs" className="text-muted" />;
+  if (status === "skipped") return <Icon name="minus" size="xs" className="text-muted" />;
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "m-[3px] size-1.5 shrink-0 rounded-full",
+        status === "in_progress" ? "bg-accent" : "ring-1 ring-current",
+      )}
+    />
+  );
+}
+
+/** 唇条右侧的计划进度：当前步骤一行，悬停显示全部步骤 */
+export function TodoProgress({ items }: { items: readonly TodoItem[] }) {
+  const current = currentTodo(items);
+  if (!current) return null;
+  const done = items.filter((i) => i.status === "completed" || i.status === "skipped").length;
+  const list = (
+    <div className="flex flex-col gap-1 py-0.5 whitespace-normal">
+      <p className="font-medium">
+        {t.lip.todoAll} {done}/{items.length}
+      </p>
+      <ol className="flex flex-col gap-0.5">
+        {items.map((item) => (
+          <li
+            key={item.id}
+            className={cn(
+              "flex items-start gap-1.5",
+              (item.status === "completed" || item.status === "skipped") &&
+                "line-through opacity-70",
+              item.status === "in_progress" && "font-medium",
+            )}
+          >
+            <span className="mt-[3px] flex shrink-0">
+              <TodoMark status={item.status} />
+            </span>
+            <span className="min-w-0">{item.text}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+  return (
+    <Tooltip content={list} side="top" align="end" className="max-w-96">
+      {/* 按钮只为能被键盘聚焦（聚焦同样显示全部步骤），点击没有动作 */}
+      <button
+        type="button"
+        aria-label={`${t.lip.todo} ${done}/${items.length}：${current.text}`}
+        className="lip-item-in ml-auto flex min-w-0 cursor-default items-center gap-1.5 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      >
+        <Icon name="list-check" size="sm" />
+        <span className="shrink-0 tabular-nums">
+          {done}/{items.length}
+        </span>
+        <span className="max-w-64 truncate text-fg/80">{current.text}</span>
+      </button>
+    </Tooltip>
+  );
+}
+
 export function ComposerLip({
   workspace,
   locked,
   onPicked,
   onClear,
   onError,
+  todos = [],
+  showWorkspace = true,
 }: {
+  /** 待办清单（没有未完成的项时不显示进度） */
+  todos?: readonly TodoItem[];
+  /** 显示分支与工作区（平台不支持工作区时为 false，唇条只显示计划进度） */
+  showWorkspace?: boolean;
   workspace: WorkspaceInfo | null;
   /** 会话已开始：工作区不能再切换 */
   locked: boolean;
@@ -43,12 +115,14 @@ export function ComposerLip({
   onClear: () => void;
   onError: (message: string | null) => void;
 }) {
-  const branch = useGitBranch(workspace?.path ?? null);
-  if (!workspace && locked) return null;
+  const branch = useGitBranch(showWorkspace ? (workspace?.path ?? null) : null);
+  const hasTodo = currentTodo(todos) !== undefined;
+  const workspacePart = showWorkspace && (workspace || !locked);
+  if (!workspacePart && !hasTodo) return null;
   const item = "lip-item-in flex min-w-0 items-center gap-1.5";
   return (
     <div className="composer-lip mx-3.5 -mb-3 flex h-11 items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
-      {branch && (
+      {workspacePart && branch && (
         <Tooltip
           key={`${workspace?.path}:${branch.name}`}
           content={`${t.lip.branch}：${branch.name}${branch.detached ? `（${t.lip.detached}）` : ""}`}
@@ -59,7 +133,7 @@ export function ComposerLip({
           </span>
         </Tooltip>
       )}
-      {!workspace ? (
+      {!workspacePart ? null : !workspace ? (
         <WorkspacePicker current={null} onPicked={onPicked} onError={onError}>
           <button
             type="button"
@@ -108,6 +182,7 @@ export function ComposerLip({
           </Tooltip>
         </span>
       )}
+      <TodoProgress items={todos} />
     </div>
   );
 }

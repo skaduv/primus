@@ -54,6 +54,7 @@ import { FileRefBase } from "./file-ref-actions";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker, withCoreCaps } from "./model-picker";
+import { PlanApproval } from "./plan-card";
 import { DEFAULT_THINKING_LEVEL, useChatSession } from "./use-chat-session";
 import { UserBubble } from "./user-bubble";
 import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
@@ -216,6 +217,10 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     requestContextStats,
     compact,
     setAutoCompaction,
+    planOn,
+    setPlanMode,
+    approvePlan,
+    revisePlan,
   } = useChatSession({
     sessionPath: tab?.sessionPath,
     workspace: tab?.workspace,
@@ -604,13 +609,23 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // Agent 用预览工具请求在右栏打开的文件 / 文件夹：只在本标签是当前标签时打开，后台标签切回时再打开
   usePreviewRequest(state.previewRequest, tabId);
 
+  const togglePlan = () => void setPlanMode(!planOn);
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) submit(e);
+    // Shift+Tab：切换计划模式（与 Claude Code / Codex 一致）；焦点留在输入框
+    if (e.key === "Tab" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      togglePlan();
+    }
   };
 
   const shownError = error ?? state.lastError;
   const pendingUi = state.uiRequests[0];
+  const awaitingPlan =
+    state.plan?.phase === "awaiting" && state.plan.status === "awaiting" && state.plan.id
+      ? state.plan
+      : undefined;
   const turns = useMemo(() => groupTurns(state.messages), [state.messages]);
   const indexItems = useMemo<IndexItem[]>(
     () =>
@@ -780,9 +795,22 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             {pendingUi && (
               <ApprovalCard key={pendingUi.id} request={pendingUi} onRespond={respondUi} />
             )}
-            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里） */}
-            {canUseWorkspaces && (
+            {!pendingUi && awaitingPlan?.id && (
+              <PlanApproval
+                key={awaitingPlan.id}
+                title={awaitingPlan.plan?.title}
+                fullAccess={permissionMode === "full"}
+                onApprove={(permission) =>
+                  void approvePlan({ id: awaitingPlan.id as string, permission })
+                }
+                onRevise={(feedback) => void revisePlan(awaitingPlan.id as string, feedback)}
+              />
+            )}
+            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里）与计划进度 */}
+            {(canUseWorkspaces || state.todos.length > 0) && (
               <ComposerLip
+                showWorkspace={canUseWorkspaces}
+                todos={state.todos}
                 workspace={shownWorkspace}
                 locked={workspaceLocked}
                 onPicked={setWorkspace}
@@ -929,6 +957,19 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span>{t.permissions[permissionMode].short}</span>
                     </button>
                   </PermissionPicker>
+                  {/* 计划模式：先只读调研并提交计划，批准后再执行；开启时用强调色 */}
+                  <Tooltip content={planOn ? t.plan.on : t.plan.off} wrap>
+                    <button
+                      type="button"
+                      aria-label={t.plan.toggle}
+                      aria-pressed={planOn}
+                      onClick={togglePlan}
+                      className={composerGhostClass({ tone: planOn ? "accent" : "muted" })}
+                    >
+                      <Icon name="list-check" size="sm" />
+                      <span>{t.plan.short}</span>
+                    </button>
+                  </Tooltip>
                   <span className="flex-1" />
                   <ModelPicker
                     models={models}

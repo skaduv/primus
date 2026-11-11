@@ -158,3 +158,151 @@ export function previewKindOf(path: string): Exclude<PreviewKind, "folder"> {
     if (exts.includes(ext)) return kind as Exclude<PreviewKind, "folder">;
   return OTHER_EXT.has(ext) ? "other" : "text";
 }
+
+// ---------- primus-plan：计划模式与待办（技术方案第 14.2、14.3 节） ----------
+
+/** 计划模式的扩展命令：`/primus-plan on|off|status|approve <JSON>|revise <JSON>` */
+export const PLAN_COMMAND = "primus-plan";
+export const PLAN_WIDGET = "primus:plan";
+export const TODO_WIDGET = "primus:todo";
+/** 提交计划等待审批的工具 */
+export const PLAN_SUBMIT_TOOL = "plan_submit";
+/** 维护待办清单的工具 */
+export const TODO_TOOL = "todo";
+/** 向用户提选择题的工具 */
+export const ASK_USER_TOOL = "ask_user";
+
+/**
+ * 计划模式的阶段：
+ *   off        普通模式
+ *   planning   计划中（只读，guard 拦截修改）
+ *   awaiting   已提交计划，等待用户审批（plan_submit 阻塞中）
+ *   executing  已批准，按计划执行（待办未完成）
+ */
+export type PlanPhase = "off" | "planning" | "awaiting" | "executing";
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  detail?: string;
+  /** 涉及的文件（相对工作区或绝对路径） */
+  files?: string[];
+}
+
+/** plan_submit 的参数，也是审批卡片显示的计划（每次提交完整替换上一版） */
+export interface PlanDoc {
+  title: string;
+  /** 背景、目标与成功标准 */
+  summary: string;
+  steps: PlanStep[];
+  risks?: string[];
+  verification: string[];
+  assumptions?: string[];
+}
+
+/** 批准后执行时的权限模式：自动编辑、每次询问，或保持当前模式 */
+export type PlanApprovePermission = "edit" | "ask" | "keep";
+
+/** `/primus-plan approve <JSON>` 的参数 */
+export interface PlanApproveArgs {
+  id: string;
+  /** 用户在卡片上改过的计划（缺省表示按原计划） */
+  plan?: PlanDoc;
+  permission?: PlanApprovePermission;
+}
+
+/** `/primus-plan revise <JSON>` 的参数：不执行，带反馈继续完善 */
+export interface PlanReviseArgs {
+  id: string;
+  feedback: string;
+}
+
+/** 一次提交的计划在界面上的状态 */
+export type PlanStatus = "awaiting" | "approved" | "revising" | "cancelled";
+
+/** `primus:plan` 的 data：当前阶段与最近一次提交的计划 */
+export interface PlanData {
+  phase: PlanPhase;
+  /** 最近一次提交（p1、p2…）；还没提交过时缺省 */
+  id?: string;
+  status?: PlanStatus;
+  plan?: PlanDoc;
+  /** 计划 Markdown 文件的绝对路径 */
+  path?: string;
+}
+
+/** plan_submit 工具结果的 details：卡片据此显示计划与结局 */
+export interface PlanSubmitDetails {
+  id: string;
+  status: PlanStatus | "invalid" | "no_ui" | "not_planning";
+  plan?: PlanDoc;
+  /** 用户编辑过计划 */
+  edited?: boolean;
+  feedback?: string;
+  path?: string;
+}
+
+export type TodoStatus = "pending" | "in_progress" | "completed" | "skipped";
+
+export interface TodoItem {
+  id: string;
+  text: string;
+  status: TodoStatus;
+}
+
+/** `primus:todo` 的 data：完整的待办清单（每次整体替换；空数组表示没有待办） */
+export interface TodoData {
+  items: TodoItem[];
+}
+
+const PLAN_PHASES: readonly PlanPhase[] = ["off", "planning", "awaiting", "executing"];
+const TODO_STATUSES: readonly TodoStatus[] = ["pending", "in_progress", "completed", "skipped"];
+
+export const isPlanPhase = (v: unknown): v is PlanPhase =>
+  typeof v === "string" && (PLAN_PHASES as readonly string[]).includes(v);
+export const isTodoStatus = (v: unknown): v is TodoStatus =>
+  typeof v === "string" && (TODO_STATUSES as readonly string[]).includes(v);
+
+/** 校验待办项（来自工具参数或 primus:todo），不合法的项丢弃 */
+export function normalizeTodoItems(value: unknown): TodoItem[] {
+  if (!Array.isArray(value)) return [];
+  const items: TodoItem[] = [];
+  for (const raw of value) {
+    const it = raw as Partial<TodoItem> | null;
+    if (!it || typeof it.text !== "string" || !it.text.trim()) continue;
+    items.push({
+      id: typeof it.id === "string" && it.id ? it.id : String(items.length + 1),
+      text: it.text.trim(),
+      status: isTodoStatus(it.status) ? it.status : "pending",
+    });
+  }
+  return items;
+}
+
+/**
+ * 唇条显示的“当前步骤”：进行中的那一项；没有进行中的取第一项未完成的；全部完成或跳过时为 undefined
+ */
+export function currentTodo(items: readonly TodoItem[]): TodoItem | undefined {
+  return items.find((i) => i.status === "in_progress") ?? items.find((i) => i.status === "pending");
+}
+
+/** 计划渲染成 Markdown（计划文件、批准后发给模型的计划正文） */
+export function planToMarkdown(plan: PlanDoc): string {
+  const list = (items: readonly string[] | undefined) =>
+    (items ?? []).filter((s) => s.trim()).map((s) => `- ${s.trim()}`);
+  const out = [`# ${plan.title.trim()}`, "", plan.summary.trim(), "", "## 步骤", ""];
+  plan.steps.forEach((s, i) => {
+    out.push(`${i + 1}. **${s.title.trim()}**`);
+    if (s.files?.length) out.push(`   - 文件：${s.files.map((f) => `\`${f}\``).join("、")}`);
+    if (s.detail?.trim())
+      for (const line of s.detail.trim().split("\n")) out.push(`   ${line}`.trimEnd());
+  });
+  const section = (title: string, items: readonly string[] | undefined) => {
+    const lines = list(items);
+    if (lines.length) out.push("", `## ${title}`, "", ...lines);
+  };
+  section("风险", plan.risks);
+  section("验证", plan.verification);
+  section("假设", plan.assumptions);
+  return `${out.join("\n")}\n`;
+}
