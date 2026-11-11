@@ -157,7 +157,22 @@ describe("模型选择", () => {
     expect(onSelectThinking).toHaveBeenLastCalledWith("high");
   });
 
-  it("不支持思考的模型显示“关闭”，不显示思考滑杆", async () => {
+  it("支持思考的模型关闭思考：按钮只显示模型名，无障碍名称仍带“思考程度关闭”", () => {
+    render(
+      <ModelPicker
+        models={MODELS}
+        current="p/a"
+        thinkingLevel="off"
+        thinkingLevels={undefined}
+        onSelectModel={vi.fn()}
+        onSelectThinking={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "模型：Fable 5，思考程度关闭" });
+    expect(trigger.textContent).toBe("Fable 5");
+  });
+
+  it("不支持思考的模型只显示模型名（不显示“关闭”），不显示思考滑杆", async () => {
     const onSelectModel = vi.fn();
     render(
       <ModelPicker
@@ -169,8 +184,8 @@ describe("模型选择", () => {
         onSelectThinking={vi.fn()}
       />,
     );
-    const trigger = screen.getByRole("button", { name: "模型：Fast，思考程度关闭" });
-    expect(trigger.textContent).toBe("Fast· 关闭");
+    const trigger = screen.getByRole("button", { name: "模型：Fast" });
+    expect(trigger.textContent).toBe("Fast");
     fireEvent.keyDown(trigger, { key: "Enter" });
     await screen.findByRole("menuitemradio", { name: "Fast" });
     expect(screen.queryByRole("slider")).toBeNull();

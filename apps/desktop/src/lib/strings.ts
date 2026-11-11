@@ -41,9 +41,61 @@ export const strings = {
     openExternal: "用默认程序打开",
     reveal: "在文件夹中显示",
     close: "关闭预览",
+    linkDescription: "这个链接来自文档内容，请确认地址可信后再打开。",
     binary: "无法预览此文件",
     truncated: "仅显示前 1 MB",
     imageTooLarge: "图片过大，无法预览",
+    /** 渲染 Word / PowerPoint / PDF 期间 */
+    rendering: "正在打开…",
+    /** 文档渲染失败（文件损坏或含不支持的内容）；后接原因 */
+    renderFailed: "无法显示此文件：",
+    /** 网页预览（iframe 的可访问名称） */
+    webPage: "网页预览",
+    /** PDF 预览（iframe 的可访问名称） */
+    pdf: "PDF 预览",
+    /** 表格预览（网格的可访问名称） */
+    spreadsheet: "表格预览",
+    /** 底部工作表标签栏的可访问名称 */
+    sheets: "工作表",
+    /** 工作表超出显示上限 */
+    sheetClipped: "仅显示前 1000 行、100 列",
+    /** 没有内容的工作表 */
+    sheetEmpty: "空工作表",
+    /** 工作簿里没有可显示的工作表（全部隐藏） */
+    noSheets: "没有可显示的工作表",
+    /** 标题栏：回到预览里上一个位置 */
+    back: "返回",
+    /** 网页 / Markdown / JSON / SVG：切换源码与渲染结果 */
+    showSource: "显示源码",
+    showRendered: "显示预览",
+    /** 音频 / 视频播放失败（格式或编码不受支持） */
+    mediaFailed: "无法播放此文件，可用默认程序打开",
+    /** 图片（GIF / ICO / AVIF）显示失败 */
+    imageFailed: "无法显示此图片，可用默认程序打开",
+    /** 文件夹预览 */
+    folder: {
+      /** 文件列表的可访问名称 */
+      list: "文件夹内容",
+      /** 面包屑导航的可访问名称 */
+      path: "位置",
+      up: "上一级",
+      /** 列标题 */
+      name: "名称",
+      size: "大小",
+      modified: "修改时间",
+      empty: "空文件夹",
+      /** 只有隐藏项 */
+      onlyHidden: "只有隐藏的项目",
+      /** {n}：隐藏项个数 */
+      showHidden: "显示隐藏的项目（{n}）",
+      hideHidden: "不显示隐藏的项目",
+      /** {shown} / {total}：超过显示上限 */
+      truncated: "仅显示前 {shown} 项（共 {total} 项）",
+      /** 扫描到上限仍未读完 */
+      truncatedMore: "仅显示前 {shown} 项（超过 {total} 项）",
+      /** {n}：项数 */
+      count: "{n} 项",
+    },
   },
   drawerTabs: {
     terminal: "终端",
@@ -509,6 +561,20 @@ export const strings = {
     projectActions: "项目操作",
     newInProject: "新建会话",
     revealProject: "在资源管理器中打开",
+    pinProject: "置顶",
+    unpinProject: "取消置顶",
+    editProject: "编辑",
+    archiveProject: "归档聊天",
+    removeProject: "移除项目",
+    pinned: "已置顶",
+    editTitle: "编辑项目",
+    editDescription: "只改左栏显示的名称，不改文件夹；留空恢复为文件夹名。",
+    editName: "显示名称",
+    save: "保存",
+    archiveProjectTitle: "归档“{name}”的全部会话？",
+    archiveProjectDescription: "会话将从列表中隐藏，搜索仍能找到，可逐个取消归档。",
+    archiveProjectConfirm: "全部归档",
+    archiveProjectFailed: "有 {n} 个会话归档失败：{reason}",
     noResults: "没有找到匹配的会话",
     searching: "正在搜索…",
     searchResults: "搜索结果",

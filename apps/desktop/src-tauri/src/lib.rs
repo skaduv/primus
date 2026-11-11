@@ -2,7 +2,7 @@
 //!
 //! 启动顺序：取令牌模式（`--secret`，无窗口）→ 提权修复模式（`--repair-data-dir`）→ 准备数据目录
 //! （第 4 章，不可写时弹修复引导）→ 单实例 → 安装待装的更新（有则拉起安装器并退出，第 3.6 节）→
-//! 写入内置渠道（仅首次）并按模型渠道生成 Core 配置（第 9.2、9.4 节）→ 主窗口 → 约 10 秒后自动检查更新。
+//! 写入内置渠道（仅首次）并按模型渠道生成 Core 配置（第 9.2、9.4 节）→ 主窗口 → 托盘 → 约 10 秒后自动检查更新。
 //! 各模块随开发计划逐步实现。
 
 mod account;
@@ -104,11 +104,7 @@ pub fn run() {
     tauri::Builder::default()
         // 单实例必须最先注册：第二个实例启动时把已有主窗口带到前台（第 2.2 节）
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            tray::show_main_window(app);
         }))
         // 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files）
         .plugin(tauri_plugin_dialog::init())
@@ -172,7 +168,7 @@ pub fn run() {
                     .cloned()
                     .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
                 // 先隐藏创建，摆好位置与大小再显示（window_placement）：有上次保存的位置就恢复，
-                // 否则在光标所在显示器上居中、宽高各取工作区一半。不用配置里的 center
+                // 否则在光标所在显示器上居中、宽取工作区的 70%、高取 82%。不用配置里的 center
                 // （只按主显示器、按逻辑像素居中，窗口大于工作区时会出屏）
                 let min = (
                     config.min_width.unwrap_or(0.0),
@@ -218,13 +214,24 @@ pub fn run() {
                     tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                         observe(&tracked)
                     }
-                    tauri::WindowEvent::CloseRequested { .. } => tracker.flush(),
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        tracker.flush();
+                        // 有会话正在运行时关闭窗口只隐藏到托盘，Agent 继续运行（第 5.5 节）
+                        if tray::keep_in_tray_on_close(&tracked) {
+                            api.prevent_close();
+                        }
+                    }
                     _ => {}
                 });
                 // App 自己的页面直接授予麦克风权限（语音输入的波形），不弹 WebView2 权限框
                 platform::auto_grant_microphone(&window);
                 if visible {
                     window.show()?;
+                }
+                // 托盘：运行中会话数、打开窗口、退出（tray）。创建失败只记日志、不阻止启动：
+                // 托盘没就绪时关闭窗口不隐藏，改为询问是否退出（tray::keep_in_tray_on_close）
+                if let Err(e) = tray::init(app.handle()) {
+                    eprintln!("[tray] 托盘创建失败：{e}");
                 }
                 // 主窗口起来后约 10 秒自动检查更新，之后每 24 小时一次（自动更新关闭时跳过，失败只记日志）
                 updater::start_auto_check(app.handle().clone(), updater);
@@ -244,6 +251,8 @@ pub fn run() {
             commands::open_path,
             commands::reveal_path,
             commands::preview_file,
+            commands::preview_file_bytes,
+            commands::preview_dir,
             commands::workspace_open,
             commands::workspace_list,
             commands::workspace_inspect,
@@ -358,7 +367,7 @@ fn set_bounds_twice(window: &tauri::WebviewWindow, bounds: window_placement::Bou
     true
 }
 
-/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，宽高各为工作区一半（window_placement）。
+/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，宽为工作区的 70%、高为 82%（window_placement）。
 fn place_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow, min: (f64, f64)) {
     let monitor = app
         .cursor_position()

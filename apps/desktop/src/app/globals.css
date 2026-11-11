@@ -14,6 +14,13 @@
   --color-fg: #1d1d1f;
   /* 阅读墨色：助手回复正文，比界面文字更黑，长文更锐利 */
   --color-ink: #0d0d0e;
+  /* 右栏渲染出的网页 / 文档纸面：深浅色外观下都是白纸（与在浏览器、Word 中打开一致），.dark 不覆盖 */
+  --color-page: #ffffff;
+  /* 纸面上的界面元素（右栏表格的文字、网格线与行列号）：随纸面在深浅色外观下都不变，.dark 不覆盖 */
+  --color-on-page: #1d1d1f;
+  --color-page-muted: #6e6e73;
+  --color-page-line: #e1e1e3;
+  --color-page-header: #f3f3f5;
   --color-muted: #6e6e73;
   --color-border: rgb(0 0 0 / 0.08);
   --color-hover: rgb(0 0 0 / 0.05);
@@ -1678,5 +1685,22 @@ html.window-effects.glass-clear body {
   }
   .value-in {
     animation: att-fade-in 160ms ease both;
+  }
+}
+
+/* 左栏运行中的会话 / 项目：loader 图标按 8 段一步一步顺时针转（只动 rotate）；减少动态效果时静止 */
+@keyframes session-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+.session-spinner {
+  animation: session-spin 0.8s steps(8) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-spinner {
+    animation: none;
   }
 }

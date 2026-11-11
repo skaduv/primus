@@ -55,6 +55,8 @@ pub(crate) enum SessionError {
     Deleting(PathBuf),
     /// 正在安装更新：不开始新的一轮、不拉起新的内核
     Updating,
+    /// 托盘“退出”已确认（[`Sessions::abort_running`] 之后）：不开始新的一轮
+    Quitting,
     Supervisor(SupervisorError),
     Bridge(BridgeError),
     Io(io::Error),
@@ -70,6 +72,7 @@ impl fmt::Display for SessionError {
             Self::InUse(path) => write!(f, "会话已在其他标签中打开：{}", path.display()),
             Self::Deleting(path) => write!(f, "会话正在删除：{}", path.display()),
             Self::Updating => write!(f, "正在安装更新，暂时不能发送或启动会话"),
+            Self::Quitting => write!(f, "正在退出，不再开始新的一轮"),
             Self::Supervisor(e) => write!(f, "{e}"),
             Self::Bridge(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
@@ -136,6 +139,9 @@ pub(crate) struct Sessions<S> {
     /// 正在安装更新（[`Sessions::hold_for_update`]）：只在持有 `entries` 锁时读写，
     /// 与忙碌检查、prompt 写入、会话拉起的登记互斥
     updating: AtomicBool,
+    /// 托盘“退出”已确认（[`Sessions::abort_running`] 置位，不再清除）：只在持有 `entries` 锁时读写，
+    /// 之后的 prompt 写入被拒绝，不会有新的一轮夹在发出 `abort` 与结束 Core 之间
+    quitting: AtomicBool,
     config: BridgeConfig,
 }
 
@@ -159,6 +165,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             held_deletes: Mutex::new(Vec::new()),
             next: AtomicU64::new(0),
             updating: AtomicBool::new(false),
+            quitting: AtomicBool::new(false),
             config,
         }
     }
@@ -315,11 +322,14 @@ impl<S: BatchSink + Clone> Sessions<S> {
         if entry.evicted || entry.bridge.is_none() {
             return Err(SessionError::NotRunning(key.to_owned()));
         }
-        // 安装更新期间不开始新的一轮（其他命令如 abort、get_state 照常）
-        if self.updating.load(Ordering::Acquire)
-            && record.get("type").and_then(serde_json::Value::as_str) == Some("prompt")
-        {
-            return Err(SessionError::Updating);
+        // 安装更新或退出期间不开始新的一轮（其他命令如 abort、get_state 照常）
+        if record.get("type").and_then(serde_json::Value::as_str) == Some("prompt") {
+            if self.updating.load(Ordering::Acquire) {
+                return Err(SessionError::Updating);
+            }
+            if self.quitting.load(Ordering::Acquire) {
+                return Err(SessionError::Quitting);
+            }
         }
         // 进程已自行退出（尚未被清理）：标为未运行并立即报错，不写进旧桥再等前端超时。
         // 锁顺序与拉起一致：会话表 → 监管器
@@ -350,11 +360,35 @@ impl<S: BatchSink + Clone> Sessions<S> {
         Ok(())
     }
 
-    /// 测试用：是否有会话正在运行一轮（或正在打开 / 重启）。自动更新用 [`Sessions::hold_for_update`] 在同一把锁内检查并置位。
+    /// 测试用：是否有会话忙碌（正在运行一轮，或正在打开 / 重启）。自动更新用 [`Sessions::hold_for_update`] 在同一把锁内检查并置位。
     #[cfg(test)]
     pub(crate) fn any_busy(&self) -> bool {
         let entries = self.entries();
         entries.keys().any(|key| is_busy(&entries, key))
+    }
+
+    /// 正在运行一轮的会话数（[`is_running_turn`]）：托盘的提示文字与菜单、关闭窗口时是否留在托盘、退出时等待哪些会话停下
+    /// （第 5.5 节）。只在打开 / 重启中（桥尚未装入）的会话不算：它们还没有可停止的一轮，退出时由 `RunEvent::Exit` 直接结束。
+    pub(crate) fn running_count(&self) -> usize {
+        self.entries()
+            .values()
+            .filter(|e| is_running_turn(e))
+            .count()
+    }
+
+    /// 托盘“退出”确认后：给每个正在运行一轮的会话（与 [`Self::running_count`] 同一口径）发一条 `abort`（第 5.5 节），
+    /// 不等待；返回发出的条数。只写入路由层的停止命令，不解析回复；之后由调用方等待会话空闲（最多 3 秒）再结束进程。
+    /// 同一次加锁内进入退出状态：之后的 prompt 被拒绝（[`SessionError::Quitting`]），`abort` 等其他命令照常。
+    pub(crate) fn abort_running(&self) -> usize {
+        let abort = serde_json::json!({ "type": "abort" });
+        let entries = self.entries();
+        self.quitting.store(true, Ordering::Release);
+        entries
+            .values()
+            .filter(|e| is_running_turn(e))
+            .filter_map(|e| e.bridge.as_ref())
+            .filter(|bridge| bridge.send(&abort).is_ok())
+            .count()
     }
 
     /// 进入“安装更新”状态：在同一次加锁内检查忙碌并置位，之后的 prompt 写入与会话拉起被拒绝（[`SessionError::Updating`]），
@@ -764,6 +798,11 @@ fn is_busy<S>(entries: &HashMap<String, Entry<S>>, key: &str) -> bool {
     entries.get(key).is_some_and(|e| {
         !e.evicted && (e.restarting || e.bridge.as_ref().is_some_and(Bridge::is_busy))
     })
+}
+
+/// 托盘口径的“运行中”：桥已装入、正在工作或已写入 prompt 未响应（可以发 `abort` 停下）。比 [`is_busy`] 少了打开 / 重启中的会话。
+fn is_running_turn<S>(e: &Entry<S>) -> bool {
+    !e.evicted && e.bridge.as_ref().is_some_and(Bridge::is_busy)
 }
 
 /// 把进程已不在的会话（被淘汰或已自行退出）标为未运行：之后的发送得到 NotRunning，重启可恢复。
@@ -1533,6 +1572,10 @@ process.stdin.on("data", (chunk) => {
             },
         );
         assert!(is_busy(&entries, "s1"), "桥尚未装入的会话不能被淘汰");
+        assert!(
+            !is_running_turn(&entries["s1"]),
+            "打开 / 重启中的会话不计入托盘的运行中会话数"
+        );
         entries.get_mut("s1").unwrap().restarting = false;
         assert!(!is_busy(&entries, "s1"));
         assert!(!is_busy(&entries, "s2"));
@@ -1587,6 +1630,23 @@ process.stdin.on("data", (chunk) => {
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_start");
         assert!(sessions.any_busy(), "运行中的会话让自动更新先确认");
+        assert_eq!(sessions.running_count(), 1, "托盘显示的运行中会话数");
+        // 托盘退出：只给运行中的会话发 abort（假 Core 原样回显）
+        assert_eq!(sessions.abort_running(), 1);
+        sink.wait_for(1, |r| r["type"] == "abort");
+        // 退出已确认：不再开始新的一轮，停止命令照常
+        assert!(matches!(
+            sessions.send(
+                &supervisor,
+                &a,
+                &serde_json::json!({ "type": "prompt", "message": "hi" })
+            ),
+            Err(SessionError::Quitting)
+        ));
+        sessions
+            .send(&supervisor, &a, &serde_json::json!({ "type": "abort" }))
+            .expect("退出期间 abort 照常");
+        sink.wait_for(2, |r| r["type"] == "abort");
         assert!(
             sessions.hold_for_update(false).is_none(),
             "忙碌时不经确认不能进入安装"
@@ -1613,6 +1673,8 @@ process.stdin.on("data", (chunk) => {
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_settled");
         assert!(!sessions.any_busy());
+        assert_eq!(sessions.running_count(), 0);
+        assert_eq!(sessions.abort_running(), 0, "空闲的会话不发 abort");
         let b = sessions
             .open(&supervisor, &paths, "", None, Collect::default())
             .unwrap();
