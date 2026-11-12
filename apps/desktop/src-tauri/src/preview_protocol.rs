@@ -127,11 +127,37 @@ impl PreviewRoots {
 
     /// 按请求路径（`/<令牌>/<相对路径>`，已百分号编码）找到文件夹内的文件
     pub(crate) fn resolve(&self, uri_path: &str) -> Result<PathBuf, StatusCode> {
+        self.locate(uri_path).map(|(_, path)| path)
+    }
+
+    /// 请求路径 → （文件夹, 文件夹内文件的真实路径）
+    fn locate(&self, uri_path: &str) -> Result<(PathBuf, PathBuf), StatusCode> {
         let trimmed = uri_path.trim_start_matches('/');
         let (token, rest) = trimmed.split_once('/').ok_or(StatusCode::NOT_FOUND)?;
         let root = self.root(token).ok_or(StatusCode::NOT_FOUND)?;
         let rel = percent_decode(rest).ok_or(StatusCode::BAD_REQUEST)?;
-        resolve_in(&root, &rel)
+        let path = resolve_in(&root, &rel)?;
+        Ok((root, path))
+    }
+
+    /// 读取请求的文件，返回真实路径与内容。
+    ///
+    /// 检查路径与打开文件之间，路径上的某一段可能被换成指向文件夹外的链接（TOCTOU）：打开后按句柄取
+    /// 实际打开的文件路径（Windows 的 GetFinalPathNameByHandleW、Linux 的 /proc/self/fd），再检查一次是否
+    /// 仍在文件夹内，内容从同一个句柄读
+    pub(crate) fn read(&self, uri_path: &str) -> Result<(PathBuf, Vec<u8>), StatusCode> {
+        let (root, path) = self.locate(uri_path)?;
+        let file = std::fs::File::open(&path).map_err(|_| StatusCode::NOT_FOUND)?;
+        let opened = crate::platform::opened_path(&file, &path).ok_or(StatusCode::FORBIDDEN)?;
+        check_inside(&root, &opened)?;
+        if !file
+            .metadata()
+            .map_err(|_| StatusCode::NOT_FOUND)?
+            .is_file()
+        {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        Ok((opened, read_capped(file)?))
     }
 }
 
@@ -154,8 +180,17 @@ fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, StatusCode> {
         return Err(StatusCode::NOT_FOUND);
     }
     let real = std::fs::canonicalize(&path).map_err(|_| StatusCode::NOT_FOUND)?;
-    // 解析链接后仍须在文件夹内，且相对文件夹的每一段都不是隐藏的（public -> .private 这类链接也拒绝）；
-    // 文件夹本身的上级目录不检查，它们可以在隐藏目录里
+    check_inside(root, &real)?;
+    if !real.is_file() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(real)
+}
+
+/// 解析链接后的真实路径仍须在文件夹内，且相对文件夹的每一段都不是隐藏的（public -> .private 这类链接也拒绝）；
+/// 文件夹本身的上级目录不检查，它们可以在隐藏目录里。只提供网页会用到的静态资源（网页、脚本、样式、图片、
+/// 字体、音视频等）；文本、配置、密钥等其他文件即使在同一文件夹也不给页面读
+fn check_inside(root: &Path, real: &Path) -> Result<(), StatusCode> {
     let rel_real = real.strip_prefix(root).map_err(|_| StatusCode::FORBIDDEN)?;
     if rel_real
         .components()
@@ -163,15 +198,10 @@ fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, StatusCode> {
     {
         return Err(StatusCode::FORBIDDEN);
     }
-    if !real.is_file() {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    // 只提供网页会用到的静态资源（网页、脚本、样式、图片、字体、音视频等）；
-    // 文本、配置、密钥等其他文件即使在同一文件夹也不给页面读
-    if mime_of(&real).is_none() {
+    if mime_of(real).is_none() {
         return Err(StatusCode::FORBIDDEN);
     }
-    Ok(real)
+    Ok(())
 }
 
 /// 处理一次协议请求
@@ -187,12 +217,8 @@ pub(crate) fn respond(roots: &PreviewRoots, request: &Request<Vec<u8>>) -> Respo
     {
         return status(StatusCode::METHOD_NOT_ALLOWED);
     }
-    let path = match roots.resolve(request.uri().path()) {
-        Ok(p) => p,
-        Err(code) => return status(code),
-    };
-    match read_capped(&path) {
-        Ok(body) => Response::builder()
+    match roots.read(request.uri().path()) {
+        Ok((path, body)) => Response::builder()
             .status(StatusCode::OK)
             .header(
                 header::CONTENT_TYPE,
@@ -215,9 +241,8 @@ pub(crate) fn respond(roots: &PreviewRoots, request: &Request<Vec<u8>>) -> Respo
     }
 }
 
-fn read_capped(path: &Path) -> Result<Vec<u8>, StatusCode> {
+fn read_capped(file: std::fs::File) -> Result<Vec<u8>, StatusCode> {
     use std::io::Read;
-    let file = std::fs::File::open(path).map_err(|_| StatusCode::NOT_FOUND)?;
     let mut buf = Vec::new();
     file.take(MAX_FILE_BYTES + 1)
         .read_to_end(&mut buf)
@@ -386,6 +411,14 @@ mod tests {
                 StatusCode::FORBIDDEN
             );
         }
+        // 读取：按句柄取到的实际路径在文件夹内才返回内容
+        let (real, body) = roots.read(&format!("/{token}/assets/app.js")).unwrap();
+        assert_eq!(real, dir.join("site/assets/app.js"));
+        assert_eq!(body, b"1");
+        assert_eq!(
+            roots.read(&format!("/{token}/notes.txt")).unwrap_err(),
+            StatusCode::FORBIDDEN
+        );
         // 同一文件夹复用令牌
         assert_eq!(roots.serve(&dir.join("site/index.html")).unwrap(), url);
         let _ = std::fs::remove_dir_all(&dir);
