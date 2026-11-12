@@ -320,6 +320,37 @@ describe("primus-guard 扩展", () => {
 });
 
 describe("primus-guard 计划模式（只读）", () => {
+  it("只读 git 命令：仓库或用户配置里配了外部程序就确认", () => {
+    const files: Record<string, string> = {
+      "/r/.git/HEAD": "ref: refs/heads/main",
+      "/r/.git/config": '[diff "x"]\n\ttextconv = sh -c evil\n',
+      "/s/.git/HEAD": "ref: refs/heads/main",
+      "/s/.git/config": "[core]\n\tfsmonitor = false\n\tbare = false\n",
+      "/t/.git/HEAD": "ref: refs/heads/main",
+      "/t/.git/config": '[include]\n\tpath = ../x\n[includeIf "gitdir:~/w/"]\n\tpath = ~/w.inc\n',
+      "/t/x": "[user]\n\tname = a\n",
+      "/home/u/w.inc": '[filter "lfs"]\n\tclean = evil %f\n',
+      "/w/.git": "gitdir: /r/.git\n",
+    };
+    const ge = {
+      platform: "linux" as const,
+      home: "/home/u",
+      env: {},
+      readText: (p: string) => files[p],
+    };
+    const git = (command: string, cwd: string) =>
+      decidePlan({ toolName: "bash", input: { command } }, undefined, cwd, ge);
+    expect(git("git log -p", "/r/src")).toBe("ask");
+    expect(git("git diff", "/w")).toBe("ask");
+    expect(git("git -C /r status", "/s")).toBe("ask");
+    expect(git("git status", "/t")).toBe("ask");
+    expect(git("git --git-dir=/x/.git log", "/s")).toBe("ask");
+    expect(git("git log --oneline", "/s")).toBe("allow");
+    expect(git("ls", "/r")).toBe("allow");
+    files["/home/u/.gitconfig"] = "[diff]\n\texternal = evil\n";
+    expect(git("git log --oneline", "/s")).toBe("ask");
+  });
+
   it("修改文件拒绝；只读命令放行；判断不了的询问；读取交给常规规则", () => {
     expect(decidePlan({ toolName: "write", input: { path: "a" } })).toBe("deny");
     expect(decidePlan({ toolName: "edit", input: { path: "a" } })).toBe("deny");
@@ -350,6 +381,11 @@ describe("primus-guard 计划模式（只读）", () => {
       "cat $'\\x2eenv'",
       "cat .\\git/config",
       "cat .e'nv",
+      // 转义、引号拼出的 rg 参数
+      "rg -\\u key",
+      "rg '--hidden' key",
+      'rg "-"u key',
+      'cat ".en\\\nv"',
       // 递归读取、不跳过隐藏或被忽略的文件
       "rg -uu secret",
       "rg --hidden --no-ignore key",

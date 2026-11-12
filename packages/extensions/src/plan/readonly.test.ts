@@ -65,6 +65,35 @@ describe("计划模式的只读命令判定", () => {
     expect(ps("C:\\tools\\ls.exe")).toBe("unknown");
   });
 
+  it("审查发现的绕过（第二轮）：PowerShell 括号表达式、转义与引号拼出的参数、执行外部程序的参数、audit fix", () => {
+    for (const c of [
+      "Get-Content (Remove-Item a)",
+      "ls @(Remove-Item a)",
+      "Get-ChildItem (New-Item x) | % { $_.Name }",
+      "Select-Object -First (Remove-Item a; 1)",
+    ])
+      expect(ps(c), c).toBe("unknown");
+    for (const c of [
+      "sort --compress-program=sh big.txt",
+      "sort --compress-prog sh big.txt",
+      "git '-c' core.pager=sh log",
+      "git -\\c core.pager=sh log",
+      "rg $'--pre=sh' key",
+      "git -p log",
+      "git --paginate log",
+      'echo "unclosed',
+    ])
+      expect(bash(c), c).toBe("unknown");
+    for (const c of ["npm audit fix", "pnpm audit --fix", "yarn audit fix --force"])
+      expect(bash(c), c).toBe("write");
+    // 转义的 ; 与引号：拆段时当字面量，不能把后面的命令藏进“引号”里
+    expect(bash("echo \\' ; rm -rf x ; echo \\'")).toBe("write");
+    expect(splitSegments("echo a\\;b")).toEqual(["echo a\\;b"]);
+    expect(bash("npm audit")).toBe("readonly");
+    expect(bash("sort -n big.txt")).toBe("readonly");
+    expect(ps("Get-Process | Where-Object { $_.CPU -gt 10 }")).toBe("readonly");
+  });
+
   it("bash：只读命令放行", () => {
     for (const c of [
       "ls -la",

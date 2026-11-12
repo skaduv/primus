@@ -12,12 +12,12 @@
 // 计划模式（primus-plan 经 plan/gate.ts 打开只读开关）压过上面三种模式：修改文件一律拒绝，命令按只读分类器
 // 放行 / 拒绝 / 询问（询问时不提供“始终允许”），其他未声明只读的工具询问（decidePlan）。
 
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type PlanGate, planGate } from "../plan/gate.ts";
-import { classifyCommand, splitSegments } from "../plan/readonly.ts";
+import { classifyCommand, shellWords, splitSegments } from "../plan/readonly.ts";
 
 export const MODES = ["ask", "edit", "full"] as const;
 export type PermissionMode = (typeof MODES)[number];
@@ -191,6 +191,8 @@ export interface GuardEnv {
   home: string;
   env: Record<string, string | undefined>;
   real?: (p: string) => string;
+  /** 读文本文件（git 配置）；读不到返回 undefined。测试里替换 */
+  readText?: (p: string) => string | undefined;
 }
 
 const defaultEnv = (): GuardEnv => ({
@@ -258,7 +260,8 @@ export function decidePlan(
     // 只读命令也可能读受保护的文件（cat .env、git show HEAD:.env、type ~\.ssh\id_rsa）：
     // 与 read 工具一样要确认，不能因为是只读命令就直接放行
     return commandTouchesProtected(command, cwd, ge, call.toolName === "powershell") ||
-      searchesHidden(command, call.toolName === "powershell")
+      searchesHidden(command, call.toolName === "powershell") ||
+      gitRunsConfiguredPrograms(command, cwd, ge, call.toolName === "powershell")
       ? "ask"
       : "allow";
   }
@@ -310,59 +313,6 @@ export function commandTouchesProtected(
 }
 
 /**
- * 按 shell 规则拆词：空白与 | ; & < > ( ) 分词，引号与相邻文字拼成一个词（"/opt/A B"/data → /opt/A B/data），
- * 去掉引号与转义符（bash 的 \，PowerShell 的 `）。expands 表示词里有引号外或双引号里的 $（会展开变量）。
- * 引号没闭合返回 undefined
- */
-function shellWords(
-  command: string,
-  powershell: boolean,
-): { word: string; expands: boolean }[] | undefined {
-  const esc = powershell ? "`" : "\\";
-  const out: { word: string; expands: boolean }[] = [];
-  let word = "";
-  let expands = false;
-  let started = false;
-  const flush = () => {
-    if (started) out.push({ word, expands });
-    word = "";
-    expands = false;
-    started = false;
-  };
-  for (let i = 0; i < command.length; i++) {
-    const c = command.charAt(i);
-    if (c === esc && i + 1 < command.length) {
-      if (command[i + 1] !== "\n") word += command[i + 1];
-      started = true;
-      i++;
-    } else if (c === "'") {
-      const j = command.indexOf("'", i + 1);
-      if (j < 0) return undefined;
-      word += command.slice(i + 1, j);
-      started = true;
-      i = j;
-    } else if (c === '"') {
-      started = true;
-      let j = i + 1;
-      for (; j < command.length && command[j] !== '"'; j++) {
-        if (command[j] === esc && j + 1 < command.length) j++;
-        if (command[j] === "$") expands = true;
-        word += command[j];
-      }
-      if (j >= command.length) return undefined;
-      i = j;
-    } else if (/[\s|;&<>()]/.test(c)) flush();
-    else {
-      if (c === "$") expands = true;
-      word += c;
-      started = true;
-    }
-  }
-  flush();
-  return out;
-}
-
-/**
  * 会递归读取文件内容、且不跳过隐藏或被忽略文件的写法：搜到的 .env、.git 里的内容会进到输出里，
  * 与直接读受保护文件一样要确认。rg 默认跳过隐藏与 .gitignore 里的文件，加 -u / --hidden / --no-ignore
  * 就不跳过；grep -r、diff -r、findstr /s 本来就不跳过；PowerShell 的 * 也匹配 .env，
@@ -371,7 +321,10 @@ function shellWords(
 export function searchesHidden(command: string, powershell: boolean): boolean {
   return (
     splitSegments(command, powershell).some((seg) => {
-      const ws = seg.match(/'[^']*'|"[^"]*"|\S+/g) ?? [];
+      // 按 shell 规则拆词：'--hidden'、-\u 还原成真正的参数；拆不了（引号没闭合）当作会读隐藏文件
+      const parsed = shellWords(seg, powershell);
+      if (!parsed) return true;
+      const ws = parsed.map((w) => w.word);
       const name = (ws[0] ?? "")
         .replace(/^&/, "")
         .split(/[\\/]/)
@@ -394,6 +347,96 @@ export function searchesHidden(command: string, powershell: boolean): boolean {
     }) ||
     (powershell && psReadsMany(command))
   );
+}
+
+/**
+ * 只读的 git 命令也会执行配置里的外部程序：diff.external、diff.<驱动>.command / textconv（git diff / log -p /
+ * show / grep）、filter.<名>.clean / smudge / process（比较工作区文件时）、core.fsmonitor（status 等）。
+ * 仓库的 .git/config 可能来自 Agent 下载的仓库：读一遍仓库与用户的配置（含 include 的文件），配了这些就要确认；
+ * --git-dir、--work-tree 指向的仓库不好找，也确认
+ */
+export function gitRunsConfiguredPrograms(
+  command: string,
+  cwd: string,
+  ge: GuardEnv = defaultEnv(),
+  powershell = false,
+): boolean {
+  const read =
+    ge.readText ??
+    ((p: string) => {
+      try {
+        return readFileSync(p, "utf8");
+      } catch {
+        return undefined;
+      }
+    });
+  if (
+    Object.keys(ge.env).some((k) => /^GIT_(EXTERNAL_DIFF|CONFIG_COUNT|CONFIG_PARAMETERS)$/.test(k))
+  )
+    return splitSegments(command, powershell).some((seg) => isGit(seg, powershell));
+  // include / includeIf 的文件也读（条件不判断，一律当作生效），最多跟 5 层
+  const risky = (file: string, depth = 0): boolean => {
+    const text = read(file);
+    if (text === undefined) return false;
+    if (
+      /^\s*(external|textconv|command|clean|smudge|process)\s*=/im.test(text) ||
+      // core.fsmonitor 是布尔值时用内置的守护进程，是路径时执行该程序
+      [...text.matchAll(/^[ \t]*fsmonitor[ \t]*=([^\n#;]*)/gim)].some(
+        (m) => !/^\s*(true|false|yes|no|on|off|0|1)?\s*$/i.test(m[1] ?? ""),
+      )
+    )
+      return true;
+    const includes = [...text.matchAll(/^[ \t]*path[ \t]*=[ \t]*"?([^"\n#;]*?)"?[ \t]*$/gim)]
+      .map((m) => (m[1] ?? "").trim())
+      .filter(Boolean);
+    if (includes.length === 0 || !/^\s*\[\s*include/im.test(text)) return false;
+    if (depth >= 5) return true;
+    return includes.some((p) =>
+      risky(resolve(dirname(file), p.replace(/^~(?=[\\/]|$)/, ge.home)), depth + 1),
+    );
+  };
+  const userConfigs = [
+    ge.env.GIT_CONFIG_GLOBAL ?? join(ge.home, ".gitconfig"),
+    join(ge.env.XDG_CONFIG_HOME ?? join(ge.home, ".config"), "git", "config"),
+  ];
+  return splitSegments(command, powershell).some((seg) => {
+    const ws = shellWords(seg, powershell)?.map((w) => w.word);
+    if (!ws) return true;
+    if (!isGit(seg, powershell)) return false;
+    let dir = cwd;
+    for (let i = 1; i < ws.length; i++) {
+      const a = ws[i] as string;
+      if (/^--(git-dir|work-tree)/.test(a)) return true;
+      if (a === "-C") dir = resolve(dir, ws[++i] ?? "");
+      else if (!a.startsWith("-")) break;
+    }
+    if (userConfigs.some((p) => risky(p))) return true;
+    const gitDir = findGitDir(dir, read);
+    if (!gitDir) return false;
+    const common = read(join(gitDir, "commondir"))?.trim();
+    const commonDir = common ? resolve(gitDir, common) : gitDir;
+    return [join(commonDir, "config"), join(gitDir, "config.worktree")].some((p) => risky(p));
+  });
+}
+
+function isGit(seg: string, powershell: boolean): boolean {
+  const first = shellWords(seg, powershell)?.[0]?.word ?? "";
+  const base = first.replace(/^&/, "").split(/[\\/]/).pop() ?? "";
+  return /^git(\.exe)?$/i.test(base);
+}
+
+/** 从 dir 往上找仓库的 git 目录：.git 文件夹，或 .git 文件里的 gitdir:（工作树、子模块） */
+function findGitDir(start: string, read: (p: string) => string | undefined): string | undefined {
+  let dir = resolve(start);
+  for (;;) {
+    const dotGit = join(dir, ".git");
+    if (read(join(dotGit, "HEAD")) !== undefined) return dotGit;
+    const link = read(dotGit)?.match(/^gitdir:\s*(.+?)\s*$/m)?.[1];
+    if (link) return resolve(dir, link);
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
 }
 
 /** PowerShell：读取内容的 cmdlet 配上递归或通配符 */

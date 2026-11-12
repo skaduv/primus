@@ -221,8 +221,6 @@ const GIT_READONLY = new Set([
 const GIT_GLOBAL_FLAGS = new Set([
   "--no-pager",
   "-P",
-  "-p",
-  "--paginate",
   "--no-optional-locks",
   "--bare",
   "--literal-pathspecs",
@@ -305,8 +303,15 @@ export function splitSegments(command: string, powershell = false): string[] {
   let quote: string | null = null;
   // PowerShell 脚本块 `{ … }` 里的管道与分号属于块内，不拆
   let depth = 0;
+  // 转义符（bash 的 \，PowerShell 的 `）后面的字符是字面量：\; 不拆段，\' 不开始引号
+  const esc = powershell ? "`" : "\\";
   for (let i = 0; i < command.length; i++) {
     const ch = command[i] as string;
+    if (ch === esc && quote !== "'" && i + 1 < command.length) {
+      cur += ch + command[i + 1];
+      i++;
+      continue;
+    }
     if (quote) {
       cur += ch;
       if (ch === quote) quote = null;
@@ -353,10 +358,19 @@ export function splitSegments(command: string, powershell = false): string[] {
  * keepDouble 为 true 时保留双引号里的内容：两种 shell 都会在双引号里展开 `$(…)`（bash 还有反引号），
  * 查命令替换时只能去掉单引号里的字面文本。
  */
-function unquoted(segment: string, keepDouble = false): string {
+function unquoted(segment: string, keepDouble = false, powershell = false): string {
   let out = "";
   let quote: string | null = null;
-  for (const ch of segment) {
+  const esc = powershell ? "`" : "\\";
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i] as string;
+    // 转义的字符是字面量（\> 不是重定向，\" 不结束引号）：引号外换成占位；双引号里按 keepDouble 保留
+    if (ch === esc && quote !== "'" && i + 1 < segment.length) {
+      if (!quote) out += "_";
+      else if (keepDouble) out += ch + segment[i + 1];
+      i++;
+      continue;
+    }
     if (quote) {
       if (ch === quote) {
         quote = null;
@@ -370,10 +384,61 @@ function unquoted(segment: string, keepDouble = false): string {
   return out;
 }
 
-/** 把一段拆成词（引号内的空格不拆），去掉外层引号 */
-function words(segment: string): string[] {
-  const m = segment.match(/'[^']*'|"[^"]*"|\S+/g) ?? [];
-  return m.map((w) => w.replace(/^(['"])(.*)\1$/, "$2"));
+/**
+ * 按 shell 规则拆词：空白与 | ; & < > ( ) 分词，引号与相邻文字拼成一个词（"/opt/A B"/data → /opt/A B/data），
+ * 去掉引号与转义符（bash 的 \，PowerShell 的 `）。expands 表示词里有引号外或双引号里的 $（会展开变量）。
+ * 引号没闭合返回 undefined
+ */
+export function shellWords(
+  command: string,
+  powershell: boolean,
+): { word: string; expands: boolean }[] | undefined {
+  const esc = powershell ? "`" : "\\";
+  const out: { word: string; expands: boolean }[] = [];
+  let word = "";
+  let expands = false;
+  let started = false;
+  const flush = () => {
+    if (started) out.push({ word, expands });
+    word = "";
+    expands = false;
+    started = false;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command.charAt(i);
+    if (c === esc && i + 1 < command.length) {
+      if (command[i + 1] !== "\n") word += command[i + 1];
+      started = true;
+      i++;
+    } else if (c === "'") {
+      const j = command.indexOf("'", i + 1);
+      if (j < 0) return undefined;
+      word += command.slice(i + 1, j);
+      started = true;
+      i = j;
+    } else if (c === '"') {
+      started = true;
+      let j = i + 1;
+      for (; j < command.length && command[j] !== '"'; j++) {
+        if (command[j] === esc && j + 1 < command.length) {
+          j++;
+          // 转义的换行是续行：反斜杠与换行一起去掉（".en\<换行>v" 就是 .env）
+          if (command[j] === "\n") continue;
+        }
+        if (command[j] === "$") expands = true;
+        word += command[j];
+      }
+      if (j >= command.length) return undefined;
+      i = j;
+    } else if (/[\s|;&<>()]/.test(c)) flush();
+    else {
+      if (c === "$") expands = true;
+      word += c;
+      started = true;
+    }
+  }
+  flush();
+  return out;
 }
 
 /** 命令名规范化：去掉路径、`.exe` 等扩展名、PowerShell 的调用符 `&` */
@@ -390,7 +455,7 @@ const PS_ASSIGNMENT =
   /(^|[\s;{(|])\$(\{[^}]*\}|[\w:]+)(\.[\w]+|\[[^\]]*\])*\s*[-+*/%?]?\?{0,1}=(?!=)/;
 
 function classifySegment(segment: string, powershell: boolean): CommandClass {
-  const bare = unquoted(segment);
+  const bare = unquoted(segment, false, powershell);
   if (powershell && PS_ASSIGNMENT.test(bare)) return "unknown";
   // 写文件的重定向：`>`、`>>`、`&>`，含紧贴参数的 `echo hi>out.txt`；
   // 只允许把输出丢弃或合并（2>$null、2>/dev/null、2>&1、>$null、>NUL）
@@ -400,11 +465,19 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   }
   // 命令替换、脚本块执行、编码命令：内容判断不了
   // （PowerShell 的反引号是转义符，bash 的反引号是命令替换）
-  const expanded = unquoted(segment, true);
+  const expanded = unquoted(segment, true, powershell);
   if (/\$\(|<\(/.test(expanded) || (!powershell && expanded.includes("`"))) return "unknown";
   if (/(^|[\s;|&(])(iex|invoke-expression|invoke-command|icm)\b/i.test(bare)) return "unknown";
 
-  const ws = words(segment);
+  // bash 的 ANSI-C 引号（$'\x2du'）能拼出任意参数，还原不了
+  if (!powershell && bare.includes("$'")) return "unknown";
+  // PowerShell 的括号表达式在参数求值时就执行：Get-Content (Remove-Item a)、ls @(…)。
+  // 脚本块外有括号就判断不了（块内的括号在 classifyPsBlock 里判断）
+  if (powershell && stripBlocks(bare).includes("(")) return "unknown";
+  // 按 shell 规则拆词（去掉引号与转义符，'--hidden'、-\u 还原成真正的参数）；引号没闭合判断不了
+  const parsed = shellWords(segment, powershell);
+  if (!parsed) return "unknown";
+  const ws = parsed.map((w) => w.word);
   const first = ws[0];
   if (first === undefined) return "readonly";
   // bash 的环境变量赋值：单独出现是改 shell 状态；作为前缀（PATH=… ls、LD_PRELOAD=…、GIT_PAGER=…）
@@ -421,7 +494,8 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   if (WRITE_COMMANDS.has(name)) return "write";
   // PowerShell 脚本块里可以是任意代码。sort、where、echo、cat、ls 等在 PowerShell 里都是 cmdlet 的别名，
   // 不能先按通用白名单放行：只要段里有脚本块，先在这里判断
-  if (powershell && unquoted(segment).includes("{")) return classifyPsBlock(segment, name);
+  if (powershell && unquoted(segment, false, powershell).includes("{"))
+    return classifyPsBlock(segment, name);
   // 嵌套的 shell（bash -c、powershell -Command、cmd /c 等）：内容判断不了
   if (["bash", "sh", "zsh", "powershell", "pwsh", "cmd", "wsl"].includes(name)) return "unknown";
   if (name === "git") {
@@ -445,7 +519,9 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
     // 外部 diff（--ext-diff）、文本转换与过滤器（--textconv、--filters），git help 打开浏览器 / man / info
     if (gsub === "grep" && rest.some((a) => /^--open-files-in-pager|^-[a-zA-Z]*O/.test(a)))
       return "unknown";
-    if (rest.some((a) => /^--(ext-diff|textconv|filters)$/.test(a))) return "unknown";
+    // --show-signature 调用 gpg.program 验签
+    if (rest.some((a) => /^--(ext-diff|textconv|filters|show-signature)$/.test(a)))
+      return "unknown";
     if (gsub === "help" && rest.some((a) => a.startsWith("-"))) return "unknown";
     if (gsub === "branch" || gsub === "remote") {
       const listing = rest.every((a) =>
@@ -463,6 +539,8 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   if (PKG_MANAGERS.has(name)) {
     if (sub === undefined) return args.length ? "readonly" : "unknown";
     if (PKG_WRITE.has(sub)) return "write";
+    // npm / pnpm / yarn audit fix、--fix：会改依赖与锁文件
+    if (sub === "audit" && args.some((a) => /^(fix|--fix)$/i.test(a))) return "write";
     return PKG_READONLY.has(sub) || args.includes("--version") ? "readonly" : "unknown";
   }
   if (name === "node" || name === "python" || name === "python3" || name === "rustc") {
@@ -502,6 +580,8 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   // 白名单命令里会写文件或执行其他程序的参数
   if (name === "env" && args.length > 0) return "unknown"; // env cmd … 会执行 cmd
   if (name === "sort" && hasArg(/^(-o|--output)/)) return "write";
+  // sort --compress-program=PROG 用 PROG 压缩临时文件（会执行它）
+  if (name === "sort" && hasArg(/^--compress-prog/)) return "unknown";
   if (name === "tree" && hasArg(/^(-o|-R)$/)) return "write";
   if (name === "uniq" && args.filter((a) => !a.startsWith("-")).length > 1) return "write"; // uniq in out
   if (name === "date" && hasArg(/^(-s|--set)/)) return "write";
@@ -516,11 +596,23 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   return "unknown";
 }
 
+/** 去掉 PowerShell 脚本块 `{ … }`（含嵌套）的内容 */
+function stripBlocks(text: string): string {
+  let out = "";
+  let depth = 0;
+  for (const ch of text) {
+    if (ch === "{") depth++;
+    else if (ch === "}") depth = Math.max(0, depth - 1);
+    else if (depth === 0) out += ch;
+  }
+  return out;
+}
+
 /** 能执行脚本块的过滤 / 遍历 cmdlet（含别名）：块内再判断一次；其他命令带脚本块判断不了 */
 const PS_BLOCK_CMDLETS = new Set(["foreach-object", "foreach", "%", "where-object", "where", "?"]);
 
 function classifyPsBlock(segment: string, name: string): CommandClass {
-  const bare = unquoted(segment);
+  const bare = unquoted(segment, false, true);
   if (!PS_BLOCK_CMDLETS.has(name)) return "unknown";
   const open = bare.indexOf("{");
   const close = bare.lastIndexOf("}");
