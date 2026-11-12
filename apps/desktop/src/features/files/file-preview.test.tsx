@@ -106,6 +106,10 @@ describe("右栏文件预览：显示打开后的样子", () => {
     act(() => showPreview("/w/a.svg"));
     const frame = (await screen.findByLabelText(t.svgPage)) as HTMLIFrameElement;
     expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(frame.getAttribute("src")).toMatch(
+      /^http:\/\/primus-preview\.localhost\/abc\/a\.svg\?v=/,
+    );
+    expect(frame.getAttribute("srcdoc")).toBeNull();
   });
 
   it("截断的网页仍渲染，并提示只显示了开头", async () => {

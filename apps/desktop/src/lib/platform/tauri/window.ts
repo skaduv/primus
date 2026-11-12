@@ -46,11 +46,21 @@ export function createTauriWindowControls(): WindowControls {
   };
   let wantedMin: number | null = null;
   let appliedMin: number | null = null;
-  const applyMin = async () => {
-    if (wantedMin == null || wantedMin === appliedMin || (await filled())) return;
-    const width = wantedMin;
-    await win.setMinSize(new LogicalSize(width, MIN_HEIGHT));
-    appliedMin = width;
+  // 同一时间只跑一个设置任务；每次设置完再看最新目标，直到已设置的与最新目标一致（期间又改了目标不会丢）
+  let running: Promise<void> | null = null;
+  const applyMin = (): Promise<void> => {
+    running ??= (async () => {
+      try {
+        while (wantedMin != null && wantedMin !== appliedMin && !(await filled())) {
+          const width = wantedMin;
+          await win.setMinSize(new LogicalSize(width, MIN_HEIGHT));
+          appliedMin = width;
+        }
+      } finally {
+        running = null;
+      }
+    })();
+    return running;
   };
   // 从最大化 / 全屏还原后补上期间记下的最小宽度
   void win

@@ -14,6 +14,53 @@ describe("计划模式的只读命令判定", () => {
     ]);
   });
 
+  it("bash 的单个 & 拆段，重定向里的 & 不拆；PowerShell 的调用符不拆", () => {
+    expect(splitSegments("ls & touch out.txt")).toEqual(["ls", "touch out.txt"]);
+    expect(splitSegments("ls 2>&1 &>/dev/null")).toEqual(["ls 2>&1 &>/dev/null"]);
+    expect(splitSegments("& .\\build.ps1", true)).toEqual(["& .\\build.ps1"]);
+  });
+
+  it("审查发现的绕过：后台 &、紧贴的重定向、引号里的命令替换、带路径的命令、写文件参数", () => {
+    for (const c of [
+      "ls & touch out.txt",
+      "echo hi>out.txt",
+      "ls&>out.txt",
+      "sort -o out.txt input.txt",
+      "sort --output=out.txt in",
+      "git diff --output=out.patch",
+      "uniq in.txt out.txt",
+      "tree -o out.txt",
+    ])
+      expect(bash(c), c).toBe("write");
+    for (const c of [
+      'echo "$(touch out.txt)"',
+      'echo "`touch out.txt`"',
+      "env touch out.txt",
+      "./ls",
+      "/tmp/x/cat a",
+      "git -c core.pager='touch x' log",
+      "rg --pre ./x foo",
+      "fd -x rm",
+      "FOO=1 ls",
+      "PATH=/tmp/evil ls",
+      "LD_PRELOAD=/tmp/x.so cat a",
+      "sed 'w out.txt' in.txt",
+      "sed -n 's/a/b/w out.txt' in",
+      "sed 's/.*/date/e' in",
+      "sed -f script.sed in",
+    ])
+      expect(bash(c), c).toBe("unknown");
+    expect(bash("echo '$(touch out.txt)'")).toBe("readonly");
+    expect(bash("FOO=1")).toBe("write");
+    expect(bash("sed -n 1,40p a.ts")).toBe("readonly");
+    expect(bash("sed 's/a/b/g' a.ts")).toBe("readonly");
+    expect(
+      ps("Get-ChildItem | ForEach-Object { powershell -Command 'Set-Content out.txt x' }"),
+    ).toBe("unknown");
+    expect(ps('Write-Output "$(Remove-Item a)"')).toBe("unknown");
+    expect(ps("C:\\tools\\ls.exe")).toBe("unknown");
+  });
+
   it("bash：只读命令放行", () => {
     for (const c of [
       "ls -la",
@@ -33,7 +80,6 @@ describe("计划模式的只读命令判定", () => {
       "sed -n 1,40p a.ts",
       "wc -l a.ts 2>/dev/null",
       "ls 2>&1 | sort",
-      "FOO=1 ls",
       "tree -L 2",
       "jq .name package.json",
     ])

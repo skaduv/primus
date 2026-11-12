@@ -398,6 +398,9 @@ export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = pl
         alwaysAsk ? [CHOICES.allow, CHOICES.deny] : [CHOICES.allow, CHOICES.always, CHOICES.deny],
         { signal: ctx.signal },
       );
+      // 等确认期间可能开启了计划模式：此时该拒绝的调用不能因为之前弹出的确认而放行
+      if (gate.readOnly && decidePlan(call, annotations) === "deny")
+        return { block: true, reason: PLAN_DENY_REASON };
       if (choice === CHOICES.always) {
         state.alwaysAllowed.add(key);
         return undefined;

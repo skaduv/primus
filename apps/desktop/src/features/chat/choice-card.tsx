@@ -4,7 +4,9 @@
 // 小号灰色小节标题、圆角高亮的选项行（序号、名称、灰色说明）；最后一行是输入框，
 // 用户可以不选前面的选项，直接写自己的想法（Enter 发送）。
 // 键盘：数字键 1–9 选对应选项（焦点不在输入框时）；↑↓ 在选项与输入框之间移动；Esc 关闭（有关闭时）。
-import { type KeyboardEvent, type ReactNode, useId, useRef, useState } from "react";
+// 焦点（alertdialog）：出现时（含换题重新挂载）聚焦第一行；关闭时回到出现前的位置（通常是聊天输入框），
+// 那个元素已不在页面上（上一题的卡片）时，交给下一张卡片或浏览器默认处理。
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
 import { GlassSurface } from "@/components/ui/glass-surface";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -65,6 +67,17 @@ export function ChoiceCard({
   const listRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const descBase = useId();
+
+  useEffect(() => {
+    const before = document.activeElement as HTMLElement | null;
+    const first = listRef.current?.querySelector<HTMLElement>("[data-choice-row]");
+    first?.focus({ preventScroll: true });
+    return () => {
+      const inside = listRef.current?.contains(document.activeElement) ?? false;
+      const lost = document.activeElement === document.body || document.activeElement === null;
+      if (before?.isConnected && (inside || lost)) before.focus({ preventScroll: true });
+    };
+  }, []);
 
   const focusables = () =>
     [...(listRef.current?.querySelectorAll<HTMLElement>("[data-choice-row]") ?? [])].filter(

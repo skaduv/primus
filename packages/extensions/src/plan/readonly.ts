@@ -4,7 +4,8 @@
 //   readonly  可以确定不改动任何东西（只读白名单里的命令、只读的 git 子命令），直接放行
 //   write     明显会改动文件或系统（重定向、删除 / 移动、git 写操作、安装依赖等），一律拒绝
 //   unknown   判断不了（测试、构建、脚本等），交给用户确认
-// 判定偏保守：命令替换、编码命令、Invoke-Expression 一律当 unknown；管道、`;`、`&&`、`||` 拆开逐段判断，
+// 判定偏保守：命令替换、编码命令、Invoke-Expression、带路径的命令一律当 unknown；
+// 管道、`;`、`&&`、`||`、bash 的后台 `&` 拆开逐段判断，
 // 任何一段是 write 整条就是 write，任何一段是 unknown 整条就是 unknown。
 
 export type CommandClass = "readonly" | "write" | "unknown";
@@ -283,8 +284,8 @@ const PKG_READONLY = new Set([
   "-v",
 ]);
 
-/** 按引号感知地把命令拆成段（管道、`;`、`&&`、`||`、换行） */
-export function splitSegments(command: string): string[] {
+/** 按引号感知地把命令拆成段（管道、`;`、`&&`、`||`、换行；bash 下还有后台运行的单个 `&`） */
+export function splitSegments(command: string, powershell = false): string[] {
   const out: string[] = [];
   let cur = "";
   let quote: string | null = null;
@@ -318,7 +319,11 @@ export function splitSegments(command: string): string[] {
       i++;
       continue;
     }
-    if (ch === "|" || ch === ";" || ch === "\n" || ch === "\r") {
+    // bash 的 `cmd & cmd`：单个 `&` 也是命令边界；`2>&1`、`&>file` 里的 `&` 属于重定向。
+    // PowerShell 的 `&` 是调用符（`& .\x.ps1`），不拆
+    const background =
+      ch === "&" && !powershell && command[i - 1] !== ">" && command[i + 1] !== ">";
+    if (ch === "|" || ch === ";" || ch === "\n" || ch === "\r" || background) {
       out.push(cur);
       cur = "";
       continue;
@@ -329,9 +334,26 @@ export function splitSegments(command: string): string[] {
   return out.map((s) => s.trim()).filter(Boolean);
 }
 
-/** 去掉引号内的内容，便于查找重定向等特征（引号里的 `>` 不算） */
-function unquoted(segment: string): string {
-  return segment.replace(/'[^']*'|"[^"]*"/g, '""');
+/**
+ * 去掉引号内的内容，便于查找重定向等特征（引号里的 `>` 不算）。
+ * keepDouble 为 true 时保留双引号里的内容：两种 shell 都会在双引号里展开 `$(…)`（bash 还有反引号），
+ * 查命令替换时只能去掉单引号里的字面文本。
+ */
+function unquoted(segment: string, keepDouble = false): string {
+  let out = "";
+  let quote: string | null = null;
+  for (const ch of segment) {
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+        out += ch;
+      } else if (quote === '"' && keepDouble) out += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') quote = ch;
+    out += ch;
+  }
+  return out;
 }
 
 /** 把一段拆成词（引号内的空格不拆），去掉外层引号 */
@@ -348,30 +370,40 @@ function commandName(word: string): string {
 
 function classifySegment(segment: string, powershell: boolean): CommandClass {
   const bare = unquoted(segment);
-  // 写文件的重定向：`>`、`>>`；只允许把输出丢弃或合并（2>$null、2>/dev/null、2>&1、>$null、>NUL）
-  for (const m of bare.matchAll(/(?:^|[\s\d*])>>?\s*(&\d|[^\s|;&]*)/g)) {
+  // 写文件的重定向：`>`、`>>`、`&>`，含紧贴参数的 `echo hi>out.txt`；
+  // 只允许把输出丢弃或合并（2>$null、2>/dev/null、2>&1、>$null、>NUL）
+  for (const m of bare.matchAll(/>>?\s*(&\d|[^\s|;&<>]*)/g)) {
     const target = (m[1] ?? "").toLowerCase();
     if (!["$null", "/dev/null", "nul", "&1", "&2"].includes(target)) return "write";
   }
   // 命令替换、脚本块执行、编码命令：内容判断不了
   // （PowerShell 的反引号是转义符，bash 的反引号是命令替换）
-  if (/\$\(|<\(/.test(bare) || (!powershell && bare.includes("`"))) return "unknown";
+  const expanded = unquoted(segment, true);
+  if (/\$\(|<\(/.test(expanded) || (!powershell && expanded.includes("`"))) return "unknown";
   if (/(^|[\s;|&(])(iex|invoke-expression|invoke-command|icm)\b/i.test(bare)) return "unknown";
 
   const ws = words(segment);
-  // 跳过 bash 的环境变量赋值前缀（FOO=1 cmd）
-  while (ws.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(ws[0] as string)) ws.shift();
   const first = ws[0];
   if (first === undefined) return "readonly";
-  if (!powershell && /^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return "write";
+  // bash 的环境变量赋值：单独出现是改 shell 状态；作为前缀（PATH=… ls、LD_PRELOAD=…、GIT_PAGER=…）
+  // 能换掉实际执行的程序或让只读命令执行别的程序，判断不了
+  if (!powershell && /^[A-Za-z_][A-Za-z0-9_]*=/.test(first))
+    return ws.length > 1 ? "unknown" : "write";
+  // 带路径的命令（./ls、C:\tools\git.exe）：实际执行的是哪个程序判断不了
+  if (/[\\/]/.test(first.replace(/^&/, ""))) return "unknown";
   const name = commandName(first);
   const args = ws.slice(1);
+  const hasArg = (re: RegExp) => args.some((a) => re.test(a));
   const sub = args.find((a) => !a.startsWith("-"))?.toLowerCase();
 
   if (WRITE_COMMANDS.has(name)) return "write";
   // 嵌套的 shell（bash -c、powershell -Command、cmd /c 等）：内容判断不了
   if (["bash", "sh", "zsh", "powershell", "pwsh", "cmd", "wsl"].includes(name)) return "unknown";
   if (name === "git") {
+    // `git -c core.pager=… log` 之类的临时配置可以让只读子命令执行任意程序
+    if (args.includes("-c") || hasArg(/^--config-env/)) return "unknown";
+    // 只读子命令也能把结果写进文件（git diff --output=x、git log -o x 不存在但 --output 通用）
+    if (hasArg(/^--output(=|$)/)) return "write";
     // git -C <dir> <子命令>
     let i = 0;
     while (i < args.length && (args[i] as string).startsWith("-")) {
@@ -406,19 +438,54 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
       : "unknown";
   }
   if (name === "sed") {
-    return args.some((a) => /^-i|^--in-place/.test(a)) ? "write" : "readonly";
+    if (args.some((a) => /^-i|^--in-place/.test(a))) return "write";
+    // sed 脚本里的 w / W 命令、s///w 写文件，e 命令、s///e 执行命令；脚本文件（-f）内容看不到
+    if (hasArg(/^(-f|--file)/)) return "unknown";
+    const script = /(^|[;\n{}!\d$\s/])\s*[wWe](\s|$|;)|\/[gpIiMm\d]*[we]\b/;
+    return args.some((a) => !a.startsWith("-") && script.test(a)) ? "unknown" : "readonly";
   }
   if (name === "find") {
-    return args.some((a) => ["-delete", "-exec", "-execdir", "-ok", "-fprint"].includes(a))
+    return args.some((a) =>
+      [
+        "-delete",
+        "-exec",
+        "-execdir",
+        "-ok",
+        "-okdir",
+        "-fprint",
+        "-fprint0",
+        "-fprintf",
+        "-fls",
+      ].includes(a),
+    )
       ? "unknown"
       : "readonly";
   }
+  // 白名单命令里会写文件或执行其他程序的参数
+  if (name === "env" && args.length > 0) return "unknown"; // env cmd … 会执行 cmd
+  if (name === "sort" && hasArg(/^(-o|--output)/)) return "write";
+  if (name === "tree" && hasArg(/^(-o|-R)$/)) return "write";
+  if (name === "uniq" && args.filter((a) => !a.startsWith("-")).length > 1) return "write"; // uniq in out
+  if (name === "date" && hasArg(/^(-s|--set)/)) return "write";
+  if (name === "file" && hasArg(/^(-C|--compile)$/)) return "write";
+  if (name === "hostname" && args.some((a) => !a.startsWith("-"))) return "write";
+  if (name === "rg" && hasArg(/^--pre(=|$)/)) return "unknown";
+  if (name === "fd" && hasArg(/^(-x|-X|--exec|--exec-batch)(=|$)/)) return "unknown";
   if (COMMON_READONLY.has(name)) return "readonly";
   if (powershell && PS_READONLY.has(name)) {
     // ForEach-Object / Where-Object 的脚本块里可能有任意代码：块内再判断一次
     const block = /\{([\s\S]*)\}/.exec(segment)?.[1];
     if (block && ["foreach-object", "%", "where-object", "where", "?"].includes(name)) {
-      if (classifyCommand(block, true) === "write") return "write";
+      // 块内以 $、(、引号、数字开头的段是表达式（$_.Length -gt 1000），不是命令；其余段按命令判断，
+      // 判断不了（如 powershell -Command …）整条也判断不了
+      let inner: CommandClass = "readonly";
+      for (const seg of splitSegments(block, true)) {
+        if (/^[$('"\d!]/.test(seg)) continue;
+        const c = classifySegment(seg, true);
+        if (c === "write") return "write";
+        if (c === "unknown") inner = "unknown";
+      }
+      if (inner === "unknown") return "unknown";
       // 块里调用对象方法（$_.Delete()）或调用脚本（&）判断不了
       return /\.\w+\s*\(|&/.test(unquoted(block)) ? "unknown" : "readonly";
     }
@@ -431,7 +498,7 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
 
 /** 判断一条命令；`powershell` 为 true 时按 PowerShell 语法（Windows 默认的命令工具） */
 export function classifyCommand(command: string, powershell = false): CommandClass {
-  const segments = splitSegments(command);
+  const segments = splitSegments(command, powershell);
   let result: CommandClass = "readonly";
   for (const s of segments) {
     const c = classifySegment(s, powershell);

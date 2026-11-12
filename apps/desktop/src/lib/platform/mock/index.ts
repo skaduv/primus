@@ -587,23 +587,50 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   const planWidget = (data: PlanData) => widget(PLAN_WIDGET, "plan", data);
   const todoWidget = (items: TodoItem[]) => widget(TODO_WIDGET, "todo", { items });
 
+  /** 撤销等待中的 ask_user 与 plan_submit：清掉状态并推送收起提问卡片、审批记为取消 */
+  const dropPendingPlan = (s: MockSession) => {
+    if (s.askPrompt !== undefined) {
+      s.askPrompt = undefined;
+      emit(s, {
+        type: "extension_ui_request",
+        id: `mock-widget-${now()}-${Math.random()}`,
+        method: "setWidget",
+        widgetKey: ASK_WIDGET,
+      });
+    }
+    if (s.planCall) {
+      s.planCall = undefined;
+      s.planPhase = "planning";
+      emit(s, planWidget({ phase: "planning", id: "p1", status: "cancelled", plan: MOCK_PLAN }));
+    }
+  };
+
   /** mock 的 `/primus-plan`：on / off 切换阶段；approve / revise 结束等待中的 plan_submit */
   const handlePlanCommand = (s: MockSession, args: string) => {
     const [verb = "", ...rest] = args.split(" ");
     if (verb === "on" || verb === "off") {
       if (verb === "off" && s.planCall) {
-        emit(
-          s,
-          ...planDecisionScenario(
-            s.planCall,
-            { approved: false, feedback: "（已关闭计划模式）" },
-            now(),
-          ).records,
-        );
+        emit(s, ...planDecisionScenario(s.planCall, { cancelled: true }, now()).records);
         s.planCall = undefined;
       }
       s.planPhase = verb === "on" ? "planning" : "off";
       emit(s, planWidget({ phase: s.planPhase }));
+      return;
+    }
+    // 提问期间关掉了计划模式：回答只收起卡片、结束这一轮，不再生成计划
+    if (verb === "answer" && s.askPrompt !== undefined && s.planPhase !== "planning") {
+      s.askPrompt = undefined;
+      emit(
+        s,
+        {
+          type: "extension_ui_request",
+          id: `mock-widget-${now()}-${Math.random()}`,
+          method: "setWidget",
+          widgetKey: ASK_WIDGET,
+        },
+        { type: "agent_end", messages: [], willRetry: false },
+        { type: "agent_settled", aborted: false },
+      );
       return;
     }
     if (verb === "answer" && s.askPrompt !== undefined) {
@@ -790,6 +817,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           s.pendingStep = undefined;
           s.aborting = true;
           s.queue = keptOnAbort(s.queue);
+          dropPendingPlan(s);
           emit(s, ...(cancel ?? []), respond(cmd));
           return;
         }
@@ -798,6 +826,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           s.queue = keptOnAbort(s.queue);
           emit(s, ...abortRecords(s.delivered, now()));
         }
+        // 中止时撤销等待中的提问与计划审批（与真实扩展一致：signal 中止后工具返回取消），卡片随之收起；
+        // 排在丢弃队列之后，收起卡片的事件不会被丢掉
+        dropPendingPlan(s);
         emit(s, respond(cmd));
         return;
       }
@@ -1074,6 +1105,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     },
     coreRestart: async (sessionKey) => {
       const s = session(sessionKey);
+      dropPendingPlan(s);
       if (s.pendingStep) clearTimeout(s.pendingStep.timer);
       s.pendingStep = undefined;
       s.queue = [];

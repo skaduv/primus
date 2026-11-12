@@ -345,4 +345,19 @@ describe("primus-guard 计划模式（只读）", () => {
     // 读取按常规规则：完全访问下工作区外读取也放行，受保护路径的写入照样拒绝
     expect(await tool({ toolName: "read", input: { path: "/etc/hosts" } }, ctx())).toBe(undefined);
   });
+  it("确认等待期间开启计划模式：之前弹出的写入确认即使选了允许也拒绝", async () => {
+    const gate = createPlanGate();
+    const { guard } = createGuard("ask", gate);
+    const { pi, handlers } = fakePi();
+    guard(pi);
+    const c = ctx();
+    c.ui.select = vi.fn(async () => {
+      gate.readOnly = true;
+      return CHOICES.allow;
+    });
+    expect(await handlers.tool_call?.({ toolName: "write", input: { path: "a.ts" } }, c)).toEqual({
+      block: true,
+      reason: PLAN_DENY_REASON,
+    });
+  });
 });

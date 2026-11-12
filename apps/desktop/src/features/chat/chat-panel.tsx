@@ -618,8 +618,13 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) submit(e);
-    // Shift+Tab：切换计划模式（与 Claude Code / Codex 一致）；焦点留在输入框
-    if (e.key === "Tab" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    // Shift+Tab：切换计划模式（与 Claude Code / Codex 一致）；焦点留在输入框。
+    // 输入框上方有审批卡片或提问卡片时保留默认的反向焦点导航（Shift+Tab 回到卡片），不切换——
+    // 否则想用键盘回到审批卡片反而会关掉计划模式、把审批作废
+    const cardAbove =
+      state.ask !== undefined ||
+      (state.plan?.phase === "awaiting" && state.plan.status === "awaiting");
+    if (e.key === "Tab" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !cardAbove) {
       e.preventDefault();
       togglePlan();
     }

@@ -760,10 +760,14 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
   /** 回答 ask_user（全部题目一起发回）；cancel 表示用户关闭了提问 */
   const answerAsk = useCallback(
-    (args: AskAnswerArgs) => {
-      // 先收起卡片（扩展随后会推清除）；失败时由 lastError 提示
+    async (args: AskAnswerArgs) => {
+      // 先收起卡片（扩展随后会推清除）；发送失败时恢复卡片，否则 ask_user 会一直等、用户却没法再回答
+      const prev = store.getState().ask;
       store.setState((s) => (s.ask?.id === args.id ? { ...s, ask: undefined } : s), true);
-      return runPlanCommand(`answer ${JSON.stringify(args)}`);
+      const ok = await runPlanCommand(`answer ${JSON.stringify(args)}`);
+      if (!ok && prev?.id === args.id)
+        store.setState((s) => (s.ask === undefined ? { ...s, ask: prev } : s), true);
+      return ok;
     },
     [runPlanCommand, store],
   );

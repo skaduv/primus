@@ -125,87 +125,101 @@ export function TodoProgress({
 }) {
   const current = currentTodo(items);
   const labelId = useId();
+  // 弹层（HoverCard）会被辅助技术忽略：全部步骤另外渲染一份视觉隐藏的列表，按钮用 aria-describedby 关联
+  const listId = useId();
   if (!current) return null;
   const done = items.filter((i) => i.status === "completed" || i.status === "skipped").length;
   return (
-    <HoverCard.Root openDelay={120} closeDelay={80}>
-      <HoverCard.Trigger asChild>
-        {/* 按钮只为能被键盘聚焦（聚焦同样弹出全部步骤），点击没有动作 */}
-        <button
-          ref={slotRef}
-          type="button"
-          style={style}
-          aria-label={`${t.lip.todo} ${done}/${items.length}：${current.text}`}
-          className={cn(
-            "lip-item-in flex min-w-0 cursor-default items-center gap-1.5 rounded-md outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg",
-            style && "absolute top-0 h-8",
-          )}
-        >
-          <span className="flex w-3.5 shrink-0 justify-center">
-            <TodoMark status={current.status} />
-          </span>
-          <span className="shrink-0 tabular-nums">
-            {done}/{items.length}
-          </span>
-          <span
-            ref={textRef}
+    <>
+      <ol id={listId} className="sr-only">
+        {items.map((item) => (
+          <li key={item.id}>{`${t.todoStatus[item.status]}：${item.text}`}</li>
+        ))}
+      </ol>
+      <HoverCard.Root openDelay={120} closeDelay={80}>
+        <HoverCard.Trigger asChild>
+          {/* 按钮只为能被键盘聚焦（聚焦同样弹出全部步骤），点击没有动作 */}
+          <button
+            ref={slotRef}
+            type="button"
+            style={style}
+            aria-label={`${t.lip.todo} ${done}/${items.length}：${current.text}`}
+            aria-describedby={listId}
             className={cn(
-              "min-w-0 overflow-hidden whitespace-nowrap text-fg/80",
-              overflow && "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),transparent)]",
+              "lip-item-in flex min-w-0 cursor-default items-center gap-1.5 rounded-md outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg",
+              style && "absolute top-0 h-8",
             )}
           >
-            {current.text}
-          </span>
-        </button>
-      </HoverCard.Trigger>
-      <HoverCard.Portal>
-        <HoverCard.Content
-          side="top"
-          align="center"
-          sideOffset={10}
-          collisionPadding={12}
-          className="glass-pop z-50 outline-none [--glass-origin:var(--radix-hover-card-content-transform-origin)]"
-        >
-          <GlassSurface blur={30} radius={22} tint={0.8}>
-            <section
-              aria-labelledby={labelId}
-              className="w-[min(360px,calc(100vw-24px))] min-w-[280px] py-2"
+            <span className="flex w-3.5 shrink-0 justify-center">
+              <TodoMark status={current.status} />
+            </span>
+            <span className="shrink-0 tabular-nums">
+              {done}/{items.length}
+            </span>
+            <span
+              ref={textRef}
+              className={cn(
+                "min-w-0 overflow-hidden whitespace-nowrap text-fg/80",
+                overflow &&
+                  "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),transparent)]",
+              )}
             >
-              <p
-                id={labelId}
-                className="flex items-baseline gap-1.5 px-4 pt-0.5 pb-1 text-2xs font-medium text-muted"
+              {current.text}
+            </span>
+          </button>
+        </HoverCard.Trigger>
+        <HoverCard.Portal>
+          <HoverCard.Content
+            side="top"
+            align="center"
+            sideOffset={10}
+            collisionPadding={12}
+            className="glass-pop z-50 outline-none [--glass-origin:var(--radix-hover-card-content-transform-origin)]"
+          >
+            <GlassSurface blur={30} radius={22} tint={0.8}>
+              <section
+                aria-labelledby={labelId}
+                className="w-[min(360px,calc(100vw-24px))] min-w-[280px] py-2"
               >
-                <span>{t.lip.todoAll}</span>
-                <span className="tabular-nums">
-                  {done}/{items.length}
-                </span>
-              </p>
-              <ol className="scroll-none max-h-[min(24rem,50vh)] overflow-y-auto overscroll-contain">
-                {items.map((item) => {
-                  const finished = item.status === "completed" || item.status === "skipped";
-                  return (
-                    <li
-                      key={item.id}
-                      aria-current={item.status === "in_progress" ? "step" : undefined}
-                      className={cn(
-                        "mx-1.5 flex items-start gap-2.5 rounded-[10px] px-2.5 py-[7px] text-sm text-fg",
-                        item.status === "in_progress" && "bg-black/[0.06] dark:bg-white/[0.1]",
-                        finished && "text-muted line-through",
-                      )}
-                    >
-                      <span className="mt-[3px] flex w-3.5 shrink-0 justify-center text-muted">
-                        <TodoMark status={item.status} />
-                      </span>
-                      <span className="min-w-0 flex-1 break-words">{item.text}</span>
-                    </li>
-                  );
-                })}
-              </ol>
-            </section>
-          </GlassSurface>
-        </HoverCard.Content>
-      </HoverCard.Portal>
-    </HoverCard.Root>
+                <p
+                  id={labelId}
+                  className="flex items-baseline gap-1.5 px-4 pt-0.5 pb-1 text-2xs font-medium text-muted"
+                >
+                  <span>{t.lip.todoAll}</span>
+                  <span className="tabular-nums">
+                    {done}/{items.length}
+                  </span>
+                </p>
+                <ol className="scroll-none max-h-[min(24rem,50vh)] overflow-y-auto overscroll-contain">
+                  {items.map((item) => {
+                    const finished = item.status === "completed" || item.status === "skipped";
+                    return (
+                      <li
+                        key={item.id}
+                        aria-current={item.status === "in_progress" ? "step" : undefined}
+                        className={cn(
+                          "mx-1.5 flex items-start gap-2.5 rounded-[10px] px-2.5 py-[7px] text-sm text-fg",
+                          item.status === "in_progress" && "bg-black/[0.06] dark:bg-white/[0.1]",
+                          finished && "text-muted line-through",
+                        )}
+                      >
+                        <span className="mt-[3px] flex w-3.5 shrink-0 justify-center text-muted">
+                          <TodoMark status={item.status} />
+                        </span>
+                        <span className="min-w-0 flex-1 break-words">
+                          <span className="sr-only">{`${t.todoStatus[item.status]}：`}</span>
+                          {item.text}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </section>
+            </GlassSurface>
+          </HoverCard.Content>
+        </HoverCard.Portal>
+      </HoverCard.Root>
+    </>
   );
 }
 

@@ -522,20 +522,31 @@ export function planScenario(prompt: string, now: number): ScenarioResult & { ca
   return { records, messages, callId };
 }
 
-/** 审批之后：plan_submit 的结果；批准时再给一段开始执行的回答，最后结束这一轮 */
+/**
+ * 审批之后：plan_submit 的结果；批准时再给一段开始执行的回答，最后结束这一轮。
+ * cancelled：等待审批时关闭了计划模式，与真实扩展一致记为取消并直接结束这一轮（terminate）
+ */
 export function planDecisionScenario(
   callId: string,
-  decision: { approved: true } | { approved: false; feedback: string },
+  decision: { approved: true } | { approved: false; feedback: string } | { cancelled: true },
   now: number,
 ): ScenarioResult {
   const records: CoreRecord[] = [];
   const messages: AgentMessage[] = [];
-  const details: PlanSubmitDetails = decision.approved
-    ? { id: "p1", status: "approved", plan: MOCK_PLAN }
-    : { id: "p1", status: "revising", plan: MOCK_PLAN, feedback: decision.feedback };
-  const text = decision.approved ? "用户已批准计划。" : `用户要求修改计划：${decision.feedback}`;
+  const cancelled = "cancelled" in decision;
+  const approved = !cancelled && decision.approved;
+  const details: PlanSubmitDetails = cancelled
+    ? { id: "p1", status: "cancelled", plan: MOCK_PLAN }
+    : decision.approved
+      ? { id: "p1", status: "approved", plan: MOCK_PLAN }
+      : { id: "p1", status: "revising", plan: MOCK_PLAN, feedback: decision.feedback };
+  const text = cancelled
+    ? "用户关闭了计划模式，计划已取消。"
+    : decision.approved
+      ? "用户已批准计划。"
+      : `用户要求修改计划：${decision.feedback}`;
   const result = { content: [{ type: "text" as const, text }], details };
-  const isError = !decision.approved;
+  const isError = !approved;
   records.push({
     type: "tool_execution_end",
     toolCallId: callId,
@@ -557,7 +568,12 @@ export function planDecisionScenario(
     { type: "message_end", message: toolResult },
   );
   messages.push(toolResult);
-  const answer = decision.approved
+  if (cancelled) {
+    records.push({ type: "agent_end", messages: messages.slice(), willRetry: false });
+    records.push({ type: "agent_settled", aborted: false });
+    return { records, messages };
+  }
+  const answer = approved
     ? "计划已批准，开始第 1 步：梳理现有章节。（mock 演示到此为止）"
     : "好的，我按你的意见修改计划。（mock 演示到此为止，可以再次发送消息重新生成计划）";
   const u = usage(500, 60);

@@ -48,6 +48,25 @@ describe("Tauri 窗口控制", () => {
     expect(win.setMinSize).toHaveBeenCalledTimes(1);
   });
 
+  it("设置进行中又改了目标：完成后接着设置最新目标", async () => {
+    const c = createTauriWindowControls();
+    let release: () => void = () => {};
+    win.setMinSize.mockImplementationOnce(
+      () =>
+        new Promise<void>((r) => {
+          release = r;
+        }),
+    );
+    const first = c.setMinWidth(1200);
+    await flush();
+    const second = c.setMinWidth(900);
+    release();
+    await Promise.all([first, second]);
+    expect(win.setMinSize.mock.calls.map((x) => (x[0] as { width: number }).width)).toEqual([
+      1200, 900,
+    ]);
+  });
+
   it("全屏时不伸缩窗口，按铺满屏幕上报", async () => {
     const c = createTauriWindowControls();
     state.fullscreen = true;

@@ -330,6 +330,7 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   let state = initialPlanState();
   /** 等待审批的计划：id → 兑现函数 */
   const pending = new Map<string, (d: Decision) => void>();
+  let epoch = 0;
   /** 等待回答的 ask_user：id → 兑现函数（undefined 表示用户关闭了提问） */
   const pendingAsk = new Map<string, (a: Record<string, AskAnswer> | undefined) => void>();
   let askCount = 0;
@@ -429,6 +430,10 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   }
 
   function restore(ctx: PlanContext): void {
+    // 会话代次：上一会话里等待中的审批在这里兑现为取消，其后续代码看到代次变化就不再碰新会话的状态
+    epoch++;
+    for (const resolve of pending.values()) resolve({ kind: "cancel" });
+    pending.clear();
     const sm = ctx.sessionManager;
     const entries = sm?.getBranch?.() ?? sm?.getEntries?.() ?? [];
     let saved: PersistedPlan | undefined;
@@ -453,7 +458,6 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       }
       if (readOnlyPhase(state.phase)) state.forceFull = true;
     }
-    pending.clear();
   }
 
   function writePlanFile(ctx: PlanContext, id: string, plan: PlanDoc): string | undefined {
@@ -511,12 +515,18 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     state.path = writePlanFile(ctx, id, plan);
     commit(ctx);
 
+    const myEpoch = epoch;
     const decision = await new Promise<Decision>((resolve) => {
       pending.set(id, resolve);
       if (signal?.aborted) resolve({ kind: "cancel" });
       signal?.addEventListener("abort", () => resolve({ kind: "cancel" }), { once: true });
     });
     pending.delete(id);
+    // 等待期间会话已重新开始：状态属于新会话，不能改也不能持久化
+    if (myEpoch !== epoch) {
+      const details: PlanSubmitDetails = { id, status: "cancelled", plan };
+      return result(t.cancelled, details, { isError: true, terminate: true });
+    }
 
     if (decision.kind === "approve") {
       const edited = decision.plan !== undefined && !sameJson(decision.plan, plan);

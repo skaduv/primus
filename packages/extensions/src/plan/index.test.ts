@@ -383,6 +383,30 @@ describe("primus-plan", () => {
     expect(b.userTurn()?.message.content).toBe(`${REMINDER_REENTRY}\n\n${REMINDER_FULL}`);
   });
 
+  it("同一进程里会话重新开始：等待中的 plan_submit 返回取消，且不改写新会话的状态", async () => {
+    const entries: { type: string; customType?: string; data?: unknown }[] = [];
+    const a = setup(entries);
+    await a.cmd("on");
+    const pending = (a.tools[PLAN_SUBMIT_TOOL] as Tool).execute(
+      "t",
+      PLAN,
+      undefined,
+      undefined,
+      a.ctx,
+    );
+    await Promise.resolve();
+    const before = entries.length;
+    a.handlers.session_start?.(
+      { reason: "new" },
+      { ...a.ctx, sessionManager: { getBranch: () => [] } },
+    );
+    const r = await pending;
+    expect(r.details).toMatchObject({ status: "cancelled" });
+    expect(r.terminate).toBe(true);
+    expect(a.plan.state.phase).toBe("off");
+    expect(entries.length).toBe(before);
+  });
+
   it("normalizePlan 去掉空白项、补步骤编号", () => {
     const p = normalizePlan({
       title: " t ",
