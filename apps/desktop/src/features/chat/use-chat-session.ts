@@ -27,6 +27,9 @@ import {
 } from "@/stores/session-store";
 
 /** 设置权限模式的扩展命令（primus-guard）；作为 prompt 发送，Core 直接执行，不调用模型 */
+/** 权限档位从严到宽 */
+const MODE_RANK: Record<PermissionMode, number> = { ask: 0, edit: 1, full: 2 };
+
 export const modeCommand = (mode: PermissionMode) => `/primus-mode ${mode}`;
 
 /** 计划模式的扩展命令（primus-plan）；与权限模式一样作为 prompt 发送，运行中也立即执行 */
@@ -742,10 +745,16 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       const before = app.permissionMode;
       const target =
         args.permission === "edit" || args.permission === "ask" ? args.permission : undefined;
-      // 批准失败（同步权限或发送批准出错）：计划仍未批准，权限回到批准前；用户期间手动切换过就不覆盖
-      const restore = async () => {
-        if (!target || target === before || useAppStore.getState().permissionMode !== target)
-          return;
+      // 批准失败时权限回到批准前，但只在能确定的情况下：
+      // - 设好目标权限之后用户动过权限（哪怕又切回同一档）就不覆盖，用订阅记下是否有过变化；
+      // - 回到更宽松的档位（比如 edit → ask 失败后回 edit）只在 Core 明确答复失败时做。超时、连接断开时
+      //   Core 可能已经批准、计划已在执行，放宽权限不安全，保留用户为这份计划选的更严格档位
+      let touched = false;
+      let unsubscribe = () => {};
+      const restore = async (definite: boolean) => {
+        unsubscribe();
+        if (!target || target === before || touched) return;
+        if (MODE_RANK[before] > MODE_RANK[target] && !definite) return;
         useAppStore.getState().setPermissionMode(before);
         await syncMode(c.client).catch(() => undefined);
       };
@@ -753,18 +762,31 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         // 先切权限再批准：批准后模型立即开始修改，权限要先到位
         if (target) {
           app.setPermissionMode(target);
+          unsubscribe = useAppStore.subscribe((s, prev) => {
+            if (s.permissionMode !== prev.permissionMode) touched = true;
+          });
           await syncMode(c.client);
         }
       } catch (e) {
         fail(e);
-        await restore();
+        // 同步权限失败时批准还没发出：计划肯定没有批准
+        await restore(true);
         return false;
       }
-      const ok = await runPlanCommand(`approve ${JSON.stringify(args)}`);
-      if (!ok) await restore();
-      return ok;
+      try {
+        const res = await c.client.request("prompt", {
+          message: planCommand(`approve ${JSON.stringify(args)}`),
+        });
+        if (res.success) unsubscribe();
+        else await restore(true);
+        return res.success;
+      } catch (e) {
+        fail(e);
+        await restore(e instanceof RpcResponseError);
+        return false;
+      }
     },
-    [runPlanCommand, syncMode, fail],
+    [syncMode, fail],
   );
 
   const revisePlan = useCallback(

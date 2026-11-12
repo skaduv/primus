@@ -268,7 +268,8 @@ export function decidePlan(
 
 /**
  * 命令文字里是否提到受保护的路径：`.env*`、`.git`、`.ssh` 路径段（含通配写法 `.en?`、`.e*`），
- * 以及按工作目录解析后落在受保护位置（App 数据目录、`~/.ssh`）的参数
+ * 按工作目录解析后落在受保护位置（App 数据目录、`~/.ssh`）的参数，以及展开范围限定不了的参数
+ * （工作区外的通配路径、含变量的参数）
  */
 export function commandTouchesProtected(
   command: string,
@@ -281,7 +282,18 @@ export function commandTouchesProtected(
   const tokens = command.match(/'[^']*'|"[^"]*"|[^\s|;&<>()]+/g) ?? [];
   return tokens.some((t) => {
     const w = t.replace(/^(['"])(.*)\1$/, "$2").replace(/^-[^=]*=/, "");
-    if (!w || w.startsWith("-") || !/[\\/~.]/.test(w)) return false;
+    if (!w || w.startsWith("-")) return false;
+    // 展开范围限定不了的路径：工作区外（绝对路径、~、..）带通配符，或含变量（$HOME/…、$env:APPDATA\…）。
+    // 展开后可能落进 App 数据目录或 ~/.ssh，按受保护处理
+    if (/[*?[]/.test(w) && (isAbsolute(w) || /^[a-zA-Z]:|^~|(^|[\\/])\.\.([\\/]|$)/.test(w)))
+      return true;
+    if (
+      !t.startsWith("'") &&
+      /\$(\{|[A-Za-z])/.test(w) &&
+      !/^\$(_|psitem|true|false|null)\b/i.test(w)
+    )
+      return true;
+    if (!/[\\/~.]/.test(w)) return false;
     try {
       const abs = resolveToolPath(w, cwd, ge.platform, ge.home);
       return (
@@ -482,9 +494,20 @@ export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = pl
         alwaysAsk ? [CHOICES.allow, CHOICES.deny] : [CHOICES.allow, CHOICES.always, CHOICES.deny],
         { signal: ctx.signal },
       );
-      // 等确认期间可能开启了计划模式：此时该拒绝的调用不能因为之前弹出的确认而放行
-      if (gate.readOnly && decidePlan(call, annotations, ctx.cwd) === "deny")
-        return { block: true, reason: PLAN_DENY_REASON };
+      // 等确认期间可能开启了计划模式：该拒绝的调用不能因为之前弹出的确认而放行；
+      // 计划模式要询问的调用不能沿用普通确认（尤其“始终允许”），按计划模式重新确认一次
+      const planNow = gate.readOnly ? decidePlan(call, annotations, ctx.cwd) : undefined;
+      if (planNow === "deny") return { block: true, reason: PLAN_DENY_REASON };
+      if (planNow === "ask" && !inPlan && choice !== CHOICES.deny) {
+        const again = await ctx.ui.select(
+          `${PLAN_ASK_PREFIX}${describeCall(call, ctx.cwd)}`,
+          [CHOICES.allow, CHOICES.deny],
+          { signal: ctx.signal },
+        );
+        if (gate.readOnly && decidePlan(call, annotations, ctx.cwd) === "deny")
+          return { block: true, reason: PLAN_DENY_REASON };
+        return again === CHOICES.allow ? undefined : { block: true, reason: "用户拒绝了这次操作" };
+      }
       if (choice === CHOICES.always) {
         state.alwaysAllowed.add(key);
         return undefined;

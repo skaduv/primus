@@ -692,17 +692,19 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     const t = TEXT.askUser;
     const answers: Record<string, AskAnswer> = {};
     for (const q of questions) {
-      if (signal.aborted) return result(t.unanswered, { answers }, { isError: true });
+      if (signal.aborted)
+        return result(t.unanswered, { answers }, { isError: true, terminate: true });
       const labels = q.options.map((o) =>
         o.description ? `${o.label}：${o.description}` : o.label,
       );
       const title = q.header ? `${q.header}｜${q.question}` : q.question;
       const choice = await select(title, [...labels, t.other], { signal });
-      if (choice === undefined) return result(t.unanswered, { answers }, { isError: true });
+      if (choice === undefined)
+        return result(t.unanswered, { answers }, { isError: true, terminate: true });
       if (choice === t.other) {
         const text = await ctx.ui?.input?.(title, t.otherPrompt, { signal });
         if (text === undefined || !text.trim())
-          return result(t.unanswered, { answers }, { isError: true });
+          return result(t.unanswered, { answers }, { isError: true, terminate: true });
         answers[q.id] = { other: text.trim() };
       } else {
         answers[q.id] = { selected: q.options[labels.indexOf(choice)]?.label ?? choice };

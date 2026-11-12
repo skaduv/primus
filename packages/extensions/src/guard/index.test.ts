@@ -322,6 +322,12 @@ describe("primus-guard 计划模式（只读）", () => {
       "cat ~/.ssh/id_rsa",
       "cat .en?",
       "type C:\\Users\\a\\.ssh\\id_rsa",
+      // 展开范围限定不了：工作区外的通配路径、变量
+      "cat /install/d*/users/SID/core/config.json",
+      "cat ../*/config.json",
+      "cat ~/*/id_rsa",
+      "cat $PRIMUS_CODING_AGENT_DIR/config.json",
+      "cat $HOME/x",
       // 递归读取、不跳过隐藏或被忽略的文件
       "rg -uu secret",
       "rg --hidden --no-ignore key",
@@ -391,5 +397,25 @@ describe("primus-guard 计划模式（只读）", () => {
       block: true,
       reason: PLAN_DENY_REASON,
     });
+  });
+
+  it("确认等待期间开启计划模式：选了“始终允许”的命令按计划模式重新确认，不记住", async () => {
+    const gate = createPlanGate();
+    const { guard, state } = createGuard("ask", gate);
+    const { pi, handlers } = fakePi();
+    guard(pi);
+    const c = ctx();
+    c.ui.select = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        gate.readOnly = true;
+        return CHOICES.always;
+      })
+      .mockResolvedValueOnce(CHOICES.deny);
+    const call = { toolName: "bash", input: { command: "pnpm test" } };
+    expect(await handlers.tool_call?.(call, c)).toMatchObject({ block: true });
+    expect(c.ui.select).toHaveBeenCalledTimes(2);
+    expect(c.ui.select.mock.calls[1]?.[1]).toEqual([CHOICES.allow, CHOICES.deny]);
+    expect(state.alwaysAllowed.size).toBe(0);
   });
 });
