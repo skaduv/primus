@@ -301,7 +301,8 @@ export function splitSegments(command: string, powershell = false): string[] {
   const out: string[] = [];
   let cur = "";
   let quote: string | null = null;
-  // PowerShell 脚本块 `{ … }` 里的管道与分号属于块内，不拆
+  // PowerShell 脚本块 `{ … }` 里的管道与分号属于块内，不拆。bash 的花括号不是块（`ls {; touch x; echo }`
+  // 里的 `;` 照样分隔命令），照常拆段
   let depth = 0;
   // 转义符（bash 的 \，PowerShell 的 `）后面的字符是字面量：\; 不拆段，\' 不开始引号
   const esc = powershell ? "`" : "\\";
@@ -322,7 +323,7 @@ export function splitSegments(command: string, powershell = false): string[] {
       cur += ch;
       continue;
     }
-    if (ch === "{" || ch === "}") {
+    if (powershell && (ch === "{" || ch === "}")) {
       depth = Math.max(0, depth + (ch === "{" ? 1 : -1));
       cur += ch;
       continue;

@@ -20,6 +20,15 @@ describe("计划模式的只读命令判定", () => {
     expect(splitSegments("& .\\build.ps1", true)).toEqual(["& .\\build.ps1"]);
   });
 
+  it("bash 的花括号不挡拆段：ls {; touch out.txt; echo } 里的 touch 照样判为写", () => {
+    expect(splitSegments("ls {; touch out.txt; echo }")).toEqual([
+      "ls {",
+      "touch out.txt",
+      "echo }",
+    ]);
+    expect(bash("ls {; touch out.txt; echo }")).toBe("write");
+  });
+
   it("审查发现的绕过：后台 &、紧贴的重定向、引号里的命令替换、带路径的命令、写文件参数", () => {
     for (const c of [
       "ls & touch out.txt",

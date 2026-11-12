@@ -1198,7 +1198,7 @@ mod fallback_impl {
     }
 
     /// 已打开文件的实际路径：Linux 读 `/proc/self/fd/<fd>`（按句柄，不受路径随后被换掉影响）；
-    /// 其他平台（仅开发用）退回重新解析路径
+    /// 其他平台（仅开发用）取不到句柄路径，返回 None，预览协议据此拒绝，不退回重新解析路径
     pub(crate) fn opened_path(file: &std::fs::File, path: &Path) -> Option<std::path::PathBuf> {
         #[cfg(target_os = "linux")]
         {
@@ -1208,8 +1208,8 @@ mod fallback_impl {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = file;
-            std::fs::canonicalize(path).ok()
+            let _ = (file, path);
+            None
         }
     }
 

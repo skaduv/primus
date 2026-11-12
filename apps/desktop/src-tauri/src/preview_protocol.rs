@@ -191,14 +191,22 @@ fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, StatusCode> {
 }
 
 /// 解析链接后的真实路径仍须在文件夹内，且相对文件夹的每一段都不是隐藏的（public -> .private 这类链接也拒绝）；
-/// 文件夹本身的上级目录不检查，它们可以在隐藏目录里
+/// 文件夹本身的上级目录不检查，它们可以在隐藏目录里。Windows 上带隐藏或系统属性的文件与子目录同样拒绝
 fn check_inside(root: &Path, real: &Path) -> Result<(), StatusCode> {
     let rel_real = real.strip_prefix(root).map_err(|_| StatusCode::FORBIDDEN)?;
-    if rel_real
-        .components()
-        .any(|c| !matches!(c, Component::Normal(n) if !n.to_string_lossy().starts_with('.')))
-    {
-        return Err(StatusCode::FORBIDDEN);
+    let mut cur = root.to_path_buf();
+    for c in rel_real.components() {
+        let Component::Normal(name) = c else {
+            return Err(StatusCode::FORBIDDEN);
+        };
+        if name.to_string_lossy().starts_with('.') {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        cur.push(name);
+        let meta = std::fs::symlink_metadata(&cur).map_err(|_| StatusCode::NOT_FOUND)?;
+        if crate::platform::is_hidden_entry(&meta, name) {
+            return Err(StatusCode::FORBIDDEN);
+        }
     }
     Ok(())
 }
