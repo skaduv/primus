@@ -144,7 +144,6 @@ export function ProviderSettings() {
   const list = providers ?? (loadError ? [] : null);
   if (!list) return <p className="text-sm text-muted">{t.loading}</p>;
   const visible = list.filter((p) => !p.hidden);
-  const hasHidden = list.some((p) => p.hidden);
 
   return (
     <section className="flex flex-col gap-2">
@@ -163,8 +162,8 @@ export function ProviderSettings() {
         </div>
       )}
       <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
-        {visible.length === 0 && (
-          <p className="px-4 py-3 text-xs text-muted">{hasHidden ? t.builtinOnly : t.empty}</p>
+        {visible.length === 0 && list.length === 0 && (
+          <p className="px-4 py-3 text-xs text-muted">{t.empty}</p>
         )}
         {visible.length > 0 && (
           <ul aria-label={t.title} className="divide-y divide-border">

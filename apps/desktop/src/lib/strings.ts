@@ -518,7 +518,6 @@ export const strings = {
       title: "模型渠道",
       add: "添加渠道",
       empty: "还没有模型渠道。添加一个渠道并获取模型列表后即可对话。",
-      builtinOnly: "内置渠道已可用，可另外添加自己的模型渠道。",
       loading: "正在读取模型渠道…",
       loadFailed: "读取模型渠道失败",
       loadFailedRecover:

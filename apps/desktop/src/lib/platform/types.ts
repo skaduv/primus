@@ -127,7 +127,7 @@ export interface ProviderView {
   hasKey: boolean;
   /** 密钥末 4 位；没有密钥或密钥太短时为 null */
   keyHint: string | null;
-  /** 保持种子配置的内置渠道：不显示在设置页的渠道管理中，但仍参与模型配置与模型选择 */
+  /** 未被修改且启用的内置渠道：不显示在设置页的渠道管理中，但仍参与模型配置与模型选择 */
   hidden: boolean;
 }
 

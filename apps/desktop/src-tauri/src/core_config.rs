@@ -124,7 +124,7 @@ pub(crate) fn secret_command(exe: &Path, provider_id: &str) -> io::Result<String
     ))
 }
 
-/// 内置渠道是否仍保持种子配置。用户修改或停用后，它按普通渠道显示，避免隐藏后无法恢复。
+/// 内置渠道是否未被修改且启用。用户修改或停用后，它按普通渠道显示，避免隐藏后无法恢复。
 fn is_pristine_builtin(provider: &Provider) -> bool {
     let seed = crate::builtin::seed_provider();
     provider.id == seed.id
@@ -457,7 +457,7 @@ impl ModelConfigState {
 
     /// 确保内置渠道、密钥与旧版令牌迁移就绪；返回是否需要获取内置渠道的模型列表。
     ///
-    /// 首次启动写入种子；之后只要渠道仍是种子配置且模型清单为空，就在下次启动重试获取。
+    /// 首次启动写入种子；之后只要渠道未被修改、仍启用且模型清单为空，就在下次启动重试获取。
     /// 用户修改或停用后不再覆盖，该渠道也不再隐藏，用户可以从界面继续管理。
     pub(crate) fn prepare_builtin(&self) -> bool {
         let _inner = self.lock();

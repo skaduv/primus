@@ -54,7 +54,8 @@ describe("设置·模型渠道", () => {
 
   it("渠道管理隐藏内置渠道，但模型配置仍包含它的模型", async () => {
     const { platform } = await setup({ seedVisible: false });
-    expect(await screen.findByText(t.builtinOnly)).toBeTruthy();
+    expect(screen.queryByText(t.empty)).toBeNull();
+    expect(await screen.findByRole("button", { name: t.add })).toBeTruthy();
     expect(screen.queryByRole("list", { name: t.title })).toBeNull();
     const [ioply] = await platform.providersList();
     expect(ioply).toMatchObject({ id: "ioply", hidden: true });
@@ -276,7 +277,7 @@ describe("设置·模型渠道", () => {
     expect(remove).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: t.deleteConfirm }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith("work-gateway"));
-    expect(await screen.findByText(t.builtinOnly)).toBeTruthy();
+    expect(screen.queryByText(t.empty)).toBeNull();
     expect(screen.queryByRole("list", { name: t.title })).toBeNull();
   });
 
