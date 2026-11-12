@@ -486,14 +486,21 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   if (name === "fd" && hasArg(/^(-x|-X|--exec|--exec-batch)(=|$)/)) return "unknown";
   if (COMMON_READONLY.has(name)) return "readonly";
   if (powershell && PS_READONLY.has(name)) {
-    // ForEach-Object / Where-Object 的脚本块里可能有任意代码：块内再判断一次
-    const block = /\{([\s\S]*)\}/.exec(segment)?.[1];
-    if (block && ["foreach-object", "%", "where-object", "where", "?"].includes(name)) {
-      // 块内以 $、(、引号、数字开头的段是表达式（$_.Length -gt 1000），不是命令；其余段按命令判断，
-      // 判断不了（如 powershell -Command …）整条也判断不了
+    // 脚本块里可能有任意代码：ForEach-Object / Where-Object 的块内再判断一次；
+    // 其他 cmdlet 带脚本块（Sort-Object -Property { … }、Select-Object @{ e = { … } }、Group-Object { … }）判断不了
+    const block = /\{([\s\S]*)\}/.exec(unquoted(segment))?.[1];
+    if (
+      block !== undefined &&
+      !["foreach-object", "%", "where-object", "where", "?"].includes(name)
+    )
+      return "unknown";
+    if (block !== undefined) {
+      // 块内以 $、引号、数字开头的段是表达式（$_.Length -gt 1000），不是命令；表达式里再用括号调用命令
+      // （$_.Name -eq (Get-Item a)）、以括号开头的段判断不了；其余段按命令判断
       let inner: CommandClass = "readonly";
       for (const seg of splitSegments(block, true)) {
-        if (/^[$('"\d!]/.test(seg)) continue;
+        if (PS_ASSIGNMENT.test(seg) || /^\(|\(\s*[A-Za-z]/.test(unquoted(seg))) return "unknown";
+        if (/^[$'"\d!]/.test(seg)) continue;
         const c = classifySegment(seg, true);
         if (c === "write") return "write";
         if (c === "unknown") inner = "unknown";

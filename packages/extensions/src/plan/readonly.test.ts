@@ -178,6 +178,11 @@ describe("计划模式的只读命令判定", () => {
       "Get-ChildItem | ForEach-Object { $env:X = 1 }",
       "Get-ChildItem | ForEach-Object { $_.IsReadOnly = $false }",
       "Get-ChildItem | Where-Object { $global:n += 1 }",
+      "Get-ChildItem | Sort-Object -Property { Remove-Item out.txt; $_.Name }",
+      "Get-ChildItem | Select-Object @{ n = 'x'; e = { Remove-Item a } }",
+      "Get-ChildItem | ForEach-Object { $x = Remove-Item out.txt }",
+      "Get-ChildItem | ForEach-Object { ($null = Remove-Item a) }",
+      "Get-ChildItem | Where-Object { $_.Name -eq (Remove-Item a) }",
     ])
       expect(ps(c), c).toBe("unknown");
   });

@@ -157,7 +157,9 @@ export function ChoiceCard({
               key={o.key}
               type="button"
               data-choice-row
-              aria-label={o.label}
+              aria-label={
+                o.recommended && recommendedLabel ? `${o.label}（${recommendedLabel}）` : o.label
+              }
               aria-describedby={o.description ? `${descBase}-${i}` : undefined}
               onClick={() => onChoose(o.key)}
               className={rowClass}

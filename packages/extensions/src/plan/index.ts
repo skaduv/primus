@@ -628,9 +628,13 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       if (options.length < 2 || options.length > 4)
         return t.invalid(`第 ${i + 1} 题需要 2–4 个选项`);
       const header = typeof question.header === "string" ? question.header.trim() : "";
+      const id =
+        typeof question.id === "string" && question.id.trim() ? question.id.trim() : `q${i + 1}`;
+      // 回答按 id 收集：重复的 id 会让后一题的回答覆盖前一题
+      if (out.some((o) => o.id === id))
+        return t.invalid(`第 ${i + 1} 题的 id「${id}」与前面的题重复`);
       out.push({
-        id:
-          typeof question.id === "string" && question.id.trim() ? question.id.trim() : `q${i + 1}`,
+        id,
         ...(header ? { header } : {}),
         question: question.question.trim(),
         options,

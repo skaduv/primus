@@ -47,20 +47,24 @@ export function createTauriWindowControls(): WindowControls {
   let wantedMin: number | null = null;
   let appliedMin: number | null = null;
   // 同一时间只跑一个设置任务；每次设置完再看最新目标，直到已设置的与最新目标一致（期间又改了目标不会丢）
+  // （先登记任务再在它结束后清掉；任务体可能同步跑完，不能在任务体里清，否则清空后又被登记成已完成的任务）
   let running: Promise<void> | null = null;
+  let acrylicSeq = 0;
   const applyMin = (): Promise<void> => {
-    running ??= (async () => {
-      try {
-        while (wantedMin != null && wantedMin !== appliedMin && !(await filled())) {
-          const width = wantedMin;
-          await win.setMinSize(new LogicalSize(width, MIN_HEIGHT));
-          appliedMin = width;
-        }
-      } finally {
-        running = null;
+    if (running) return running;
+    const task = (async () => {
+      while (wantedMin != null && wantedMin !== appliedMin && !(await filled())) {
+        const width = wantedMin;
+        await win.setMinSize(new LogicalSize(width, MIN_HEIGHT));
+        appliedMin = width;
       }
     })();
-    return running;
+    running = task;
+    const clear = () => {
+      if (running === task) running = null;
+    };
+    task.then(clear, clear);
+    return task;
   };
   // 从最大化 / 全屏还原后补上期间记下的最小宽度
   void win
@@ -134,7 +138,12 @@ export function createTauriWindowControls(): WindowControls {
       await applyMin();
     },
     // tauri.conf.json 建窗时已开亚克力；Win10 上 AppearanceController 首次调用这里时关掉
-    setAcrylic: async (on) =>
-      on && !(await legacy) ? win.setEffects({ effects: [Effect.Acrylic] }) : win.clearEffects(),
+    // 调用可能重叠（开启要先等 Win10 判断）：只应用最后一次请求，较早的开启不会盖过较晚的关闭
+    setAcrylic: async (on) => {
+      const seq = ++acrylicSeq;
+      const isLegacy = await legacy;
+      if (seq !== acrylicSeq) return;
+      await (on && !isLegacy ? win.setEffects({ effects: [Effect.Acrylic] }) : win.clearEffects());
+    },
   };
 }

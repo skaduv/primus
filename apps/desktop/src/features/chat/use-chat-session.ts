@@ -738,17 +738,31 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     async (args: PlanApproveArgs): Promise<boolean> => {
       const c = conn.current;
       if (!c) return false;
+      const app = useAppStore.getState();
+      const before = app.permissionMode;
+      const target =
+        args.permission === "edit" || args.permission === "ask" ? args.permission : undefined;
+      // 批准失败（同步权限或发送批准出错）：计划仍未批准，权限回到批准前；用户期间手动切换过就不覆盖
+      const restore = async () => {
+        if (!target || target === before || useAppStore.getState().permissionMode !== target)
+          return;
+        useAppStore.getState().setPermissionMode(before);
+        await syncMode(c.client).catch(() => undefined);
+      };
       try {
         // 先切权限再批准：批准后模型立即开始修改，权限要先到位
-        if (args.permission === "edit" || args.permission === "ask") {
-          useAppStore.getState().setPermissionMode(args.permission);
+        if (target) {
+          app.setPermissionMode(target);
           await syncMode(c.client);
         }
       } catch (e) {
         fail(e);
+        await restore();
         return false;
       }
-      return runPlanCommand(`approve ${JSON.stringify(args)}`);
+      const ok = await runPlanCommand(`approve ${JSON.stringify(args)}`);
+      if (!ok) await restore();
+      return ok;
     },
     [runPlanCommand, syncMode, fail],
   );

@@ -154,7 +154,13 @@ fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, StatusCode> {
         return Err(StatusCode::NOT_FOUND);
     }
     let real = std::fs::canonicalize(&path).map_err(|_| StatusCode::NOT_FOUND)?;
-    if !real.starts_with(root) {
+    // 解析链接后仍须在文件夹内，且相对文件夹的每一段都不是隐藏的（public -> .private 这类链接也拒绝）；
+    // 文件夹本身的上级目录不检查，它们可以在隐藏目录里
+    let rel_real = real.strip_prefix(root).map_err(|_| StatusCode::FORBIDDEN)?;
+    if rel_real
+        .components()
+        .any(|c| !matches!(c, Component::Normal(n) if !n.to_string_lossy().starts_with('.')))
+    {
         return Err(StatusCode::FORBIDDEN);
     }
     if !real.is_file() {
@@ -365,6 +371,19 @@ mod tests {
                 roots.resolve(&format!("/{token}/{p}")).unwrap_err(),
                 StatusCode::FORBIDDEN,
                 "{p}"
+            );
+        }
+        // 链接指向文件夹内的隐藏目录：解析后的路径段也检查
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(dir.join("site/.private")).unwrap();
+            std::fs::write(dir.join("site/.private/index.html"), "x").unwrap();
+            std::os::unix::fs::symlink(dir.join("site/.private"), dir.join("site/public")).unwrap();
+            assert_eq!(
+                roots
+                    .resolve(&format!("/{token}/public/index.html"))
+                    .unwrap_err(),
+                StatusCode::FORBIDDEN
             );
         }
         // 同一文件夹复用令牌

@@ -313,6 +313,32 @@ describe("primus-guard 计划模式（只读）", () => {
       "deny",
     );
     expect(decidePlan({ toolName: "bash", input: { command: "pnpm test" } })).toBe("ask");
+    // 只读命令读受保护的文件：确认，不直接放行
+    for (const command of [
+      "cat .env",
+      "cat ./config/.env.local",
+      "git show HEAD:.env",
+      "cat .git/config",
+      "cat ~/.ssh/id_rsa",
+      "cat .en?",
+      "type C:\\Users\\a\\.ssh\\id_rsa",
+    ])
+      expect(decidePlan({ toolName: "bash", input: { command } }, undefined, "/w"), command).toBe(
+        "ask",
+      );
+    expect(
+      decidePlan({ toolName: "bash", input: { command: "cat src/env.ts" } }, undefined, "/w"),
+    ).toBe("allow");
+    expect(
+      decidePlan(
+        { toolName: "bash", input: { command: "rg foo .github .gitignore" } },
+        undefined,
+        "/w",
+      ),
+    ).toBe("allow");
+    expect(
+      decidePlan({ toolName: "bash", input: { command: "git log --oneline" } }, undefined, "/w"),
+    ).toBe("allow");
     expect(decidePlan({ toolName: "read", input: { path: "/etc/hosts" } })).toBe(undefined);
     expect(
       decidePlan(

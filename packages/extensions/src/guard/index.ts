@@ -244,6 +244,8 @@ export function decide(
 export function decidePlan(
   call: ToolCall,
   annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean },
+  cwd = process.cwd(),
+  ge: GuardEnv = defaultEnv(),
 ): Decision | undefined {
   if (EDIT_TOOLS.has(call.toolName)) return "deny";
   if (READ_TOOLS.has(call.toolName)) return undefined;
@@ -251,10 +253,42 @@ export function decidePlan(
     const command = call.input?.command;
     if (typeof command !== "string") return "ask";
     const c = classifyCommand(command, call.toolName === "powershell");
-    return c === "readonly" ? "allow" : c === "write" ? "deny" : "ask";
+    if (c === "write") return "deny";
+    if (c === "unknown") return "ask";
+    // 只读命令也可能读受保护的文件（cat .env、git show HEAD:.env、type ~\.ssh\id_rsa）：
+    // 与 read 工具一样要确认，不能因为是只读命令就直接放行
+    return commandTouchesProtected(command, cwd, ge) ? "ask" : "allow";
   }
   if (annotations?.readOnlyHint === true && annotations.openWorldHint === false) return undefined;
   return "ask";
+}
+
+/**
+ * 命令文字里是否提到受保护的路径：`.env*`、`.git`、`.ssh` 路径段（含通配写法 `.en?`、`.e*`），
+ * 以及按工作目录解析后落在受保护位置（App 数据目录、`~/.ssh`）的参数
+ */
+export function commandTouchesProtected(
+  command: string,
+  cwd: string,
+  ge: GuardEnv = defaultEnv(),
+): boolean {
+  if (/(^|[\s\\/'"=:;|&(<>])\.(env|git(?![\w-])|ssh(?![\w-]))/i.test(command)) return true;
+  // 隐藏路径段里带通配符：可能展开成 .env、.git
+  if (/(^|[\s\\/'"=])\.[^\s\\/'"]*[*?[]/.test(command)) return true;
+  const tokens = command.match(/'[^']*'|"[^"]*"|[^\s|;&<>()]+/g) ?? [];
+  return tokens.some((t) => {
+    const w = t.replace(/^(['"])(.*)\1$/, "$2").replace(/^-[^=]*=/, "");
+    if (!w || w.startsWith("-") || !/[\\/~.]/.test(w)) return false;
+    try {
+      const abs = resolveToolPath(w, cwd, ge.platform, ge.home);
+      return (
+        isProtectedPath(abs, ge.env, ge.platform, ge.home) ||
+        isProtectedPath(realPath(abs, ge.real), ge.env, ge.platform, ge.home)
+      );
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** 按模式判断一次工具调用是否需要询问（拒绝也算需要处理） */
@@ -377,7 +411,7 @@ export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = pl
       const call = event as ToolCall;
       const annotations = pi.getAllTools?.().find((t) => t.name === call.toolName)?.annotations;
       // 计划模式先判断：拒绝与放行直接生效，询问时不提供“始终允许”
-      const planDecision = gate.readOnly ? decidePlan(call, annotations) : undefined;
+      const planDecision = gate.readOnly ? decidePlan(call, annotations, ctx.cwd) : undefined;
       if (planDecision === "deny") return { block: true, reason: PLAN_DENY_REASON };
       const decision = planDecision ?? decide(state.mode, call, ctx.cwd, annotations);
       if (decision === "allow") return undefined;
@@ -399,7 +433,7 @@ export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = pl
         { signal: ctx.signal },
       );
       // 等确认期间可能开启了计划模式：此时该拒绝的调用不能因为之前弹出的确认而放行
-      if (gate.readOnly && decidePlan(call, annotations) === "deny")
+      if (gate.readOnly && decidePlan(call, annotations, ctx.cwd) === "deny")
         return { block: true, reason: PLAN_DENY_REASON };
       if (choice === CHOICES.always) {
         state.alwaysAllowed.add(key);

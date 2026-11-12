@@ -93,7 +93,7 @@ describe("ask_user 提问卡片", () => {
     render(<AskCard ask={ask} onAnswer={onAnswer} onCancel={() => {}} />);
     expect(screen.getByText("1/2")).toBeTruthy();
     expect(screen.getByText("目录层级")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "二级" }));
+    fireEvent.click(screen.getByRole("button", { name: "二级（推荐）" }));
     expect(onAnswer).not.toHaveBeenCalled();
     expect(screen.getByText("放哪里？")).toBeTruthy();
     const box = screen.getByRole("textbox", { name: "自己写想法" });

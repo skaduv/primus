@@ -48,6 +48,16 @@ describe("Tauri 窗口控制", () => {
     expect(win.setMinSize).toHaveBeenCalledTimes(1);
   });
 
+  it("相同宽度连续设置后，后续的新宽度仍会设置", async () => {
+    const c = createTauriWindowControls();
+    await c.setMinWidth(900);
+    await c.setMinWidth(900);
+    await c.setMinWidth(1200);
+    expect(win.setMinSize.mock.calls.map((x) => (x[0] as { width: number }).width)).toEqual([
+      900, 1200,
+    ]);
+  });
+
   it("设置进行中又改了目标：完成后接着设置最新目标", async () => {
     const c = createTauriWindowControls();
     let release: () => void = () => {};
@@ -105,6 +115,17 @@ describe("isLegacyWindows", () => {
     setUA({ platform: "Windows", platformVersion: "15.0.0" });
     await createTauriWindowControls().setAcrylic(true);
     expect(win.setEffects).toHaveBeenCalledTimes(1);
+    setUA(undefined);
+  });
+
+  it("重叠的开关请求：只应用最后一次", async () => {
+    setUA({ platform: "Windows", platformVersion: "15.0.0" });
+    win.setEffects.mockClear();
+    win.clearEffects.mockClear();
+    const c = createTauriWindowControls();
+    await Promise.all([c.setAcrylic(true), c.setAcrylic(false)]);
+    expect(win.setEffects).not.toHaveBeenCalled();
+    expect(win.clearEffects).toHaveBeenCalledTimes(1);
     setUA(undefined);
   });
 });

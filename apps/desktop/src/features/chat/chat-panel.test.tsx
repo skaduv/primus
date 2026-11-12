@@ -822,7 +822,7 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.keyDown(input, { key: "Enter" });
     const card = await screen.findByRole("alertdialog", { name: t.ask.label });
     expect(card.textContent).toContain("目录要包含哪几级标题？");
-    fireEvent.click(screen.getByRole("button", { name: "只到二级" }));
+    fireEvent.click(screen.getByRole("button", { name: "只到二级（推荐）" }));
     const box = await screen.findByRole("textbox", { name: t.ask.otherLabel });
     fireEvent.change(box, { target: { value: "放在徽章下面" } });
     fireEvent.submit(box);

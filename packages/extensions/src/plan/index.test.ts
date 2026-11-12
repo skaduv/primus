@@ -328,6 +328,26 @@ describe("primus-plan", () => {
     expect(ctx.ui.notify).toHaveBeenLastCalledWith("没有等待回答的问题", "warning");
   });
 
+  it("ask_user：题目 id 重复时报错", async () => {
+    const { tools, ctx } = setup();
+    const ask = tools[ASK_USER_TOOL] as Tool;
+    const opts = [{ label: "A" }, { label: "B" }];
+    const r = await ask.execute(
+      "t",
+      {
+        questions: [
+          { id: "x", question: "一？", options: opts },
+          { id: "x", question: "二？", options: opts },
+        ],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(r.isError).toBe(true);
+    expect(r.content[0]?.text).toContain("重复");
+  });
+
   it("ask_user：规划中提问时关闭计划模式，提问作废、卡片收起", async () => {
     const { tools, ctx, cmd } = setup();
     const ask = tools[ASK_USER_TOOL] as Tool;
