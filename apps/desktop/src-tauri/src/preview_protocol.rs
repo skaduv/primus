@@ -125,8 +125,9 @@ impl PreviewRoots {
         self.roots.lock().ok()?.get(token).cloned()
     }
 
-    /// 按请求路径（`/<令牌>/<相对路径>`，已百分号编码）找到文件夹内的文件
-    pub(crate) fn resolve(&self, uri_path: &str) -> Result<PathBuf, StatusCode> {
+    /// 按请求路径（`/<令牌>/<相对路径>`，已百分号编码）找到文件夹内的文件（只给测试用，服务请求走 [`Self::read`]）
+    #[cfg(test)]
+    fn resolve(&self, uri_path: &str) -> Result<PathBuf, StatusCode> {
         self.locate(uri_path).map(|(_, path)| path)
     }
 
