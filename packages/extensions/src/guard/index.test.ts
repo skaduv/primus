@@ -328,6 +328,12 @@ describe("primus-guard 计划模式（只读）", () => {
       "cat ~/*/id_rsa",
       "cat $PRIMUS_CODING_AGENT_DIR/config.json",
       "cat $HOME/x",
+      // 转义与引号拼接
+      "cat .\\env",
+      "cat .e''nv",
+      'cat .e"n"v',
+      "cat $'\\x2eenv'",
+      "cat .\\git/config",
       // 递归读取、不跳过隐藏或被忽略的文件
       "rg -uu secret",
       "rg --hidden --no-ignore key",
@@ -350,6 +356,24 @@ describe("primus-guard 计划模式（只读）", () => {
     ).toBe("allow");
     expect(
       decidePlan({ toolName: "bash", input: { command: "git log --oneline" } }, undefined, "/w"),
+    ).toBe("allow");
+    const ps = (command: string) =>
+      decidePlan({ toolName: "powershell", input: { command } }, undefined, "/w");
+    for (const command of [
+      "Get-ChildItem -Recurse | Select-String key",
+      "Get-Content *",
+      "gc '.\\*'",
+      "Get-Content .`env",
+    ])
+      expect(ps(command), command).toBe("ask");
+    for (const command of [
+      "Select-String -Pattern 'a.*b' -Path x.ts",
+      "ls | where { $_.Length -gt 1000 }",
+      "Get-Content src\\a.ts",
+    ])
+      expect(ps(command), command).toBe("allow");
+    expect(
+      decidePlan({ toolName: "bash", input: { command: "rg -i key src" } }, undefined, "/w"),
     ).toBe("allow");
     expect(decidePlan({ toolName: "read", input: { path: "/etc/hosts" } })).toBe(undefined);
     expect(

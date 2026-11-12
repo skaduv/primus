@@ -257,7 +257,7 @@ export function decidePlan(
     if (c === "unknown") return "ask";
     // 只读命令也可能读受保护的文件（cat .env、git show HEAD:.env、type ~\.ssh\id_rsa）：
     // 与 read 工具一样要确认，不能因为是只读命令就直接放行
-    return commandTouchesProtected(command, cwd, ge) ||
+    return commandTouchesProtected(command, cwd, ge, call.toolName === "powershell") ||
       searchesHidden(command, call.toolName === "powershell")
       ? "ask"
       : "allow";
@@ -275,7 +275,17 @@ export function commandTouchesProtected(
   command: string,
   cwd: string,
   ge: GuardEnv = defaultEnv(),
+  powershell = false,
 ): boolean {
+  // bash 的 ANSI-C 引号（$'\x2eenv'）还原不了
+  if (!powershell && command.includes("$'")) return true;
+  // 转义与引号拼接（bash 的 .\env、.e''nv、.e"n"v，PowerShell 的 .`env）展开后才是真正的路径：
+  // 原文与去掉转义符和引号后的文字都检查
+  const plain = command.replace(powershell ? /`/g : /\\(?=[^\s])/g, "").replace(/['"]/g, "");
+  return [command, plain].some((text) => touchesProtected(text, cwd, ge));
+}
+
+function touchesProtected(command: string, cwd: string, ge: GuardEnv): boolean {
   if (/(^|[\s\\/'"=:;|&(<>])\.(env|git(?![\w-])|ssh(?![\w-]))/i.test(command)) return true;
   // 隐藏路径段里带通配符：可能展开成 .env、.git
   if (/(^|[\s\\/'"=])\.[^\s\\/'"]*[*?[]/.test(command)) return true;
