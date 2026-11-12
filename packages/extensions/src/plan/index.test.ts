@@ -247,6 +247,43 @@ describe("primus-plan", () => {
     expect(lastWidget(TODO_WIDGET).items).toHaveLength(2);
   });
 
+  it("执行计划：连续几个回合不更新待办就插隐藏提醒；准备结束时还没更新过就提醒并再请求一次", async () => {
+    const { tools, ctx, cmd, handlers } = setup();
+    await cmd("on");
+    const submit = (tools[PLAN_SUBMIT_TOOL] as Tool).execute("t", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p1" })}`);
+    await submit;
+    handlers.agent_start?.({}, ctx);
+    const turn = (toolName?: string) =>
+      handlers.turn_end?.({ toolResults: toolName ? [{ toolName }] : [] }, ctx) as
+        | { entries: { type: string; customType: string; content: string; display: boolean }[] }
+        | undefined;
+    expect(turn("bash")).toBeUndefined();
+    expect(turn("edit")).toBeUndefined();
+    const nudge = turn("read");
+    expect(nudge?.entries[0]).toMatchObject({
+      type: "custom_message",
+      customType: CONTEXT_TYPE,
+      display: false,
+    });
+    expect(nudge?.entries[0]?.content).toContain("[in_progress] 1. 协议类型");
+    // 没有工具调用的回合（最后的回答）不计数
+    expect(turn()).toBeUndefined();
+    const settle = (outcome = "completed") =>
+      handlers.agent_before_settle?.({ outcome, context: { canContinue: true } }, ctx) as
+        | { entries: unknown[]; continue: boolean }
+        | undefined;
+    expect(settle("aborted")).toBeUndefined();
+    expect(settle()?.continue).toBe(true);
+    // 每轮只提醒一次
+    expect(settle()).toBeUndefined();
+    // 这一轮调用过 todo：结束前不再提醒
+    handlers.agent_start?.({}, ctx);
+    expect(turn(TODO_TOOL)).toBeUndefined();
+    expect(settle()).toBeUndefined();
+  });
+
   it("ask_user：推 primus:ask 等回答，选项或自己写的想法都能回；关闭提问时停下", async () => {
     const { tools, ctx, cmd, lastWidget } = setup();
     const ask = tools[ASK_USER_TOOL] as Tool;

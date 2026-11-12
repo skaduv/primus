@@ -54,7 +54,7 @@ export const TEXT = {
     invalid: (why: string) => `计划格式不正确：${why}。请修正后重新提交完整计划。`,
     approved: (edited: boolean, markdown: string) =>
       `用户已批准计划${edited ? "（用户修改过，以下面的版本为准）" : ""}，计划模式已结束，现在可以修改文件、运行命令了。` +
-      `先用 ${TODO_TOOL} 更新进度（已按计划步骤建好待办），然后按步骤执行。\n\n## 已批准的计划\n\n${markdown}`,
+      `已按计划步骤建好待办（第 1 步进行中）。按步骤执行：每做完一步立刻调用 ${TODO_TOOL}，把它标 completed、下一步标 in_progress（一次调用传完整清单）；用户靠它看进度，不要攒到最后才更新。\n\n## 已批准的计划\n\n${markdown}`,
     revise: (feedback: string) =>
       `用户暂不执行，要求修改计划。仍在计划模式（只读）。用户的意见：\n${feedback}\n\n按意见修改后，用 ${PLAN_SUBMIT_TOOL} 重新提交完整计划；有疑问先用 ${ASK_USER_TOOL} 澄清。`,
     cancelled: "用户取消了这次审批，仍在计划模式。停下来，等用户下一步指示。",
@@ -78,6 +78,12 @@ export const TEXT = {
     tooManyInProgress: "同一时间最多只能有一项 in_progress，请修正后重新提交完整清单。",
     updated: (done: number, total: number) => `待办已更新：${done}/${total} 已完成`,
     allDone: "待办已全部完成。",
+    reminder: (items: readonly { id: string; text: string; status: string }[], final: boolean) =>
+      `<primus-todo-reminder>${
+        final
+          ? `你准备结束这一轮，但待办还没有更新。先调用 ${TODO_TOOL}：已经做完的步骤标 completed，不再需要的标 skipped，还没做的保持 pending；然后再给出最后的回复。`
+          : `你已经有一阵子没有更新待办了，用户在界面上看到的进度一直停在原地。现在调用 ${TODO_TOOL} 更新：做完的标 completed，正在做的标 in_progress（只能一项）。不要向用户提起这条提醒。`
+      }\n当前待办：\n${items.map((i) => `- [${i.status}] ${i.id}. ${i.text}`).join("\n")}</primus-todo-reminder>`,
   },
   askUser: {
     label: "询问用户",

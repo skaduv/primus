@@ -48,6 +48,8 @@ import {
 /** 两次提醒之间的用户回合数；每这么多次提醒里第一次是全文（与 Claude Code 的节奏一致） */
 export const TURNS_BETWEEN_REMINDERS = 5;
 export const FULL_REMINDER_EVERY = 5;
+/** 执行计划时，连续这么多个模型回合没有调用 todo 就提醒一次更新进度 */
+export const TURNS_BETWEEN_TODO_REMINDERS = 3;
 export const ENTRY_TYPE = "primus-plan";
 export const CONTEXT_TYPE = "primus-plan-context";
 /** 计划渲染成 Markdown 后的上限（字符） */
@@ -331,6 +333,19 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   /** 等待回答的 ask_user：id → 兑现函数（undefined 表示用户关闭了提问） */
   const pendingAsk = new Map<string, (a: Record<string, AskAnswer> | undefined) => void>();
   let askCount = 0;
+  /** 执行计划时：距上次调用 todo（或上次提醒）的模型回合数；这一轮已调用过 todo；这一轮结束前已提醒过 */
+  let turnsWithoutTodo = 0;
+  let todoThisRun = false;
+  let settleNudged = false;
+  const todoOpen = () =>
+    state.phase === "executing" &&
+    state.todos.some((i) => i.status === "pending" || i.status === "in_progress");
+  const todoReminder = (final: boolean) => ({
+    type: "custom_message" as const,
+    customType: CONTEXT_TYPE,
+    content: TEXT.todo.reminder(state.todos, final),
+    display: false,
+  });
   let api: PlanApi | undefined;
   let lastCtx: PlanContext | undefined;
 
@@ -799,6 +814,34 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       restore(ctx);
       syncGate();
       publish(ctx);
+    });
+    pi.on("agent_start", () => {
+      turnsWithoutTodo = 0;
+      todoThisRun = false;
+      settleNudged = false;
+    });
+    // 执行计划时模型常常埋头做事、忘了更新待办（唇条一直停在第一步）：
+    // 连续几个回合没调用 todo 就在下一次请求前插一条隐藏提醒（与 Claude Code 的待办提醒同理）
+    pi.on("turn_end", (event: never) => {
+      const e = event as { toolResults?: { toolName?: string }[] };
+      if ((e.toolResults ?? []).some((r) => r.toolName === TODO_TOOL)) {
+        turnsWithoutTodo = 0;
+        todoThisRun = true;
+        return undefined;
+      }
+      if (!todoOpen() || !(e.toolResults ?? []).length) return undefined;
+      turnsWithoutTodo++;
+      if (turnsWithoutTodo < TURNS_BETWEEN_TODO_REMINDERS) return undefined;
+      turnsWithoutTodo = 0;
+      return { entries: [todoReminder(false)] };
+    });
+    // 准备结束这一轮、待办还没收尾且这一轮没更新过：提醒一次并多给一次请求，让模型把做完的步骤标完成
+    pi.on("agent_before_settle", (event: never) => {
+      const e = event as { outcome?: string; context?: { canContinue?: boolean } };
+      if (settleNudged || todoThisRun || !todoOpen()) return undefined;
+      if (e.outcome !== "completed" || e.context?.canContinue === false) return undefined;
+      settleNudged = true;
+      return { entries: [todoReminder(true)], continue: true };
     });
     pi.on("session_compact", () => {
       if (readOnlyPhase(state.phase)) state.forceFull = true;
