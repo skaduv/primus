@@ -1,6 +1,6 @@
 "use client";
 
-import type { AgentMessage } from "@primus/protocol";
+import { type AgentMessage, PLAN_SUBMIT_TOOL, type PlanSubmitDetails } from "@primus/protocol";
 import {
   memo,
   type ReactNode,
@@ -19,6 +19,7 @@ import { CopyButton, revealOnTurnHover } from "./copy-button";
 import { type ErrorActions, ErrorCard, RetryNotice } from "./error-card";
 import { fileIconForName } from "./file-ref";
 import { MarkdownText } from "./message-content";
+import { PlanCard } from "./plan-card";
 
 // 一轮回复（一条用户消息之后的全部助手消息与工具结果）按“工作过程 + 总结”展示：
 // 业界一般叫 Chain of Thought / 推理与工具调用分组（Vercel AI Elements 的 ChainOfThought、
@@ -76,10 +77,12 @@ interface TurnLayout {
   steps: Step[];
   /** 总结：最后一条不带工具调用的回复的正文 */
   answer: { key: string; text: string; live: boolean }[];
+  /** 计划模式提交的计划（plan_submit）：不放进工作过程，单独显示成计划卡片 */
+  plans: ToolCallBlock[];
   /** 最后一条助手消息（停止、出错的标记跟在总结后面） */
   last?: Extract<AgentMessage, { role: "assistant" }>;
   end?: number;
-  results: Map<string, { isError: boolean; content: unknown }>;
+  results: Map<string, { isError: boolean; content: unknown; details?: unknown }>;
 }
 
 const hasText = (b: TimelineContent | undefined) => b?.type === "text" && b.text.trim() !== "";
@@ -95,10 +98,14 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
   const assistants = messages.filter(
     (m): m is Extract<AgentMessage, { role: "assistant" }> => m.role === "assistant",
   );
-  const results = new Map<string, { isError: boolean; content: unknown }>();
+  const results = new Map<string, { isError: boolean; content: unknown; details?: unknown }>();
   for (const m of messages)
     if (m.role === "toolResult")
-      results.set(m.toolCallId, { isError: m.isError, content: m.content });
+      results.set(m.toolCallId, {
+        isError: m.isError,
+        content: m.content,
+        details: (m as { details?: unknown }).details,
+      });
 
   const last = assistants.at(-1);
   const lastContent = ((last?.content as TimelineContent[]) ?? []).filter(Boolean);
@@ -108,6 +115,7 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
     lastContent.some(hasText);
 
   const steps: Step[] = [];
+  const plans: ToolCallBlock[] = [];
   const answer: TurnLayout["answer"] = [];
   assistants.forEach((m, mi) => {
     const content = ((m.content as TimelineContent[]) ?? []).filter(Boolean);
@@ -124,6 +132,10 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
         if (!live || !block.thinking.trim()) return;
         steps.push({ kind: "thought", key, text: block.thinking });
       } else if (block.type === "toolCall") {
+        if (block.name === PLAN_SUBMIT_TOOL) {
+          plans.push(block);
+          return;
+        }
         const prev = steps.at(-1);
         if (prev?.kind === "tools") prev.calls.push(block);
         else steps.push({ kind: "tools", key, calls: [block] });
@@ -135,6 +147,7 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
     .filter((n): n is number => typeof n === "number" && n > 0);
   return {
     steps,
+    plans,
     answer,
     last,
     end: stamps.length ? Math.max(...stamps) : undefined,
@@ -479,7 +492,7 @@ export const AgentTurn = memo(function AgentTurn({
   errorActions,
   providerNames,
 }: AgentTurnProps) {
-  const { steps, answer, last, end, results } = layoutTurn(messages, streaming);
+  const { steps, plans, answer, last, end, results } = layoutTurn(messages, streaming);
   // 展开状态：用户点过就听用户的；否则运行中展开、结束后自动收起
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   useEffect(() => {
@@ -546,6 +559,20 @@ export const AgentTurn = memo(function AgentTurn({
           </Collapse>
         </div>
       )}
+      {plans.map((call) => {
+        const result = results.get(call.id);
+        const details = (result?.details ?? toolRuns[call.id]?.result?.details) as
+          | PlanSubmitDetails
+          | undefined;
+        return (
+          <PlanCard
+            key={call.id}
+            args={call.arguments}
+            details={details}
+            running={!result && running}
+          />
+        );
+      })}
       {answer.map((a) => (
         <MarkdownText
           key={a.key}

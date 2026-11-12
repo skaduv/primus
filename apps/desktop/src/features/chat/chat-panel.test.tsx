@@ -53,6 +53,17 @@ const isUserPrompt = (r: { type: string; message?: unknown }) =>
 
 const t = strings.chat;
 
+/** 打开“+”菜单 */
+async function openAddMenu() {
+  fireEvent.keyDown(await screen.findByRole("button", { name: t.add.title }), { key: "Enter" });
+}
+
+/** 从“+”菜单选“文件”（mock 对话框返回固定的几个文件） */
+async function pickFilesFromMenu() {
+  await openAddMenu();
+  fireEvent.click(await screen.findByRole("menuitem", { name: t.add.files }));
+}
+
 describe("对话区（mock 事件流）", () => {
   beforeEach(() => setPlatformForTesting(createMockPlatform({ intervalMs: 1, batchSize: 50 })));
   afterEach(() => {
@@ -538,7 +549,7 @@ describe("对话区（mock 事件流）", () => {
       return coreSend(key, record);
     });
     render(<ChatPanel />);
-    fireEvent.click(await screen.findByRole("button", { name: t.attach }));
+    await pickFilesFromMenu();
     expect(await screen.findByText("README.md")).toBeTruthy();
     expect(screen.getByText("main.ts")).toBeTruthy();
     // 图片还在排队/读取：发送按钮不可用
@@ -586,7 +597,7 @@ describe("对话区（mock 事件流）", () => {
     });
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mock 快速模型" }));
     await screen.findByRole("button", { name: /模型：Mock 快速模型/ });
-    fireEvent.click(screen.getByRole("button", { name: t.attach }));
+    await pickFilesFromMenu();
     expect(await screen.findByText(t.attachments.byPath)).toBeTruthy();
     const send = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
     expect(send.disabled).toBe(false);
@@ -620,6 +631,37 @@ describe("对话区（mock 事件流）", () => {
     });
     await waitFor(() => expect(screen.queryByText("main")).toBeNull());
     expect(screen.getByRole("button", { name: "新项目" })).toBeTruthy();
+  });
+
+  it("对话前可以切换自动压缩：开始对话时随当前状态发给 Core", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const records: { type: string; enabled?: boolean; message?: string }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      records.push(record as { type: string });
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    fireEvent.click(await screen.findByRole("button", { name: /^上下文 / }));
+    const toggle = (await screen.findByRole("switch", {
+      name: `${t.contextCard.autoCompact}（${t.contextCard.autoCompactScope}）`,
+    })) as HTMLInputElement;
+    expect(toggle.disabled).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+    expect(records.filter((r) => r.type === "set_auto_compaction")).toHaveLength(0);
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(records.find((r) => r.type === "set_auto_compaction")?.enabled).toBe(false),
+    );
+    // 会话开始时的状态先于这一条消息发出
+    expect(records.findIndex((r) => r.type === "set_auto_compaction")).toBeLessThan(
+      records.findIndex((r) => r.type === "prompt" && r.message === "你好"),
+    );
   });
 
   it("上下文按钮在模型按钮旁，点开显示上下文卡片与本会话用量，可立即压缩", async () => {
@@ -736,9 +778,61 @@ describe("对话区（mock 事件流）", () => {
     const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting({ ...base, speechAvailable: async () => false });
     render(<ChatPanel />);
-    await screen.findByRole("button", { name: t.attach });
+    await screen.findByRole("button", { name: t.add.title });
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByRole("button", { name: t.voice.start })).toBeNull();
+  });
+
+  it("“+”菜单里开关计划模式：勾选后底栏出现计划标记，点标记关闭", async () => {
+    setPlatformForTesting(createMockPlatform({ intervalMs: 1, batchSize: 50 }));
+    render(<ChatPanel />);
+    await openAddMenu();
+    const item = await screen.findByRole("menuitemcheckbox", { name: new RegExp(t.plan.toggle) });
+    expect(item.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(item);
+    const badge = await screen.findByRole("button", { name: t.plan.turnOff });
+    await openAddMenu();
+    expect(
+      (
+        await screen.findByRole("menuitemcheckbox", { name: new RegExp(t.plan.toggle) })
+      ).getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.click(badge);
+    await waitFor(() => expect(screen.queryByRole("button", { name: t.plan.turnOff })).toBeNull());
+  });
+
+  it("计划模式：先回答 ask_user 的提问卡片，再出现计划审批", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const prompts: string[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      const r = record as { type: string; message?: unknown };
+      if (r.type === "prompt") prompts.push(String(r.message));
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    await openAddMenu();
+    fireEvent.click(
+      await screen.findByRole("menuitemcheckbox", { name: new RegExp(t.plan.toggle) }),
+    );
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "给 README 加目录" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    const card = await screen.findByRole("alertdialog", { name: t.ask.label });
+    expect(card.textContent).toContain("目录要包含哪几级标题？");
+    fireEvent.click(screen.getByRole("button", { name: "只到二级（推荐）" }));
+    const box = await screen.findByRole("textbox", { name: t.ask.otherLabel });
+    fireEvent.change(box, { target: { value: "放在徽章下面" } });
+    fireEvent.submit(box);
+    expect(await screen.findByRole("alertdialog", { name: t.plan.approval.label })).toBeTruthy();
+    expect(screen.queryByRole("alertdialog", { name: t.ask.label })).toBeNull();
+    const answer = prompts.find((m) => m.startsWith("/primus-plan answer "));
+    expect(JSON.parse(answer?.slice("/primus-plan answer ".length) ?? "{}")).toEqual({
+      id: "a1",
+      answers: { toc_depth: { selected: "只到二级（推荐）" }, position: { other: "放在徽章下面" } },
+    });
   });
 
   it("三档权限都可选，选择后发给 Core（/primus-mode），打开会话时先同步当前档位", async () => {

@@ -2,9 +2,10 @@
 
 // 右栏文件预览（只读），显示文件“打开后的样子”：网页渲染成页面、Word 显示为文档、PowerPoint 显示为幻灯片、
 // Excel 与 CSV 显示为带行列号的表格、PDF 用 WebView2 的 PDF 查看器、Markdown 渲染、JSON 格式化、图片显示
-// （SVG 也按图片显示）、音频视频可播放、文件夹列出文件（dir-view）；网页 / Markdown / JSON / SVG 可切换到源码。
+// （SVG 与网页一样放进可运行脚本的沙箱 iframe；没有预览协议时按图片显示）、音频视频可播放、文件夹列出文件（dir-view）；网页 / Markdown / JSON / SVG 可切换到源码。
 // 其余文本按等宽原样显示；其他二进制文件（含旧版 .doc / .ppt / .xls、压缩包、可执行文件）只给“用默认程序打开”。
-// 文本、网页与 CSV 走薄壳 preview_file（最多 1 MiB；文件夹返回 directory，改走 preview_dir），
+// 网页与 SVG 经 preview_serve 登记后由 primus-preview 协议提供（脚本、同文件夹的相对资源能加载，见 rendered-views），
+// 源码仍由 preview_file 读取；文本与 CSV 走薄壳 preview_file（最多 1 MiB；文件夹返回 directory，改走 preview_dir），
 // PNG / JPEG / WebP / BMP 走 attachment_image（内存中缩小，不写文件），Word / PowerPoint / Excel / PDF 与
 // GIF / ICO / AVIF 走 preview_file_bytes（整份字节，最多 30 MiB），音频视频同样走它（最多 64 MiB）。
 import { useEffect, useState } from "react";
@@ -49,7 +50,8 @@ type Loaded =
       format: "plain" | "markdown" | "json";
       source: string | null;
     }
-  | { state: "html"; html: string; truncated: boolean }
+  /** url：primus-preview 协议下的地址（可运行脚本）；没有时用 srcdoc（不运行脚本）。svg：是 SVG 文件 */
+  | { state: "html"; html: string; truncated: boolean; url: string | null; svg: boolean }
   | { state: "table"; sheet: Sheet; truncated: boolean }
   /** source：SVG 的源码（可切换）；其他图片为 null */
   | { state: "image"; src: string; source: string | null }
@@ -113,7 +115,20 @@ function useLoaded(path: string, seq: number): Loaded {
         if (r.kind === "directory")
           return { state: "directory", listing: await p.previewDir(path) };
         if (r.kind !== "text") return { state: "binary" };
-        if (HTML_EXT.test(path)) return { state: "html", html: r.text, truncated: r.truncated };
+        // 每次读取换一个查询串：文件改动后 iframe 重新加载（协议响应不缓存）
+        const served = () =>
+          p
+            .previewServe(path)
+            .then((u) => `${u}?v=${Date.now().toString(36)}`)
+            .catch(() => null);
+        if (HTML_EXT.test(path))
+          return {
+            state: "html",
+            html: r.text,
+            truncated: r.truncated,
+            url: await served(),
+            svg: false,
+          };
         if (CSV_EXT.test(path))
           return {
             state: "table",
@@ -123,7 +138,12 @@ function useLoaded(path: string, seq: number): Loaded {
             }),
             truncated: r.truncated,
           };
-        // SVG 按图片显示（<img> 里不运行脚本、不加载外部资源）；被截断的只能按源码显示
+        // SVG 优先放进可运行脚本的沙箱 iframe（JS 动画能动）；没有预览协议时按图片显示
+        // （<img> 里不运行脚本、不加载外部资源），被截断的只能按源码显示
+        if (SVG_EXT.test(path)) {
+          const url = await served();
+          if (url) return { state: "html", html: r.text, truncated: false, url, svg: true };
+        }
         if (SVG_EXT.test(path) && !r.truncated)
           return {
             state: "image",
@@ -255,9 +275,11 @@ function PreviewBody({ path, seq, onClose }: { path: string; seq: number; onClos
         {!viewingSource && loaded.state === "html" && (
           <>
             <div className="min-h-0 flex-1">
-              <HtmlView html={loaded.html} />
+              <HtmlView html={loaded.html} url={loaded.url} svg={loaded.svg} />
             </div>
-            {loaded.truncated && <p className="px-4 py-1.5 text-2xs text-muted">{t.truncated}</p>}
+            {loaded.truncated && !loaded.url && (
+              <p className="px-4 py-1.5 text-2xs text-muted">{t.truncated}</p>
+            )}
           </>
         )}
         {loaded.state === "document" && (

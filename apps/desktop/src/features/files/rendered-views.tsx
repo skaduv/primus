@@ -1,8 +1,9 @@
 "use client";
 
 // 右栏“打开后的样子”：网页、Word、PowerPoint、PDF 的渲染视图。
-// - 网页：沙箱 iframe（srcdoc，不给任何权限：不运行脚本、不弹窗、不提交表单、与 App 不同源）。srcdoc 继承 App 的 CSP，
-//   外链脚本、远程图片与相对路径资源不会加载（样式与内联图片正常）。
+// - 网页与 SVG：iframe 打开 primus-preview 协议下的地址（Rust preview_protocol 提供所在文件夹的文件，响应自带宽松 CSP），
+//   sandbox 只给 allow-scripts：脚本、动画、同文件夹的相对资源正常（协议的 CSP 不联网，外部资源加载不了）；不同源（不透明源）、不弹窗、不提交表单、
+//   不能导航顶层窗口，调不到 App 的 IPC。没有该协议时（浏览器预览）退回 srcdoc + 空 sandbox，此时继承 App 的 CSP、不运行脚本。
 // - Word：docx-preview；PowerPoint：@aiden0z/pptx-renderer。两者体积大，按需动态加载，不进启动包。
 // - Word / PowerPoint 里的外部链接（文件来自 Agent，不可信）：不在 WebView 里导航，经确认框用系统浏览器打开；
 //   文档内书签（`#…`）与幻灯片跳转照常。
@@ -36,8 +37,28 @@ function RenderStatus({ status }: { status: RenderState }) {
   return null;
 }
 
-/** 网页：沙箱 iframe 渲染 HTML 源码 */
-export function HtmlView({ html }: { html: string }) {
+/** 网页（与 SVG）：有预览地址时在只许运行脚本的沙箱里打开；否则用 srcdoc 渲染源码（不运行脚本） */
+export function HtmlView({
+  html,
+  url = null,
+  svg = false,
+}: {
+  html: string;
+  url?: string | null;
+  svg?: boolean;
+}) {
+  if (url)
+    return (
+      // biome-ignore lint/a11y/useIframeTitle: 原生 title 会成为悬停提示（check:no-title 禁止），可访问名称用 aria-label
+      <iframe
+        aria-label={svg ? t.svgPage : t.webPage}
+        // 只许运行脚本：不同源（不透明源）、无表单、无弹窗、不能导航顶层窗口
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
+        src={url}
+        className="size-full border-0 bg-page scheme-light"
+      />
+    );
   return (
     // biome-ignore lint/a11y/useIframeTitle: 原生 title 会成为悬停提示（check:no-title 禁止），可访问名称用 aria-label
     <iframe

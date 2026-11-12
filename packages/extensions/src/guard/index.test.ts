@@ -2,11 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createPlanGate } from "../plan/gate.ts";
 import {
   approvalKey,
   CHOICES,
+  commandTouchesProtected,
   createGuard,
   decide,
+  decidePlan,
   describeCall,
   insideWorkspace,
   isAlwaysAskCommand,
@@ -14,6 +17,8 @@ import {
   MODE_COMMAND,
   MODE_WIDGET,
   needsApproval,
+  PLAN_ASK_PREFIX,
+  PLAN_DENY_REASON,
   resolveToolPath,
 } from "./index.ts";
 
@@ -143,6 +148,20 @@ describe("primus-guard 权限判断", () => {
     expect(isProtectedPath(`${chat}/.git/config`, env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath(`${chat}/.env/secret.txt`, env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/work/proj/.env.d/a/b.txt", env, "linux", "/home/u")).toBe(true);
+    // 引号与相邻文字拼成一个词：安装目录带空格
+    const spaced = {
+      platform: "linux" as const,
+      home: "/home/u",
+      env: { PRIMUS_CODING_AGENT_DIR: "/opt/Primus Install/data/users/S-1/core" },
+    };
+    for (const command of [
+      'cat "/opt/Primus Install"/data/users/S-1/core/config.json',
+      "cat /opt/Primus\\ Install/data/x.json",
+      "cat '/opt/Primus Install/data/x.json'",
+    ])
+      expect(commandTouchesProtected(command, "/w", spaced), command).toBe(true);
+    expect(commandTouchesProtected('cat "/opt/Primus Install"/README', "/w", spaced)).toBe(false);
+    expect(commandTouchesProtected('cat "unclosed', "/w", spaced)).toBe(true);
     expect(
       decide("ask", { toolName: "read", input: { path: ".env/secret.txt" } }, chat, undefined, ge),
     ).toBe("ask");
@@ -297,5 +316,182 @@ describe("primus-guard 扩展", () => {
       await handlers.tool_call?.({ toolName: "write", input: { path: ".env" } }, c),
     ).toMatchObject({ block: true });
     expect(c.ui.select).not.toHaveBeenCalled();
+  });
+});
+
+describe("primus-guard 计划模式（只读）", () => {
+  it("只读 git 命令：仓库或用户配置里配了外部程序就确认", () => {
+    const files: Record<string, string> = {
+      "/r/.git/HEAD": "ref: refs/heads/main",
+      "/r/.git/config": '[diff "x"]\n\ttextconv = sh -c evil\n',
+      "/s/.git/HEAD": "ref: refs/heads/main",
+      "/s/.git/config": "[core]\n\tfsmonitor = false\n\tbare = false\n",
+      "/t/.git/HEAD": "ref: refs/heads/main",
+      "/t/.git/config": '[include]\n\tpath = ../x\n[includeIf "gitdir:~/w/"]\n\tpath = ~/w.inc\n',
+      "/t/x": "[user]\n\tname = a\n",
+      "/home/u/w.inc": '[filter "lfs"]\n\tclean = evil %f\n',
+      "/w/.git": "gitdir: /r/.git\n",
+    };
+    const ge = {
+      platform: "linux" as const,
+      home: "/home/u",
+      env: {},
+      readText: (p: string) => files[p],
+    };
+    const git = (command: string, cwd: string) =>
+      decidePlan({ toolName: "bash", input: { command } }, undefined, cwd, ge);
+    expect(git("git log -p", "/r/src")).toBe("ask");
+    expect(git("git diff", "/w")).toBe("ask");
+    expect(git("git -C /r status", "/s")).toBe("ask");
+    expect(git("git status", "/t")).toBe("ask");
+    expect(git("git --git-dir=/x/.git log", "/s")).toBe("ask");
+    expect(git("git log --oneline", "/s")).toBe("allow");
+    expect(git("ls", "/r")).toBe("allow");
+    files["/home/u/.gitconfig"] = "[diff]\n\texternal = evil\n";
+    expect(git("git log --oneline", "/s")).toBe("ask");
+  });
+
+  it("修改文件拒绝；只读命令放行；判断不了的询问；读取交给常规规则", () => {
+    expect(decidePlan({ toolName: "write", input: { path: "a" } })).toBe("deny");
+    expect(decidePlan({ toolName: "edit", input: { path: "a" } })).toBe("deny");
+    expect(decidePlan({ toolName: "bash", input: { command: "git status" } })).toBe("allow");
+    expect(decidePlan({ toolName: "powershell", input: { command: "Remove-Item a" } })).toBe(
+      "deny",
+    );
+    expect(decidePlan({ toolName: "bash", input: { command: "pnpm test" } })).toBe("ask");
+    // 只读命令读受保护的文件：确认，不直接放行
+    for (const command of [
+      "cat .env",
+      "cat ./config/.env.local",
+      "git show HEAD:.env",
+      "cat .git/config",
+      "cat ~/.ssh/id_rsa",
+      "cat .en?",
+      "type C:\\Users\\a\\.ssh\\id_rsa",
+      // 展开范围限定不了：工作区外的通配路径、变量
+      "cat /install/d*/users/SID/core/config.json",
+      "cat ../*/config.json",
+      "cat ~/*/id_rsa",
+      "cat $PRIMUS_CODING_AGENT_DIR/config.json",
+      "cat $HOME/x",
+      // 转义与引号拼接
+      "cat .\\env",
+      "cat .e''nv",
+      'cat .e"n"v',
+      "cat $'\\x2eenv'",
+      "cat .\\git/config",
+      "cat .e'nv",
+      // 转义、引号拼出的 rg 参数
+      "rg -\\u key",
+      "rg '--hidden' key",
+      'rg "-"u key',
+      'cat ".en\\\nv"',
+      // 递归读取、不跳过隐藏或被忽略的文件
+      "rg -uu secret",
+      "rg --hidden --no-ignore key",
+      "grep -rn key .",
+      "diff -ru a b",
+      "git grep --untracked key",
+    ])
+      expect(decidePlan({ toolName: "bash", input: { command } }, undefined, "/w"), command).toBe(
+        "ask",
+      );
+    expect(
+      decidePlan({ toolName: "bash", input: { command: "cat src/env.ts" } }, undefined, "/w"),
+    ).toBe("allow");
+    expect(
+      decidePlan(
+        { toolName: "bash", input: { command: "rg foo .github .gitignore" } },
+        undefined,
+        "/w",
+      ),
+    ).toBe("allow");
+    expect(
+      decidePlan({ toolName: "bash", input: { command: "git log --oneline" } }, undefined, "/w"),
+    ).toBe("allow");
+    const ps = (command: string) =>
+      decidePlan({ toolName: "powershell", input: { command } }, undefined, "/w");
+    for (const command of [
+      "Get-ChildItem -Recurse | Select-String key",
+      "Get-Content *",
+      "gc '.\\*'",
+      "Get-Content .`env",
+    ])
+      expect(ps(command), command).toBe("ask");
+    for (const command of [
+      "Select-String -Pattern 'a.*b' -Path x.ts",
+      "ls | where { $_.Length -gt 1000 }",
+      "Get-Content src\\a.ts",
+    ])
+      expect(ps(command), command).toBe("allow");
+    expect(
+      decidePlan({ toolName: "bash", input: { command: "rg -i key src" } }, undefined, "/w"),
+    ).toBe("allow");
+    expect(decidePlan({ toolName: "read", input: { path: "/etc/hosts" } })).toBe(undefined);
+    expect(
+      decidePlan(
+        { toolName: "plan_submit", input: {} },
+        { readOnlyHint: true, openWorldHint: false },
+      ),
+    ).toBe(undefined);
+    expect(decidePlan({ toolName: "mcp_write", input: {} })).toBe("ask");
+  });
+
+  it("压过完全访问：写入被拒、命令确认不给“始终允许”且标题带前缀", async () => {
+    const gate = createPlanGate();
+    const { guard } = createGuard("full", gate);
+    const { pi, handlers } = fakePi();
+    guard(pi);
+    const tool = handlers.tool_call;
+    if (!tool) throw new Error("没有注册 tool_call");
+    const write = { toolName: "write", input: { path: "a.ts" } };
+    expect(await tool(write, ctx())).toBe(undefined);
+    gate.readOnly = true;
+    expect(await tool(write, ctx())).toEqual({ block: true, reason: PLAN_DENY_REASON });
+    expect(await tool({ toolName: "bash", input: { command: "ls" } }, ctx())).toBe(undefined);
+    const c = ctx(CHOICES.allow);
+    expect(await tool({ toolName: "bash", input: { command: "pnpm test" } }, c)).toBe(undefined);
+    expect(c.ui.select).toHaveBeenCalledWith(
+      `${PLAN_ASK_PREFIX}运行命令：pnpm test`,
+      [CHOICES.allow, CHOICES.deny],
+      expect.anything(),
+    );
+    // 读取按常规规则：完全访问下工作区外读取也放行，受保护路径的写入照样拒绝
+    expect(await tool({ toolName: "read", input: { path: "/etc/hosts" } }, ctx())).toBe(undefined);
+  });
+  it("确认等待期间开启计划模式：之前弹出的写入确认即使选了允许也拒绝", async () => {
+    const gate = createPlanGate();
+    const { guard } = createGuard("ask", gate);
+    const { pi, handlers } = fakePi();
+    guard(pi);
+    const c = ctx();
+    c.ui.select = vi.fn(async () => {
+      gate.readOnly = true;
+      return CHOICES.allow;
+    });
+    expect(await handlers.tool_call?.({ toolName: "write", input: { path: "a.ts" } }, c)).toEqual({
+      block: true,
+      reason: PLAN_DENY_REASON,
+    });
+  });
+
+  it("确认等待期间开启计划模式：选了“始终允许”的命令按计划模式重新确认，不记住", async () => {
+    const gate = createPlanGate();
+    const { guard, state } = createGuard("ask", gate);
+    const { pi, handlers } = fakePi();
+    guard(pi);
+    const c = ctx();
+    c.ui.select = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        gate.readOnly = true;
+        return CHOICES.always;
+      })
+      .mockResolvedValueOnce(CHOICES.deny);
+    const call = { toolName: "bash", input: { command: "pnpm test" } };
+    expect(await handlers.tool_call?.(call, c)).toMatchObject({ block: true });
+    expect(c.ui.select).toHaveBeenCalledTimes(2);
+    expect(c.ui.select.mock.calls[1]?.[1]).toEqual([CHOICES.allow, CHOICES.deny]);
+    expect(state.alwaysAllowed.size).toBe(0);
   });
 });

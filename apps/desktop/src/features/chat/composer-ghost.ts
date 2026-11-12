@@ -12,6 +12,8 @@ const tones = {
   /** 警示（完全访问）：文字与图标保持警示色，底色是淡淡的警示色 */
   warning:
     "text-warning hover:bg-warning/10 focus-visible:bg-warning/10 data-[state=open]:bg-warning/10",
+  /** 已开启的开关（计划模式）：强调色文字与淡淡的强调色底 */
+  accent: "bg-accent/10 text-accent hover:bg-accent/15 focus-visible:bg-accent/15",
 } as const;
 
 export type ComposerGhostTone = keyof typeof tones;

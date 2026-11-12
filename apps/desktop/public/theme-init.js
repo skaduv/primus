@@ -3,7 +3,20 @@
 // 读取 zustand persist 的 "primus.appearance"（{ state: { theme } }），规则同 resolveDark。
 (() => {
   // 在 Tauri 窗口内（初始化脚本先于页面注入 isTauri）：页面背景透明，透出窗口的亚克力磨砂效果
-  if (window.isTauri === true) document.documentElement.classList.add("window-effects");
+  if (window.isTauri === true) {
+    document.documentElement.classList.add("window-effects");
+    // Win10 没有系统背景材质，亚克力退回旧接口后几乎不着色、只剩模糊的桌面，显得发灰发脏：改用实色背景。
+    // 判断方法与 src/lib/platform/tauri/window.ts 的 isLegacyWindows 一致（platformVersion 主版本 ≥ 13 为 Win11）
+    navigator.userAgentData
+      ?.getHighEntropyValues?.(["platformVersion"])
+      .then((v) => {
+        const major = Number.parseInt(String(v.platformVersion ?? "").split(".")[0] ?? "", 10);
+        if (v.platform === "Windows" && major > 0 && major < 13) {
+          document.documentElement.classList.add("solid-window");
+        }
+      })
+      .catch(() => {});
+  }
   try {
     const raw = localStorage.getItem("primus.appearance");
     const theme = raw ? JSON.parse(raw)?.state?.theme : undefined;

@@ -51,6 +51,7 @@ export const strings = {
     renderFailed: "无法显示此文件：",
     /** 网页预览（iframe 的可访问名称） */
     webPage: "网页预览",
+    svgPage: "SVG 预览",
     /** PDF 预览（iframe 的可访问名称） */
     pdf: "PDF 预览",
     /** 表格预览（网格的可访问名称） */
@@ -110,7 +111,7 @@ export const strings = {
     linkCancel: "取消",
     linkFailed: "无法打开链接",
     /** 回复里的外部链接（附在链接文字后的屏幕阅读器提示） */
-    linkExternal: "（外部链接）",
+    linkExternal: "外部链接",
     /** 回复里的文件引用：点击用系统默认程序打开，右键（或菜单键）有打开、在文件夹中显示、复制路径 */
     fileRef: {
       label: "文件 {name}，点击预览",
@@ -204,6 +205,12 @@ export const strings = {
       stoppingRetry: "正在停止",
     },
     attach: "添加附件",
+    add: {
+      title: "添加",
+      files: "文件",
+      planHint: "先出计划，批准后再执行",
+      planOnHint: "已开启，再点关闭",
+    },
     removeAttachment: "移除附件",
     expandInput: "展开编辑",
     collapseInput: "收起",
@@ -348,6 +355,57 @@ export const strings = {
       branch: "Git 分支",
       detached: "分离的 HEAD",
       workspace: "工作区",
+      todo: "计划进度",
+      todoAll: "全部步骤",
+    },
+    plan: {
+      toggle: "计划模式",
+      short: "计划",
+      turnOff: "关闭计划模式",
+      on: "计划模式已开启：先只读调研、提交计划，批准后再执行（Shift+Tab 切换）",
+      off: "开启计划模式：先出计划，批准后再执行（Shift+Tab 切换）",
+      card: "计划",
+      writing: "正在写计划…",
+      steps: "步骤",
+      risks: "风险",
+      verification: "验证",
+      assumptions: "假设",
+      files: "涉及文件",
+      status: {
+        awaiting: "等待批准",
+        approved: "已批准",
+        revising: "已打回修改",
+        cancelled: "未批准",
+        edited: "已批准（有修改）",
+      },
+      approval: {
+        label: "计划审批",
+        title: "计划已就绪，要按计划执行吗？",
+        approveEdit: "批准并执行",
+        approveEditHint: "执行时自动编辑工作区内的文件",
+        approveAsk: "批准，每步询问",
+        approveAskHint: "执行时每次修改都先征求你的同意",
+        revise: "继续完善",
+        feedbackLabel: "修改意见",
+        feedbackPlaceholder: "不执行，告诉乾元要怎么改…",
+        approveKeepHint: "保持完全访问执行",
+        sendFeedback: "发送意见",
+        cancel: "取消",
+      },
+    },
+    ask: {
+      label: "乾元想问你",
+      recommended: "推荐",
+      otherLabel: "自己写想法",
+      otherPlaceholder: "都不合适？直接写你的想法…",
+      send: "发送",
+      dismiss: "不回答",
+    },
+    todoStatus: {
+      pending: "未开始",
+      in_progress: "进行中",
+      completed: "已完成",
+      skipped: "已跳过",
     },
     contextCard: {
       title: "上下文窗口",

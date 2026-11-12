@@ -35,11 +35,13 @@ import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
+import { AskCard } from "./ask-card";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 import { useAttachments } from "./attachments/use-attachments";
 import { composerGhostClass } from "./composer-ghost";
 import { ComposerLip } from "./composer-lip";
 import {
+  AddMenu,
   failure,
   PermissionPicker,
   permissionMeta,
@@ -54,6 +56,7 @@ import { FileRefBase } from "./file-ref-actions";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker, withCoreCaps } from "./model-picker";
+import { PlanApproval } from "./plan-card";
 import { DEFAULT_THINKING_LEVEL, useChatSession } from "./use-chat-session";
 import { UserBubble } from "./user-bubble";
 import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
@@ -216,6 +219,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     requestContextStats,
     compact,
     setAutoCompaction,
+    planOn,
+    setPlanMode,
+    approvePlan,
+    revisePlan,
+    answerAsk,
   } = useChatSession({
     sessionPath: tab?.sessionPath,
     workspace: tab?.workspace,
@@ -236,6 +244,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const setWorkspace = useAppStore((s) => s.setWorkspace);
   const permissionMode = useAppStore((s) => s.permissionMode);
   const setPermissionMode = useAppStore((s) => s.setPermissionMode);
+  // 对话前（会话未打开）显示用户选的自动压缩；打开后以 Core 的值为准（打开时已把选择发给 Core）
+  const chosenAutoCompaction = useAppStore((s) => s.autoCompaction);
   // 提交中（等待会话打开与 prompt 响应）：阻止重复提交，并锁定输入，避免成功后清掉期间新增的内容
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -604,13 +614,28 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // Agent 用预览工具请求在右栏打开的文件 / 文件夹：只在本标签是当前标签时打开，后台标签切回时再打开
   usePreviewRequest(state.previewRequest, tabId);
 
+  const togglePlan = () => void setPlanMode(!planOn);
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) submit(e);
+    // Shift+Tab：切换计划模式（与 Claude Code / Codex 一致）；焦点留在输入框。
+    // 输入框上方有审批卡片或提问卡片时保留默认的反向焦点导航（Shift+Tab 回到卡片），不切换——
+    // 否则想用键盘回到审批卡片反而会关掉计划模式、把审批作废
+    const cardAbove =
+      state.ask !== undefined ||
+      (state.plan?.phase === "awaiting" && state.plan.status === "awaiting");
+    if (e.key === "Tab" && e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !cardAbove) {
+      e.preventDefault();
+      togglePlan();
+    }
   };
 
   const shownError = error ?? state.lastError;
   const pendingUi = state.uiRequests[0];
+  const awaitingPlan =
+    state.plan?.phase === "awaiting" && state.plan.status === "awaiting" && state.plan.id
+      ? state.plan
+      : undefined;
   const turns = useMemo(() => groupTurns(state.messages), [state.messages]);
   const indexItems = useMemo<IndexItem[]>(
     () =>
@@ -780,9 +805,30 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             {pendingUi && (
               <ApprovalCard key={pendingUi.id} request={pendingUi} onRespond={respondUi} />
             )}
-            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里） */}
-            {canUseWorkspaces && (
+            {!pendingUi && state.ask && (
+              <AskCard
+                key={state.ask.id}
+                ask={state.ask}
+                onAnswer={(answers) => void answerAsk({ id: state.ask?.id ?? "", answers })}
+                onCancel={() => void answerAsk({ id: state.ask?.id ?? "", cancel: true })}
+              />
+            )}
+            {!pendingUi && !state.ask && awaitingPlan?.id && (
+              <PlanApproval
+                key={awaitingPlan.id}
+                title={awaitingPlan.plan?.title}
+                fullAccess={permissionMode === "full"}
+                onApprove={(permission) =>
+                  void approvePlan({ id: awaitingPlan.id as string, permission })
+                }
+                onRevise={(feedback) => void revisePlan(awaitingPlan.id as string, feedback)}
+              />
+            )}
+            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里）与计划进度 */}
+            {(canUseWorkspaces || state.todos.length > 0) && (
               <ComposerLip
+                showWorkspace={canUseWorkspaces}
+                todos={state.todos}
                 workspace={shownWorkspace}
                 locked={workspaceLocked}
                 onPicked={setWorkspace}
@@ -898,20 +944,22 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   )}
                 </div>
                 <div className="@container/bar flex min-w-0 items-center gap-2.5 text-xs text-muted">
-                  {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
-                  {canPickFiles && (
-                    <Tooltip content={t.attach} wrap>
-                      <button
-                        type="button"
-                        aria-label={t.attach}
-                        disabled={submitting}
-                        onClick={() => void pickFiles()}
-                        className={composerGhostClass({ icon: true })}
-                      >
-                        <Icon name="plus" size="sm" />
-                      </button>
-                    </Tooltip>
-                  )}
+                  {/* “+”菜单：添加文件（只引用本地路径）、计划模式；与模型选择同款弹层 */}
+                  <AddMenu
+                    canPickFiles={canPickFiles}
+                    filesDisabled={submitting}
+                    onPickFiles={() => void pickFiles()}
+                    planOn={planOn}
+                    onPlanChange={(on) => void setPlanMode(on)}
+                  >
+                    <button
+                      type="button"
+                      aria-label={t.add.title}
+                      className={composerGhostClass({ icon: true })}
+                    >
+                      <Icon name="plus" size="sm" />
+                    </button>
+                  </AddMenu>
                   <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
                     {/* 完全访问：文字与图标用警示色；其他档位是普通的弱化幽灵按钮 */}
                     <button
@@ -929,6 +977,21 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span>{t.permissions[permissionMode].short}</span>
                     </button>
                   </PermissionPicker>
+                  {/* 计划模式开启时的标记（强调色）：点击关闭；开启在“+”菜单或 Shift+Tab */}
+                  {planOn && (
+                    <Tooltip content={t.plan.on} wrap>
+                      <button
+                        type="button"
+                        aria-label={t.plan.turnOff}
+                        onClick={togglePlan}
+                        className={composerGhostClass({ tone: "accent", className: "group/plan" })}
+                      >
+                        <Icon name="bulb" size="sm" className="group-hover/plan:hidden" />
+                        <Icon name="x" size="sm" className="hidden group-hover/plan:block" />
+                        <span>{t.plan.short}</span>
+                      </button>
+                    </Tooltip>
+                  )}
                   <span className="flex-1" />
                   <ModelPicker
                     models={models}
@@ -949,7 +1012,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     <ContextButton
                       usage={state.contextUsage}
                       sessionUsage={state.sessionUsage}
-                      autoCompaction={state.autoCompaction}
+                      autoCompaction={state.autoCompaction ?? chosenAutoCompaction}
                       compacting={state.compacting}
                       stats={state.contextStats}
                       connected={connected}

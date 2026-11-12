@@ -29,6 +29,12 @@ export interface AppState {
   setWorkspace: (workspace: WorkspaceInfo | null) => void;
   permissionMode: PermissionMode;
   setPermissionMode: (mode: PermissionMode) => void;
+  /**
+   * 用户在本次运行中选的自动压缩（Core 的全局设置）；undefined 表示还没选过，以 Core 的值为准。
+   * 每个会话打开时随当前状态一起发给 Core（与权限模式一样），对话前也能切换
+   */
+  autoCompaction: boolean | undefined;
+  setAutoCompaction: (enabled: boolean | undefined) => void;
   setSessionsPanelOpen: (open: boolean) => void;
   setSessionsPanelWidth: (width: number) => void;
   setInspectorPanelOpen: (open: boolean) => void;
@@ -47,6 +53,7 @@ export const initialAppState = {
   bottomDrawerHeight: BOTTOM_DRAWER.initial,
   workspace: null as WorkspaceInfo | null,
   permissionMode: "ask" as PermissionMode,
+  autoCompaction: undefined as boolean | undefined,
 } satisfies Partial<AppState>;
 
 const within = (limits: PanelLimits, value: number) =>
@@ -56,6 +63,7 @@ export const useAppStore = create<AppState>()((set) => ({
   ...initialAppState,
   setWorkspace: (workspace) => set({ workspace }),
   setPermissionMode: (permissionMode) => set({ permissionMode }),
+  setAutoCompaction: (autoCompaction) => set({ autoCompaction }),
   setSessionsPanelOpen: (open) => set({ sessionsPanelOpen: open }),
   setSessionsPanelWidth: (width) => set({ sessionsPanelWidth: within(LEFT_PANEL, width) }),
   setInspectorPanelOpen: (open) => set({ inspectorPanelOpen: open }),

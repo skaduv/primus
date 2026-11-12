@@ -1,4 +1,13 @@
-import type { AgentMessage, AssistantMessage, CoreRecord, Usage } from "@primus/protocol";
+import {
+  type AgentMessage,
+  type AskData,
+  type AssistantMessage,
+  type CoreRecord,
+  PLAN_SUBMIT_TOOL,
+  type PlanDoc,
+  type PlanSubmitDetails,
+  type Usage,
+} from "@primus/protocol";
 
 // 脚本化的假 Core 事件流：按 Core JSON 事件流规范（json.md）生成一轮完整运行，
 // 包含思考、文本流式输出、一次工具调用与工具结果、第二轮回答，最后 agent_end + agent_settled。
@@ -416,4 +425,209 @@ export function errorScenario(
     });
   }
   return { user, steps };
+}
+
+// ---------- 计划模式（primus-plan）：浏览器预览演示计划卡片、审批与唇条进度 ----------
+
+/** mock 计划模式提交的计划 */
+export const MOCK_PLAN: PlanDoc = {
+  title: "给示例工作区加一份 README 目录",
+  summary: "README.md 目前只有一段说明，按章节补齐目录，便于新同事快速找到内容。",
+  steps: [
+    { id: "1", title: "梳理现有章节", files: ["README.md"] },
+    { id: "2", title: "生成目录并插入开头", detail: "用二级标题生成锚点链接" },
+    { id: "3", title: "检查链接是否都能跳转" },
+  ],
+  risks: ["标题里有中文标点时锚点可能不一致"],
+  verification: ["在预览里逐个点击目录链接"],
+  assumptions: ["只处理二级标题"],
+};
+
+/** 计划前演示用的 ask_user 提问（primus:ask） */
+export const MOCK_ASK: AskData = {
+  id: "a1",
+  questions: [
+    {
+      id: "toc_depth",
+      header: "目录层级",
+      question: "目录要包含哪几级标题？",
+      options: [
+        { label: "只到二级（推荐）", description: "简洁，适合短 README" },
+        { label: "二级和三级", description: "更细，适合章节多的文档" },
+      ],
+    },
+    {
+      id: "position",
+      header: "位置",
+      question: "目录放在哪里？",
+      options: [
+        { label: "开头说明之后", description: "先看到项目是什么" },
+        { label: "最开头", description: "打开就能跳转" },
+      ],
+    },
+  ],
+};
+
+/**
+ * 按提问的回答调整演示计划：目录层级、位置的选择与自己写的想法都写进计划（步骤说明与前提），
+ * 没有回答时就是 MOCK_PLAN
+ */
+export function mockPlanFromAnswers(
+  answers?: Record<string, { selected?: string; other?: string }>,
+): PlanDoc {
+  if (!answers) return MOCK_PLAN;
+  const pick = (id: string) => answers[id]?.selected ?? answers[id]?.other;
+  const depth = pick("toc_depth");
+  const position = pick("position");
+  const deep = depth?.includes("三级") ?? false;
+  const steps = MOCK_PLAN.steps.map((step) =>
+    step.id === "2"
+      ? {
+          ...step,
+          title: position ? `生成目录并插入${position.replace(/（.*）/, "")}` : step.title,
+          detail: deep ? "用二级、三级标题生成锚点链接" : step.detail,
+        }
+      : step,
+  );
+  const assumptions = [
+    depth ? `目录层级：${depth.replace(/（.*）/, "")}` : (MOCK_PLAN.assumptions?.[0] ?? ""),
+    ...(position ? [`目录位置：${position}`] : []),
+  ].filter(Boolean);
+  return { ...MOCK_PLAN, steps, assumptions };
+}
+
+/** 计划模式下的一次 prompt：读取一次文件后调用 plan_submit，停在等待审批（不结束这一轮） */
+export function planScenario(
+  prompt: string,
+  now: number,
+  plan: PlanDoc = MOCK_PLAN,
+): ScenarioResult & { callId: string } {
+  const records: CoreRecord[] = [];
+  const messages: AgentMessage[] = [];
+  const callId = `call_plan_${now}`;
+  const user: AgentMessage = { role: "user", content: prompt, timestamp: now };
+  messages.push(user);
+  records.push({ type: "agent_start" }, { type: "turn_start" });
+  records.push({ type: "message_start", message: user }, { type: "message_end", message: user });
+  const u = usage(300, 200);
+  const text = "我先看了 README.md 的结构，下面是计划。";
+  const first: AssistantMessage = {
+    role: "assistant",
+    content: [
+      { type: "text", text },
+      { type: "toolCall", id: callId, name: PLAN_SUBMIT_TOOL, arguments: { ...plan } },
+    ],
+    stopReason: "toolUse",
+    usage: u,
+    timestamp: now + 1,
+    ...MODEL,
+  };
+  records.push({
+    type: "message_start",
+    message: { ...first, content: [], stopReason: "pending" },
+  });
+  streamText(records, "text", 0, text, u);
+  records.push({
+    type: "message_update",
+    usage: u,
+    assistantMessageEvent: {
+      type: "toolcall_start",
+      contentIndex: 1,
+      id: callId,
+      toolName: PLAN_SUBMIT_TOOL,
+    },
+  });
+  for (const delta of chunk(JSON.stringify(plan), 24))
+    records.push({
+      type: "message_update",
+      usage: u,
+      assistantMessageEvent: { type: "toolcall_delta", contentIndex: 1, delta },
+    });
+  records.push({ type: "message_end", message: first });
+  messages.push(first);
+  records.push({
+    type: "tool_execution_start",
+    toolCallId: callId,
+    toolName: PLAN_SUBMIT_TOOL,
+    args: { ...plan },
+  });
+  return { records, messages, callId };
+}
+
+/**
+ * 审批之后：plan_submit 的结果；批准时再给一段开始执行的回答，最后结束这一轮。
+ * cancelled：等待审批时关闭了计划模式，与真实扩展一致记为取消并直接结束这一轮（terminate）
+ */
+export function planDecisionScenario(
+  callId: string,
+  decision: { approved: true } | { approved: false; feedback: string } | { cancelled: true },
+  now: number,
+  plan: PlanDoc = MOCK_PLAN,
+): ScenarioResult {
+  const records: CoreRecord[] = [];
+  const messages: AgentMessage[] = [];
+  const cancelled = "cancelled" in decision;
+  const approved = !cancelled && decision.approved;
+  const details: PlanSubmitDetails = cancelled
+    ? { id: "p1", status: "cancelled", plan }
+    : decision.approved
+      ? { id: "p1", status: "approved", plan }
+      : { id: "p1", status: "revising", plan, feedback: decision.feedback };
+  const text = cancelled
+    ? "用户关闭了计划模式，计划已取消。"
+    : decision.approved
+      ? "用户已批准计划。"
+      : `用户要求修改计划：${decision.feedback}`;
+  const result = { content: [{ type: "text" as const, text }], details };
+  const isError = !approved;
+  records.push({
+    type: "tool_execution_end",
+    toolCallId: callId,
+    toolName: PLAN_SUBMIT_TOOL,
+    result,
+    isError,
+  });
+  const toolResult: AgentMessage = {
+    role: "toolResult",
+    toolCallId: callId,
+    toolName: PLAN_SUBMIT_TOOL,
+    content: result.content,
+    details,
+    isError,
+    timestamp: now,
+  };
+  records.push(
+    { type: "message_start", message: toolResult },
+    { type: "message_end", message: toolResult },
+  );
+  messages.push(toolResult);
+  if (cancelled) {
+    records.push({ type: "agent_end", messages: messages.slice(), willRetry: false });
+    records.push({ type: "agent_settled", aborted: false });
+    return { records, messages };
+  }
+  const answer = approved
+    ? "计划已批准，开始第 1 步：梳理现有章节。（mock 演示到此为止）"
+    : "好的，我按你的意见修改计划。（mock 演示到此为止，可以再次发送消息重新生成计划）";
+  const u = usage(500, 60);
+  const reply: AssistantMessage = {
+    role: "assistant",
+    content: [{ type: "text", text: answer }],
+    stopReason: "stop",
+    usage: u,
+    timestamp: now + 1,
+    ...MODEL,
+  };
+  records.push({ type: "turn_start" });
+  records.push({
+    type: "message_start",
+    message: { ...reply, content: [], stopReason: "pending" },
+  });
+  streamText(records, "text", 0, answer, u);
+  records.push({ type: "message_end", message: reply });
+  messages.push(reply);
+  records.push({ type: "turn_end", message: reply, toolResults: [] });
+  records.push({ type: "agent_end", messages: messages.slice(), willRetry: false });
+  records.push({ type: "agent_settled", aborted: false });
+  return { records, messages };
 }

@@ -1,14 +1,22 @@
 import {
   type AgentMessage,
+  ASK_WIDGET,
   type AssistantContent,
   type AssistantMessage,
   CONTEXT_STATS_COMMAND,
   CONTEXT_STATS_WIDGET,
   type ContextStatsData,
   type CoreRecord,
+  PLAN_COMMAND,
+  PLAN_WIDGET,
+  type PlanData,
+  type PlanDoc,
+  type PlanPhase,
   type RpcCommand,
   type RpcResponse,
   type RpcSlashCommand,
+  TODO_WIDGET,
+  type TodoItem,
 } from "@primus/protocol";
 import {
   AUTH_NOT_AVAILABLE,
@@ -31,8 +39,13 @@ import {
 } from "../types";
 import {
   errorScenario,
+  MOCK_ASK,
   MOCK_NETWORK_DOWN,
+  MOCK_PLAN,
   mockErrorKind,
+  mockPlanFromAnswers,
+  planDecisionScenario,
+  planScenario,
   promptScenario,
   type ScenarioStep,
 } from "./scenario";
@@ -224,11 +237,13 @@ export const MOCK_CONTEXT_STATS: ContextStatsData = {
 const MOCK_CONTEXT_BASE = 26_000;
 
 /** mock 内核注册的扩展命令（get_commands） */
-const MOCK_COMMANDS: RpcSlashCommand[] = ["primus-mode", CONTEXT_STATS_COMMAND].map((name) => ({
-  name,
-  source: "extension",
-  sourceInfo: { path: "primus-bundle.js", source: "local", scope: "user", origin: "top-level" },
-}));
+const MOCK_COMMANDS: RpcSlashCommand[] = ["primus-mode", CONTEXT_STATS_COMMAND, PLAN_COMMAND].map(
+  (name) => ({
+    name,
+    source: "extension",
+    sourceInfo: { path: "primus-bundle.js", source: "local", scope: "user", origin: "top-level" },
+  }),
+);
 
 /** 队列项：记录本身，或推送时才生成的记录（get_messages 的响应在推送那一刻取历史快照） */
 type Queued = CoreRecord | (() => CoreRecord);
@@ -258,6 +273,16 @@ interface MockSession {
   compacted: boolean;
   /** 演示自动重试：等待中的下一段事件；abort_retry / abort 时取消并推送它的 cancel */
   pendingStep?: { timer: ReturnType<typeof setTimeout>; step: ScenarioStep };
+  /** 计划模式（primus-plan）的阶段；缺省为 off */
+  planPhase?: PlanPhase;
+  /** 等待审批的 plan_submit 调用 ID */
+  planCall?: string;
+  /** 计划模式里已经问过一次 ask_user（mock 只在第一次计划前问） */
+  asked?: boolean;
+  /** 等待回答的 ask_user：回答后用这条消息继续生成计划 */
+  askPrompt?: string;
+  /** 当前计划（按提问的回答调整过的演示计划） */
+  plan?: PlanDoc;
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -556,6 +581,154 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       ? { type: "response", id: cmd.id, command: cmd.type, success: true, data }
       : { type: "response", id: cmd.id, command: cmd.type, success: false, error }) as RpcResponse;
 
+  const widget = (key: string, type: string, data: unknown): CoreRecord => ({
+    type: "extension_ui_request",
+    id: `mock-widget-${now()}-${Math.random()}`,
+    method: "setWidget",
+    widgetKey: key,
+    widgetLines: [JSON.stringify({ v: 1, type, data })],
+  });
+  const planWidget = (data: PlanData) => widget(PLAN_WIDGET, "plan", data);
+  const todoWidget = (items: TodoItem[]) => widget(TODO_WIDGET, "todo", { items });
+
+  /** 撤销等待中的 ask_user 与 plan_submit：清掉状态并推送收起提问卡片、审批记为取消 */
+  const dropPendingPlan = (s: MockSession) => {
+    if (s.askPrompt !== undefined) {
+      s.askPrompt = undefined;
+      emit(s, {
+        type: "extension_ui_request",
+        id: `mock-widget-${now()}-${Math.random()}`,
+        method: "setWidget",
+        widgetKey: ASK_WIDGET,
+      });
+    }
+    if (s.planCall) {
+      s.planCall = undefined;
+      s.planPhase = "planning";
+      emit(
+        s,
+        planWidget({ phase: "planning", id: "p1", status: "cancelled", plan: s.plan ?? MOCK_PLAN }),
+      );
+    }
+  };
+
+  /** mock 的 `/primus-plan`：on / off 切换阶段；approve / revise 结束等待中的 plan_submit */
+  const handlePlanCommand = (s: MockSession, args: string) => {
+    const [verb = "", ...rest] = args.split(" ");
+    if (verb === "on" || verb === "off") {
+      // 与真实扩展一致：关闭计划模式时规划中的提问作废，卡片收起，这一轮结束
+      if (verb === "off" && s.askPrompt !== undefined) {
+        s.askPrompt = undefined;
+        emit(
+          s,
+          {
+            type: "extension_ui_request",
+            id: `mock-widget-${now()}-${Math.random()}`,
+            method: "setWidget",
+            widgetKey: ASK_WIDGET,
+          },
+          { type: "agent_end", messages: [], willRetry: false },
+          { type: "agent_settled", aborted: false },
+        );
+      }
+      if (verb === "off" && s.planCall) {
+        emit(s, ...planDecisionScenario(s.planCall, { cancelled: true }, now(), s.plan).records);
+        s.planCall = undefined;
+      }
+      s.planPhase = verb === "on" ? "planning" : "off";
+      emit(s, planWidget({ phase: s.planPhase }));
+      return;
+    }
+    // 提问期间关掉了计划模式：回答只收起卡片、结束这一轮，不再生成计划
+    if (verb === "answer" && s.askPrompt !== undefined && s.planPhase !== "planning") {
+      s.askPrompt = undefined;
+      emit(
+        s,
+        {
+          type: "extension_ui_request",
+          id: `mock-widget-${now()}-${Math.random()}`,
+          method: "setWidget",
+          widgetKey: ASK_WIDGET,
+        },
+        { type: "agent_end", messages: [], willRetry: false },
+        { type: "agent_settled", aborted: false },
+      );
+      return;
+    }
+    if (verb === "answer" && s.askPrompt !== undefined) {
+      let cancel = false;
+      let answers: Record<string, { selected?: string; other?: string }> | undefined;
+      try {
+        const parsed = JSON.parse(rest.join(" ")) as { cancel?: unknown; answers?: unknown };
+        cancel = parsed.cancel === true;
+        if (parsed.answers && typeof parsed.answers === "object")
+          answers = parsed.answers as typeof answers;
+      } catch {}
+      const message = s.askPrompt;
+      s.askPrompt = undefined;
+      emit(s, {
+        type: "extension_ui_request",
+        id: `mock-widget-${now()}-${Math.random()}`,
+        method: "setWidget",
+        widgetKey: ASK_WIDGET,
+      });
+      if (cancel) {
+        emit(
+          s,
+          { type: "agent_end", messages: [], willRetry: false },
+          { type: "agent_settled", aborted: false },
+        );
+        return;
+      }
+      // 开头的 agent_start、turn_start 与用户消息在提问前已推送；计划按回答调整
+      s.plan = mockPlanFromAnswers(answers);
+      const plan = planScenario(message, now(), s.plan);
+      s.planPhase = "awaiting";
+      s.planCall = plan.callId;
+      emit(
+        s,
+        ...plan.records.slice(4),
+        planWidget({ phase: "awaiting", id: "p1", status: "awaiting", plan: s.plan }),
+      );
+      return;
+    }
+    if ((verb === "approve" || verb === "revise") && s.planCall) {
+      let feedback = "";
+      try {
+        feedback = String((JSON.parse(rest.join(" ")) as { feedback?: unknown }).feedback ?? "");
+      } catch {}
+      const approved = verb === "approve";
+      const decision = approved
+        ? { approved: true as const }
+        : { approved: false as const, feedback };
+      const call = s.planCall;
+      const current = s.plan ?? MOCK_PLAN;
+      s.planCall = undefined;
+      s.planPhase = approved ? "executing" : "planning";
+      emit(
+        s,
+        planWidget({
+          phase: s.planPhase,
+          id: "p1",
+          status: approved ? "approved" : "revising",
+          plan: current,
+        }),
+        ...(approved
+          ? [
+              todoWidget(
+                current.steps.map((step, i) => ({
+                  id: step.id,
+                  text: step.title,
+                  status: i === 0 ? "in_progress" : "pending",
+                })),
+              ),
+            ]
+          : []),
+        ...planDecisionScenario(call, decision, now(), current).records,
+      );
+    }
+  };
+
   const handle = (s: MockSession, cmd: RpcCommand) => {
     if (options.stallCommand?.(cmd)) return;
     const failure = options.failCommand?.(cmd);
@@ -567,6 +740,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       case "prompt": {
         const message = String(cmd.message ?? "");
         // 扩展命令（如 primus-guard 的 /primus-mode）：与 Core 一致，直接执行、不调用模型，运行中也立即执行
+        if (message.startsWith(`/${PLAN_COMMAND}`)) {
+          handlePlanCommand(s, message.slice(PLAN_COMMAND.length + 1).trim());
+          emit(s, respond(cmd, { disposition: "handled" }));
+          return;
+        }
         if (message.startsWith("/primus-")) {
           // primus-context-stats：先推清单数据（setWidget），再回 handled，与 Core 中命令执行完才回响应一致；不写历史
           if (message.trim() === `/${CONTEXT_STATS_COMMAND}`)
@@ -616,6 +794,32 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           next(first, later);
           return;
         }
+        if (s.planPhase === "planning" && !s.asked) {
+          // 第一次计划前先演示 ask_user：推提问卡片，等 `/primus-plan answer`
+          s.asked = true;
+          s.askPrompt = message;
+          const plan = planScenario(message, now());
+          emit(
+            s,
+            respond(cmd, { disposition: "started" }),
+            ...plan.records.slice(0, 4),
+            widget(ASK_WIDGET, "ask", MOCK_ASK),
+          );
+          return;
+        }
+        if (s.planPhase === "planning") {
+          s.plan ??= MOCK_PLAN;
+          const plan = planScenario(message, now(), s.plan);
+          s.planPhase = "awaiting";
+          s.planCall = plan.callId;
+          emit(
+            s,
+            respond(cmd, { disposition: "started" }),
+            ...plan.records,
+            planWidget({ phase: "awaiting", id: "p1", status: "awaiting", plan: s.plan }),
+          );
+          return;
+        }
         const scenario = promptScenario(message, now());
         emit(s, respond(cmd, { disposition: "started" }), ...scenario.records);
         return;
@@ -642,6 +846,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           s.pendingStep = undefined;
           s.aborting = true;
           s.queue = keptOnAbort(s.queue);
+          dropPendingPlan(s);
           emit(s, ...(cancel ?? []), respond(cmd));
           return;
         }
@@ -650,6 +855,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           s.queue = keptOnAbort(s.queue);
           emit(s, ...abortRecords(s.delivered, now()));
         }
+        // 中止时撤销等待中的提问与计划审批（与真实扩展一致：signal 中止后工具返回取消），卡片随之收起；
+        // 排在丢弃队列之后，收起卡片的事件不会被丢掉
+        dropPendingPlan(s);
         emit(s, respond(cmd));
         return;
       }
@@ -926,6 +1134,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     },
     coreRestart: async (sessionKey) => {
       const s = session(sessionKey);
+      dropPendingPlan(s);
       if (s.pendingStep) clearTimeout(s.pendingStep.timer);
       s.pendingStep = undefined;
       s.queue = [];
@@ -1157,6 +1366,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       const absolute = mockAbsolutePath(path);
       if (!MOCK_PREVIEW_BYTES.test(absolute)) throw new Error("该类型的文件不能按文档预览");
       return notAvailable("读取本机文档");
+    },
+    // 浏览器预览没有 primus-preview 协议：前端退回 srcdoc（不运行脚本）
+    previewServe: async (path) => {
+      mockAbsolutePath(path);
+      return notAvailable("可运行的网页预览");
     },
     // 浏览器预览读不到本机文件夹：返回固定的示例列表（文件夹在前）
     previewDir: async (path) => {

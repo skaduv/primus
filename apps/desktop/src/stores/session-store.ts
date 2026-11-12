@@ -7,12 +7,24 @@ import type {
   CoreRecord,
   ExtensionUiDialogRequest,
   Model,
+  PlanData,
   PreviewData,
   RpcResponse,
   SessionStats,
+  TodoItem,
   ToolResult,
 } from "@primus/protocol";
-import { CONTEXT_STATS_WIDGET, isDialogRequest, PREVIEW_WIDGET } from "@primus/protocol";
+import {
+  ASK_WIDGET,
+  type AskData,
+  CONTEXT_STATS_WIDGET,
+  isDialogRequest,
+  isPlanPhase,
+  normalizeTodoItems,
+  PLAN_WIDGET,
+  PREVIEW_WIDGET,
+  TODO_WIDGET,
+} from "@primus/protocol";
 import { produce } from "immer";
 import { createStore } from "zustand/vanilla";
 
@@ -96,6 +108,12 @@ export interface SessionState {
   contextStats?: ContextStatsData;
   /** Agent 最近一次请求在右栏打开的预览（primus-preview 的 `preview` 工具，经 setWidget("primus:preview") 推送；按 id 区分每次请求） */
   previewRequest?: PreviewData;
+  /** 计划模式（primus-plan 经 setWidget("primus:plan") 推送）：当前阶段与最近一次提交的计划；扩展未推送前为 undefined */
+  plan?: PlanData;
+  /** ask_user 等待回答的问题（primus:ask）；没有时为 undefined */
+  ask?: AskData;
+  /** 待办清单（primus-plan 的 todo 工具，经 setWidget("primus:todo") 推送；整体替换） */
+  todos: TodoItem[];
   /** 自动压缩开关（get_state 的 autoCompactionEnabled；切换时乐观更新，set_auto_compaction 失败回滚）。Core 的全局持久设置 */
   autoCompaction?: boolean;
   /**
@@ -129,6 +147,7 @@ export const initialSessionState: SessionState = {
   running: false,
   toolRuns: {},
   uiRequests: [],
+  todos: [],
   compacting: false,
 };
 
@@ -270,8 +289,42 @@ function applyPreviewWidget(draft: SessionState, key: string, lines: string[] | 
   else if (data !== undefined) console.warn(`忽略 ${key}：数据缺少 id 或 path`);
 }
 
+/** `primus:plan` / `primus:todo`：整体替换；缺省 widgetLines 表示清除 */
+function applyPlanWidget(draft: SessionState, key: string, lines: string[] | undefined): void {
+  if (key === TODO_WIDGET) {
+    if (lines === undefined) draft.todos = [];
+    else {
+      const data = parsePrimusData(key, lines)?.data as { items?: unknown } | undefined;
+      if (data) draft.todos = normalizeTodoItems(data.items);
+    }
+    return;
+  }
+  if (lines === undefined) {
+    draft.plan = undefined;
+    return;
+  }
+  const data = parsePrimusData(key, lines)?.data as Partial<PlanData> | undefined;
+  if (data && isPlanPhase(data.phase)) draft.plan = data as PlanData;
+  else if (data !== undefined) console.warn(`忽略 ${key}：数据缺少 phase`);
+}
+
 /** 即发即弃的 setWidget：只处理前端认识的 `primus:*` 主题，其余忽略 */
 function applyWidget(draft: SessionState, key: string, lines: string[] | undefined): void {
+  if (key === ASK_WIDGET) {
+    const data =
+      lines === undefined
+        ? undefined
+        : (parsePrimusData(key, lines)?.data as Partial<AskData> | undefined);
+    draft.ask =
+      data && typeof data.id === "string" && Array.isArray(data.questions) && data.questions.length
+        ? (data as AskData)
+        : undefined;
+    return;
+  }
+  if (key === PLAN_WIDGET || key === TODO_WIDGET) {
+    applyPlanWidget(draft, key, lines);
+    return;
+  }
   if (key === PREVIEW_WIDGET) {
     applyPreviewWidget(draft, key, lines);
     return;

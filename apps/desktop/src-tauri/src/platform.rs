@@ -238,7 +238,8 @@ mod windows_impl {
         FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_EXECUTE,
         FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
         FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
-        GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
+        GetFileInformationByHandle, GetFinalPathNameByHandleW, OPEN_EXISTING, READ_CONTROL,
+        SYNCHRONIZE, WRITE_DAC,
     };
     use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
     use windows_sys::Win32::System::Threading::{
@@ -1119,6 +1120,31 @@ mod windows_impl {
         meta.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0
     }
 
+    /// 已打开文件的实际路径（`\\?\C:\…` 形式，与 `std::fs::canonicalize` 一致），按句柄取，不受路径随后被换掉影响。
+    /// 预览协议用它在打开后再检查一次文件是否在文件夹内（TOCTOU）。取不到时为 None
+    pub(crate) fn opened_path(file: &std::fs::File, _path: &Path) -> Option<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::io::AsRawHandle;
+        let mut buf = vec![0u16; 512];
+        loop {
+            let len = u32::try_from(buf.len()).ok()?;
+            // SAFETY: 句柄来自打开着的 file；buf 有 len 个 u16 的可写空间。
+            // 标志 0 = FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
+            let n = unsafe {
+                GetFinalPathNameByHandleW(file.as_raw_handle() as _, buf.as_mut_ptr(), len, 0)
+            } as usize;
+            if n == 0 {
+                return None;
+            }
+            if n < buf.len() {
+                buf.truncate(n);
+                return Some(std::ffi::OsString::from_wide(&buf).into());
+            }
+            // 缓冲区不够：n 是需要的长度（含结尾 NUL）
+            buf.resize(n + 1, 0);
+        }
+    }
+
     /// 文件系统身份（[`file_keys`]）：卷序列号 + 64 位文件索引，跟随符号链接。只要 `FILE_READ_ATTRIBUTES`，
     /// 共享读写删除，不与 Core 对会话文件的打开冲突。打不开或查询失败时为 None。
     pub(crate) fn file_system_id(path: &Path) -> Option<String> {
@@ -1169,6 +1195,22 @@ mod fallback_impl {
     /// 右栏文件夹预览：非 Windows 以 `.` 开头的项为隐藏项。
     pub(crate) fn is_hidden_entry(_meta: &std::fs::Metadata, name: &std::ffi::OsStr) -> bool {
         name.to_string_lossy().starts_with('.')
+    }
+
+    /// 已打开文件的实际路径：Linux 读 `/proc/self/fd/<fd>`（按句柄，不受路径随后被换掉影响）；
+    /// 其他平台（仅开发用）取不到句柄路径，返回 None，预览协议据此拒绝，不退回重新解析路径
+    pub(crate) fn opened_path(file: &std::fs::File, path: &Path) -> Option<std::path::PathBuf> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd;
+            let _ = path;
+            std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).ok()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (file, path);
+            None
+        }
     }
 
     /// 文件系统身份（[`file_keys`]）：Unix 为 dev + ino，跟随符号链接；取不到时为 None。

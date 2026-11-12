@@ -7,7 +7,7 @@ export interface WindowControls {
   toggleMaximize(): Promise<void>;
   close(): Promise<void>;
   isMaximized(): Promise<boolean>;
-  /** 窗口最大化状态变化时回调（含双击拖动区、Win+↑、贴靠布局），返回取消监听函数 */
+  /** 窗口最大化（或全屏）状态变化时回调（含双击拖动区、Win+↑、贴靠布局），返回取消监听函数 */
   onMaximizedChange(listener: (maximized: boolean) => void): Promise<() => void>;
   /**
    * 侧栏展开/收起时窗口宽度逐帧变化 delta 逻辑像素（>0 加宽，<0 收窄），duration 毫秒内按 ease 曲线走完。
@@ -15,8 +15,8 @@ export interface WindowControls {
    * 下一帧才重排，必然抖动，所以任何一侧都不移动左边缘。最大化时不调整，返回 false。
    */
   animateWidth(delta: number, duration: number, ease: (t: number) => number): Promise<boolean>;
-  /** 设置窗口最小宽度（逻辑像素），随侧栏开合变化 */
+  /** 设置窗口最小宽度（逻辑像素），随侧栏开合变化；最大化 / 全屏时先记下，还原后再生效（否则会退出最大化） */
   setMinWidth(width: number): Promise<void>;
-  /** 开关窗口亚克力磨砂（外观"玻璃效果"拉到最低时关闭，窗口背景完全透明） */
+  /** 开关窗口亚克力磨砂（外观"玻璃效果"拉到最低时关闭，窗口背景完全透明）；Win10 上始终关闭，页面改铺实色底 */
   setAcrylic(on: boolean): Promise<void>;
 }

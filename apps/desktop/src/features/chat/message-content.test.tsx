@@ -17,7 +17,7 @@ describe("回复中的链接", () => {
     const openExternal = vi.fn(async () => {});
     setPlatformForTesting({ ...createMockPlatform(), openExternal });
     render(<MarkdownText text="看 [文档](https://example.com/doc)" streaming={false} />);
-    fireEvent.click(screen.getByRole("link", { name: `文档${t.linkExternal}` }));
+    fireEvent.click(screen.getByRole("link", { name: "文档" }));
     expect(openExternal).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: t.linkOpen }));
     await waitFor(() => expect(openExternal).toHaveBeenCalledWith("https://example.com/doc"));
@@ -104,12 +104,14 @@ describe("回复中的文件引用与网页链接", () => {
     expect(html).toContain('data-file-icon="table"');
   });
 
-  it("网页链接保持文字链接，末尾带外链图标与屏幕阅读器提示", () => {
+  it("网页链接保持文字链接，末尾带外链图标，屏幕阅读器提示不进正文", () => {
     render(<MarkdownText text="看 [文档](https://example.com/a.ts)" streaming={false} />);
     const link = screen.getByRole("link");
     expect(link.getAttribute("href")).toBe("https://example.com/a.ts");
     expect(link.querySelector('[data-icon="external-link"]')).not.toBeNull();
-    expect(link.textContent).toBe(`文档${t.linkExternal}`);
+    // 提示不进正文，复制时就是原文
+    expect(link.textContent).toBe("文档");
+    expect(link.getAttribute("aria-description")).toBe(t.linkExternal);
     expect(screen.queryByRole("button")).toBeNull();
   });
 

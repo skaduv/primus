@@ -9,17 +9,27 @@
 // 强制推送与下载后直接执行的命令在完全访问下也询问，且不能“始终允许”。路径按 Core 的规则解析并跟随符号链接比较。
 // 没有界面（hasUI 为 false）时需要询问的调用一律拒绝；处理出错时 Core 按失败即拦截处理。
 // 当前模式经 setWidget("primus:mode") 告知前端。
+// 计划模式（primus-plan 经 plan/gate.ts 打开只读开关）压过上面三种模式：修改文件一律拒绝，命令按只读分类器
+// 放行 / 拒绝 / 询问（询问时不提供“始终允许”），其他未声明只读的工具询问（decidePlan）。
 
-import { lstatSync, readlinkSync, realpathSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type PlanGate, planGate } from "../plan/gate.ts";
+import { classifyCommand, shellWords, splitSegments } from "../plan/readonly.ts";
 
 export const MODES = ["ask", "edit", "full"] as const;
 export type PermissionMode = (typeof MODES)[number];
 
 export const MODE_COMMAND = "primus-mode";
 export const MODE_WIDGET = "primus:mode";
+
+/** 计划模式下拒绝修改时给模型的原因 */
+export const PLAN_DENY_REASON =
+  "计划模式只读：不能修改文件或运行会改动系统的命令。把要做的改动写进计划，用 plan_submit 提交给用户审批。";
+/** 计划模式下需要用户确认时标题的前缀 */
+export const PLAN_ASK_PREFIX = "计划模式：";
 
 export const CHOICES = {
   allow: "允许",
@@ -181,6 +191,8 @@ export interface GuardEnv {
   home: string;
   env: Record<string, string | undefined>;
   real?: (p: string) => string;
+  /** 读文本文件（git 配置）；读不到返回 undefined。测试里替换 */
+  readText?: (p: string) => string | undefined;
 }
 
 const defaultEnv = (): GuardEnv => ({
@@ -224,6 +236,220 @@ export function decide(
   // 其他工具（命令、联网、MCP、子 Agent 等）：只有声明只读且不联网的才放行
   if (annotations?.readOnlyHint === true && annotations.openWorldHint === false) return "allow";
   return "ask";
+}
+
+/**
+ * 计划模式（primus-plan，只读）的判断，压过权限模式（完全访问也一样）：
+ * 修改文件一律拒绝；命令按只读分类器放行、拒绝或询问；读取类工具与声明只读且不联网的工具交给常规规则（返回 undefined）；
+ * 其他工具询问。受保护路径等常规规则在返回 undefined 时照常生效。
+ */
+export function decidePlan(
+  call: ToolCall,
+  annotations?: { readOnlyHint?: boolean; openWorldHint?: boolean },
+  cwd = process.cwd(),
+  ge: GuardEnv = defaultEnv(),
+): Decision | undefined {
+  if (EDIT_TOOLS.has(call.toolName)) return "deny";
+  if (READ_TOOLS.has(call.toolName)) return undefined;
+  if (call.toolName === "bash" || call.toolName === "powershell") {
+    const command = call.input?.command;
+    if (typeof command !== "string") return "ask";
+    const c = classifyCommand(command, call.toolName === "powershell");
+    if (c === "write") return "deny";
+    if (c === "unknown") return "ask";
+    // 只读命令也可能读受保护的文件（cat .env、git show HEAD:.env、type ~\.ssh\id_rsa）：
+    // 与 read 工具一样要确认，不能因为是只读命令就直接放行
+    return commandTouchesProtected(command, cwd, ge, call.toolName === "powershell") ||
+      searchesHidden(command, call.toolName === "powershell") ||
+      gitRunsConfiguredPrograms(command, cwd, ge, call.toolName === "powershell")
+      ? "ask"
+      : "allow";
+  }
+  if (annotations?.readOnlyHint === true && annotations.openWorldHint === false) return undefined;
+  return "ask";
+}
+
+/**
+ * 命令文字里是否提到受保护的路径：`.env*`、`.git`、`.ssh` 路径段（含通配写法 `.en?`、`.e*`），
+ * 按工作目录解析后落在受保护位置（App 数据目录、`~/.ssh`）的参数，以及展开范围限定不了的参数
+ * （工作区外的通配路径、含变量的参数）
+ */
+export function commandTouchesProtected(
+  command: string,
+  cwd: string,
+  ge: GuardEnv = defaultEnv(),
+  powershell = false,
+): boolean {
+  // bash 的 ANSI-C 引号（$'\x2eenv'）还原不了
+  if (!powershell && command.includes("$'")) return true;
+  const words = shellWords(command, powershell);
+  // 引号没闭合：解析不了，确认
+  if (!words) return true;
+  // 原文与按 shell 规则拆词、去掉引号和转义后的词都检查：.\env、.e''nv、"/opt/A B"/data/… 展开后才是真正的路径
+  const text = [command, ...words.map((w) => w.word)].join("\n");
+  if (/(^|[\s\\/'"=:;|&(<>])\.(env|git(?![\w-])|ssh(?![\w-]))/im.test(text)) return true;
+  // 隐藏路径段里带通配符：可能展开成 .env、.git
+  if (/(^|[\s\\/'"=])\.[^\s\\/'"]*[*?[]/m.test(text)) return true;
+  return words.some(({ word, expands }) => {
+    const w = word.replace(/^-[^=]*=/, "");
+    if (!w || w.startsWith("-")) return false;
+    // 展开范围限定不了的路径：工作区外（绝对路径、~、..）带通配符，或含变量（$HOME/…、$env:APPDATA\…）。
+    // 展开后可能落进 App 数据目录或 ~/.ssh，按受保护处理
+    if (/[*?[]/.test(w) && (isAbsolute(w) || /^[a-zA-Z]:|^~|(^|[\\/])\.\.([\\/]|$)/.test(w)))
+      return true;
+    if (expands && /\$(\{|[A-Za-z])/.test(w) && !/^\$(_|psitem|true|false|null)\b/i.test(w))
+      return true;
+    if (!/[\\/~.]/.test(w)) return false;
+    try {
+      const abs = resolveToolPath(w, cwd, ge.platform, ge.home);
+      return (
+        isProtectedPath(abs, ge.env, ge.platform, ge.home) ||
+        isProtectedPath(realPath(abs, ge.real), ge.env, ge.platform, ge.home)
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * 会递归读取文件内容、且不跳过隐藏或被忽略文件的写法：搜到的 .env、.git 里的内容会进到输出里，
+ * 与直接读受保护文件一样要确认。rg 默认跳过隐藏与 .gitignore 里的文件，加 -u / --hidden / --no-ignore
+ * 就不跳过；grep -r、diff -r、findstr /s 本来就不跳过；PowerShell 的 * 也匹配 .env，
+ * 带 -Recurse 或通配符读取内容（Get-ChildItem -Recurse | Select-String、Get-Content *）同样要确认
+ */
+export function searchesHidden(command: string, powershell: boolean): boolean {
+  return (
+    splitSegments(command, powershell).some((seg) => {
+      // 按 shell 规则拆词：'--hidden'、-\u 还原成真正的参数；拆不了（引号没闭合）当作会读隐藏文件
+      const parsed = shellWords(seg, powershell);
+      if (!parsed) return true;
+      const ws = parsed.map((w) => w.word);
+      const name = (ws[0] ?? "")
+        .replace(/^&/, "")
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/\.exe$/i, "")
+        .toLowerCase();
+      const args = ws.slice(1);
+      const has = (re: RegExp) => args.some((a) => re.test(a));
+      if (name === "rg")
+        return has(/^(-[a-zA-Z]*[u.L]|--unrestricted|--hidden|--no-ignore|--follow)/);
+      if (name === "grep" || name === "egrep" || name === "fgrep")
+        return has(
+          /^(-[a-zA-Z]*[rR]|--recursive|--dereference-recursive|--directories=recurse|-d$)/,
+        );
+      if (name === "diff") return has(/^(-[a-zA-Z]*r|--recursive)/);
+      if (name === "findstr") return has(/^\/s$/i);
+      if (name === "git")
+        return /\bgrep\b/.test(seg) && has(/^--(no-index|untracked|no-exclude-standard)$/);
+      return false;
+    }) ||
+    (powershell && psReadsMany(command))
+  );
+}
+
+/**
+ * 只读的 git 命令也会执行配置里的外部程序：diff.external、diff.<驱动>.command / textconv（git diff / log -p /
+ * show / grep）、filter.<名>.clean / smudge / process（比较工作区文件时）、core.fsmonitor（status 等）。
+ * 仓库的 .git/config 可能来自 Agent 下载的仓库：读一遍仓库与用户的配置（含 include 的文件），配了这些就要确认；
+ * --git-dir、--work-tree 指向的仓库不好找，也确认
+ */
+export function gitRunsConfiguredPrograms(
+  command: string,
+  cwd: string,
+  ge: GuardEnv = defaultEnv(),
+  powershell = false,
+): boolean {
+  const read =
+    ge.readText ??
+    ((p: string) => {
+      try {
+        return readFileSync(p, "utf8");
+      } catch {
+        return undefined;
+      }
+    });
+  if (
+    Object.keys(ge.env).some((k) => /^GIT_(EXTERNAL_DIFF|CONFIG_COUNT|CONFIG_PARAMETERS)$/.test(k))
+  )
+    return splitSegments(command, powershell).some((seg) => isGit(seg, powershell));
+  // include / includeIf 的文件也读（条件不判断，一律当作生效），最多跟 5 层
+  const risky = (file: string, depth = 0): boolean => {
+    const text = read(file);
+    if (text === undefined) return false;
+    if (
+      /^\s*(external|textconv|command|clean|smudge|process)\s*=/im.test(text) ||
+      // core.fsmonitor 是布尔值时用内置的守护进程，是路径时执行该程序
+      [...text.matchAll(/^[ \t]*fsmonitor[ \t]*=([^\n#;]*)/gim)].some(
+        (m) => !/^\s*(true|false|yes|no|on|off|0|1)?\s*$/i.test(m[1] ?? ""),
+      )
+    )
+      return true;
+    const includes = [...text.matchAll(/^[ \t]*path[ \t]*=[ \t]*"?([^"\n#;]*?)"?[ \t]*$/gim)]
+      .map((m) => (m[1] ?? "").trim())
+      .filter(Boolean);
+    if (includes.length === 0 || !/^\s*\[\s*include/im.test(text)) return false;
+    if (depth >= 5) return true;
+    return includes.some((p) =>
+      risky(resolve(dirname(file), p.replace(/^~(?=[\\/]|$)/, ge.home)), depth + 1),
+    );
+  };
+  const userConfigs = [
+    ge.env.GIT_CONFIG_GLOBAL ?? join(ge.home, ".gitconfig"),
+    join(ge.env.XDG_CONFIG_HOME ?? join(ge.home, ".config"), "git", "config"),
+  ];
+  return splitSegments(command, powershell).some((seg) => {
+    const ws = shellWords(seg, powershell)?.map((w) => w.word);
+    if (!ws) return true;
+    if (!isGit(seg, powershell)) return false;
+    let dir = cwd;
+    for (let i = 1; i < ws.length; i++) {
+      const a = ws[i] as string;
+      if (/^--(git-dir|work-tree)/.test(a)) return true;
+      if (a === "-C") dir = resolve(dir, ws[++i] ?? "");
+      else if (!a.startsWith("-")) break;
+    }
+    if (userConfigs.some((p) => risky(p))) return true;
+    const gitDir = findGitDir(dir, read);
+    if (!gitDir) return false;
+    const common = read(join(gitDir, "commondir"))?.trim();
+    const commonDir = common ? resolve(gitDir, common) : gitDir;
+    return [join(commonDir, "config"), join(gitDir, "config.worktree")].some((p) => risky(p));
+  });
+}
+
+function isGit(seg: string, powershell: boolean): boolean {
+  const first = shellWords(seg, powershell)?.[0]?.word ?? "";
+  const base = first.replace(/^&/, "").split(/[\\/]/).pop() ?? "";
+  return /^git(\.exe)?$/i.test(base);
+}
+
+/** 从 dir 往上找仓库的 git 目录：.git 文件夹，或 .git 文件里的 gitdir:（工作树、子模块） */
+function findGitDir(start: string, read: (p: string) => string | undefined): string | undefined {
+  let dir = resolve(start);
+  for (;;) {
+    const dotGit = join(dir, ".git");
+    if (read(join(dotGit, "HEAD")) !== undefined) return dotGit;
+    const link = read(dotGit)?.match(/^gitdir:\s*(.+?)\s*$/m)?.[1];
+    if (link) return resolve(dir, link);
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/** PowerShell：读取内容的 cmdlet 配上递归或通配符 */
+function psReadsMany(command: string): boolean {
+  // Select-String 的匹配模式（-Pattern 之后或第一个位置参数）是正则，里面的 * ? 不是通配符；
+  // 路径参数即使加引号，* ? 仍是通配符（只有 -LiteralPath 不展开）
+  const text = command
+    .replace(/(-pattern\s+)('[^']*'|"[^"]*"|\S+)/gi, "$1P")
+    .replace(/\b(select-string|sls)(\s+)('[^']*'|"[^"]*"|[^-\s]\S*)/gi, "$1$2P");
+  if (!/(^|[\s|;(])(select-string|sls|get-content|gc|cat|type)\b/i.test(text)) return false;
+  return (
+    /(^|\s)-(recurse|r|depth)\b/i.test(text) || /(^|[\s\\/,])[^\s'"|;]*[*?][^\s|;]*/.test(text)
+  );
 }
 
 /** 按模式判断一次工具调用是否需要询问（拒绝也算需要处理） */
@@ -325,7 +551,7 @@ export interface GuardState {
   alwaysAllowed: Set<string>;
 }
 
-export function createGuard(initial: PermissionMode = "ask") {
+export function createGuard(initial: PermissionMode = "ask", gate: PlanGate = planGate) {
   const state: GuardState = { mode: initial, alwaysAllowed: new Set() };
   function guard(pi: unknown): void {
     if (!isGuardApi(pi)) return;
@@ -345,7 +571,10 @@ export function createGuard(initial: PermissionMode = "ask") {
     pi.on("tool_call", async (event: never, ctx) => {
       const call = event as ToolCall;
       const annotations = pi.getAllTools?.().find((t) => t.name === call.toolName)?.annotations;
-      const decision = decide(state.mode, call, ctx.cwd, annotations);
+      // 计划模式先判断：拒绝与放行直接生效，询问时不提供“始终允许”
+      const planDecision = gate.readOnly ? decidePlan(call, annotations, ctx.cwd) : undefined;
+      if (planDecision === "deny") return { block: true, reason: PLAN_DENY_REASON };
+      const decision = planDecision ?? decide(state.mode, call, ctx.cwd, annotations);
       if (decision === "allow") return undefined;
       if (decision === "deny")
         return {
@@ -353,16 +582,31 @@ export function createGuard(initial: PermissionMode = "ask") {
           reason: "受保护的路径（.env、.git、~/.ssh、应用数据目录）不允许写入",
         };
       const command = call.input?.command;
-      const alwaysAsk = typeof command === "string" && isAlwaysAskCommand(command);
+      const inPlan = planDecision === "ask";
+      const alwaysAsk = inPlan || (typeof command === "string" && isAlwaysAskCommand(command));
       // 用户在本会话内已对完全相同的操作选过“始终允许”（始终询问的命令除外）
       const key = approvalKey(call, ctx.cwd);
       if (!alwaysAsk && state.alwaysAllowed.has(key)) return undefined;
       if (!ctx.hasUI) return { block: true, reason: "需要确认，但当前没有可以确认的界面，已拒绝" };
       const choice = await ctx.ui.select(
-        describeCall(call, ctx.cwd),
+        `${inPlan ? PLAN_ASK_PREFIX : ""}${describeCall(call, ctx.cwd)}`,
         alwaysAsk ? [CHOICES.allow, CHOICES.deny] : [CHOICES.allow, CHOICES.always, CHOICES.deny],
         { signal: ctx.signal },
       );
+      // 等确认期间可能开启了计划模式：该拒绝的调用不能因为之前弹出的确认而放行；
+      // 计划模式要询问的调用不能沿用普通确认（尤其“始终允许”），按计划模式重新确认一次
+      const planNow = gate.readOnly ? decidePlan(call, annotations, ctx.cwd) : undefined;
+      if (planNow === "deny") return { block: true, reason: PLAN_DENY_REASON };
+      if (planNow === "ask" && !inPlan && choice !== CHOICES.deny) {
+        const again = await ctx.ui.select(
+          `${PLAN_ASK_PREFIX}${describeCall(call, ctx.cwd)}`,
+          [CHOICES.allow, CHOICES.deny],
+          { signal: ctx.signal },
+        );
+        if (gate.readOnly && decidePlan(call, annotations, ctx.cwd) === "deny")
+          return { block: true, reason: PLAN_DENY_REASON };
+        return again === CHOICES.allow ? undefined : { block: true, reason: "用户拒绝了这次操作" };
+      }
       if (choice === CHOICES.always) {
         state.alwaysAllowed.add(key);
         return undefined;

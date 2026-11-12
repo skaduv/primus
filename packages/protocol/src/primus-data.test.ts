@@ -2,12 +2,17 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  currentTodo,
+  normalizeTodoItems,
+  PLAN_WIDGET,
   PREVIEW_DOCUMENT_MAX_BYTES,
   PREVIEW_IMAGE_MAX_BYTES,
   PREVIEW_MEDIA_MAX_BYTES,
   PREVIEW_TEXT_MAX_BYTES,
   PREVIEW_WIDGET,
+  planToMarkdown,
   previewKindOf,
+  TODO_WIDGET,
 } from "./primus-data.ts";
 
 const SHELL = new URL("../../../apps/desktop/src-tauri/src/", import.meta.url);
@@ -57,5 +62,43 @@ describe("primus:preview", () => {
     expect(exts.length).toBeGreaterThan(0);
     for (const ext of exts)
       expect(["document", "spreadsheet"]).toContain(previewKindOf(`a.${ext}`));
+  });
+});
+
+describe("primus:plan / primus:todo", () => {
+  it("数据主题带 primus: 前缀", () => {
+    expect(PLAN_WIDGET).toBe("primus:plan");
+    expect(TODO_WIDGET).toBe("primus:todo");
+  });
+
+  it("当前步骤：进行中优先，其次第一项未开始；全部完成或跳过时没有", () => {
+    const items = normalizeTodoItems([
+      { id: "1", text: "a", status: "completed" },
+      { id: "2", text: "b", status: "pending" },
+      { id: "3", text: "c", status: "in_progress" },
+    ]);
+    expect(currentTodo(items)?.id).toBe("3");
+    expect(currentTodo(items.slice(0, 2))?.id).toBe("2");
+    expect(currentTodo([{ id: "1", text: "a", status: "skipped" }])).toBeUndefined();
+  });
+
+  it("不合法的待办项丢弃，未知状态按未开始", () => {
+    expect(normalizeTodoItems([{ text: " x ", status: "bogus" }, { text: "" }, null, 3])).toEqual([
+      { id: "1", text: "x", status: "pending" },
+    ]);
+    expect(normalizeTodoItems("x")).toEqual([]);
+  });
+
+  it("计划渲染成 Markdown", () => {
+    const md = planToMarkdown({
+      title: "T",
+      summary: "S",
+      steps: [{ id: "1", title: "a", files: ["x.ts"], detail: "d" }],
+      verification: ["v"],
+      risks: ["r"],
+    });
+    expect(md).toBe(
+      "# T\n\nS\n\n## 步骤\n\n1. **a**\n   - 文件：`x.ts`\n   d\n\n## 风险\n\n- r\n\n## 验证\n\n- v\n",
+    );
   });
 });
