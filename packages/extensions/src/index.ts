@@ -9,7 +9,6 @@ import guard from "./guard/index.ts";
 import narrate from "./narrate/index.ts";
 import plan from "./plan/index.ts";
 import preview from "./preview/index.ts";
-import shell from "./shell/index.ts";
 import subagent from "./subagent/index.ts";
 
 /** 一个第一方扩展模块：接收 Core 的扩展 API（类型不从上游包导入，见 AGENTS.md 第 2.2 节） */
@@ -26,7 +25,6 @@ export const modules: readonly PrimusExtension[] = [
   checkpoint,
   subagent,
   plan,
-  shell,
   narrate,
   contextStats,
   attach,

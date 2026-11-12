@@ -288,6 +288,8 @@ pub(crate) struct ProviderView {
     pub(crate) provider: Provider,
     pub(crate) has_key: bool,
     pub(crate) key_hint: Option<String>,
+    /// 内置渠道：仍参与模型配置与模型选择，但不显示在设置页的渠道管理中
+    pub(crate) hidden: bool,
 }
 
 /// `provider_save` / `provider_delete` 的返回值。
@@ -539,6 +541,7 @@ impl ModelConfigState {
                     provider: p.clone(),
                     has_key: key.is_some(),
                     key_hint: key.as_deref().and_then(providers::key_hint),
+                    hidden: p.id == crate::builtin::SEED_PROVIDER_ID,
                 }
             })
             .collect()
@@ -1032,9 +1035,17 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].provider.id, "ioply");
         assert!(list[0].has_key);
-        assert_eq!(list[0].key_hint.as_deref(), Some("c74e"));
+        assert_eq!(
+            list[0].key_hint,
+            providers::key_hint(crate::builtin::BUILTIN_API_KEY)
+        );
+        assert!(list[0].hidden);
         let json = serde_json::to_string(&list).unwrap();
-        assert!(json.contains("\"hasKey\":true") && json.contains("\"baseUrl\""));
+        assert!(
+            json.contains("\"hasKey\":true")
+                && json.contains("\"baseUrl\"")
+                && json.contains("\"hidden\":true")
+        );
         assert!(
             !json.contains(crate::builtin::BUILTIN_API_KEY),
             "不返回密钥"
@@ -1088,6 +1099,7 @@ mod tests {
         assert_eq!(p.provider.id, "my-gw");
         assert_eq!(p.provider.base_url, "https://gw.example", "去掉末尾的 /");
         assert_eq!(p.key_hint.as_deref(), Some("1234"));
+        assert!(!p.hidden, "用户渠道不隐藏");
         assert_eq!(created.models.error, None);
         assert_eq!(created.models.default_model.as_deref(), Some("my-gw/m1"));
         assert_eq!(created.models.compaction_model.as_deref(), Some("my-gw/m1"));

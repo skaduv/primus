@@ -9,9 +9,21 @@ const t = strings.settings.providers;
 const td = t.dialog;
 const MODEL_KEYS = ["contextWindow", "id", "input", "maxTokens", "name", "reasoning"];
 
-function setup() {
+async function setup({ seedVisible = true }: { seedVisible?: boolean } = {}) {
   const platform = createMockPlatform({ fetchDelayMs: 0 });
   setPlatformForTesting(platform);
+  if (seedVisible) {
+    const [seed] = await platform.providersList();
+    if (!seed) throw new Error("缺少 mock 种子渠道");
+    await platform.providerSave({
+      name: "Work Gateway",
+      api: seed.api,
+      baseUrl: seed.baseUrl,
+      apiKey: "sk-visible-1234",
+      enabled: true,
+      models: seed.models,
+    });
+  }
   const save = vi.spyOn(platform, "providerSave");
   const fetch = vi.spyOn(platform, "providerFetchModels");
   const remove = vi.spyOn(platform, "providerDelete");
@@ -19,12 +31,12 @@ function setup() {
   return { platform, save, fetch, remove };
 }
 
-async function ioplyRow() {
+async function visibleRow(name = "Work Gateway") {
   const list = await screen.findByRole("list", { name: t.title });
   const row = within(list)
     .getAllByRole("listitem")
-    .find((li) => li.textContent?.includes("ioply"));
-  if (!row) throw new Error("没有 ioply");
+    .find((li) => li.textContent?.includes(name));
+  if (!row) throw new Error(`没有 ${name}`);
   return row;
 }
 
@@ -40,20 +52,32 @@ function fill(dialog: HTMLElement, label: string, value: string) {
 describe("设置·模型渠道", () => {
   afterEach(() => setPlatformForTesting(undefined));
 
-  it("列出预置的 ioply：协议、接口地址、密钥末 4 位、模型数与启用开关", async () => {
-    setup();
-    const row = await ioplyRow();
+  it("渠道管理隐藏内置渠道，但模型配置仍包含它的模型", async () => {
+    const { platform } = await setup({ seedVisible: false });
+    expect(await screen.findByText(t.empty)).toBeTruthy();
+    expect(screen.queryByRole("list", { name: t.title })).toBeNull();
+    const [ioply] = await platform.providersList();
+    expect(ioply).toMatchObject({ id: "ioply", hidden: true });
+    expect((await platform.modelsGet()).models.map((m) => m.key)).toContain("ioply/mock-large");
+  });
+
+  it("列出用户渠道：协议、接口地址、密钥末 4 位、模型数与启用开关", async () => {
+    await setup();
+    const row = await visibleRow();
+    expect(screen.queryByText("ioply")).toBeNull();
     expect(row.textContent).toContain("OpenAI Responses");
     expect(row.textContent).toContain("http://218.93.48.244:3304/openai/v1");
-    expect(row.textContent).toContain(`${t.key} ••••c74e · 2 个模型`);
-    const toggle = within(row).getByRole("switch", { name: "启用 ioply" }) as HTMLInputElement;
+    expect(row.textContent).toContain(`${t.key} ••••1234 · 2 个模型`);
+    const toggle = within(row).getByRole("switch", {
+      name: "启用 Work Gateway",
+    }) as HTMLInputElement;
     expect(toggle.checked).toBe(true);
-    expect(within(row).getByRole("button", { name: "编辑 ioply" })).toBeTruthy();
-    expect(within(row).getByRole("button", { name: "删除 ioply" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "编辑 Work Gateway" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "删除 Work Gateway" })).toBeTruthy();
   });
 
   it("添加渠道：填写、获取模型、勾选并调整参数，保存时只提交契约字段", async () => {
-    const { save, fetch } = setup();
+    const { save, fetch } = await setup();
     const dialog = await openAdd();
     fill(dialog, td.name, "  公司网关 ");
     fireEvent.change(within(dialog).getByRole("combobox", { name: td.api }), {
@@ -142,8 +166,8 @@ describe("设置·模型渠道", () => {
   });
 
   it("编辑渠道：密钥留空不修改，保存参数不含 apiKey；获取模型带渠道 ID 与输入框中的值", async () => {
-    const { save, fetch } = setup();
-    fireEvent.click(within(await ioplyRow()).getByRole("button", { name: "编辑 ioply" }));
+    const { save, fetch } = await setup();
+    fireEvent.click(within(await visibleRow()).getByRole("button", { name: "编辑 Work Gateway" }));
     const dialog = await screen.findByRole("dialog", { name: td.editTitle });
     expect((within(dialog).getByLabelText(td.apiKey) as HTMLInputElement).placeholder).toBe(
       td.apiKeyKeep,
@@ -156,7 +180,7 @@ describe("设置·模型渠道", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: td.fetch }));
     await waitFor(() => expect(fetch).toHaveBeenCalled());
     expect(fetch).toHaveBeenCalledWith({
-      id: "ioply",
+      id: "work-gateway",
       api: "openai-responses",
       baseUrl: "http://218.93.48.244:3304/openai/v1",
     });
@@ -166,14 +190,14 @@ describe("设置·模型渠道", () => {
     })) as HTMLInputElement;
     expect(coder.checked).toBe(false);
 
-    fill(dialog, td.name, "ioply 网关");
+    fill(dialog, td.name, "Work 网关");
     fireEvent.click(within(dialog).getByRole("button", { name: td.save }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     const input = save.mock.calls[0]?.[0] as ProviderSaveInput;
     expect("apiKey" in input).toBe(false);
     expect(input).toStrictEqual({
-      id: "ioply",
-      name: "ioply 网关",
+      id: "work-gateway",
+      name: "Work 网关",
       api: "openai-responses",
       baseUrl: "http://218.93.48.244:3304/openai/v1",
       enabled: true,
@@ -197,11 +221,11 @@ describe("设置·模型渠道", () => {
       ],
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect((await ioplyRow()).textContent).toContain("ioply 网关");
+    expect((await visibleRow("Work 网关")).textContent).toContain("Work 网关");
   });
 
   it("获取模型失败时在对话框内显示原因", async () => {
-    setup();
+    await setup();
     const dialog = await openAdd();
     fill(dialog, td.baseUrl, "https://gw.example.com/v1");
     fill(dialog, td.apiKey, MOCK_BAD_KEY);
@@ -213,7 +237,7 @@ describe("设置·模型渠道", () => {
   });
 
   it("获取前缺少地址或密钥时提示，不发请求", async () => {
-    const { fetch } = setup();
+    const { fetch } = await setup();
     const dialog = await openAdd();
     fireEvent.click(within(dialog).getByRole("button", { name: td.fetch }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain(td.errors.fetchNeeds);
@@ -221,7 +245,7 @@ describe("设置·模型渠道", () => {
   });
 
   it("保存前校验：名称、接口地址、密钥与模型参数的错误显示在字段下方", async () => {
-    const { save, fetch } = setup();
+    const { save, fetch } = await setup();
     const dialog = await openAdd();
     fill(dialog, td.baseUrl, "gw.example.com");
     fireEvent.click(within(dialog).getByRole("button", { name: td.save }));
@@ -244,28 +268,30 @@ describe("设置·模型渠道", () => {
   });
 
   it("删除前确认，确认后从列表移除", async () => {
-    const { remove } = setup();
-    fireEvent.click(within(await ioplyRow()).getByRole("button", { name: "删除 ioply" }));
-    const dialog = await screen.findByRole("dialog", { name: "删除渠道“ioply”？" });
+    const { remove } = await setup();
+    fireEvent.click(within(await visibleRow()).getByRole("button", { name: "删除 Work Gateway" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "删除渠道“Work Gateway”？",
+    });
     expect(remove).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: t.deleteConfirm }));
-    await waitFor(() => expect(remove).toHaveBeenCalledWith("ioply"));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith("work-gateway"));
     expect(await screen.findByText(t.empty)).toBeTruthy();
     expect(screen.queryByRole("list", { name: t.title })).toBeNull();
   });
 
   it("停用开关保存 enabled，不带密钥", async () => {
-    const { save } = setup();
-    fireEvent.click(within(await ioplyRow()).getByRole("switch", { name: "启用 ioply" }));
+    const { save } = await setup();
+    fireEvent.click(within(await visibleRow()).getByRole("switch", { name: "启用 Work Gateway" }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     const input = save.mock.calls[0]?.[0] as ProviderSaveInput;
-    expect(input).toMatchObject({ id: "ioply", enabled: false });
+    expect(input).toMatchObject({ id: "work-gateway", enabled: false });
     expect("apiKey" in input).toBe(false);
     await waitFor(() =>
       expect(
         (
           within(screen.getByRole("list", { name: t.title })).getByRole("switch", {
-            name: "启用 ioply",
+            name: "启用 Work Gateway",
           }) as HTMLInputElement
         ).checked,
       ).toBe(false),
@@ -273,19 +299,19 @@ describe("设置·模型渠道", () => {
   });
 
   it("后台获取到模型列表（models_watch 推送）后列表随之更新", async () => {
-    const { platform } = setup();
-    await ioplyRow();
-    const [ioply] = await platform.providersList();
-    if (!ioply) throw new Error("没有 ioply");
+    const { platform } = await setup();
+    await visibleRow();
+    const work = (await platform.providersList()).find((p) => p.id === "work-gateway");
+    if (!work) throw new Error("没有 Work Gateway");
     await act(async () => {
       await platform.providerSave({
-        id: ioply.id,
-        name: ioply.name,
-        api: ioply.api,
-        baseUrl: ioply.baseUrl,
+        id: work.id,
+        name: work.name,
+        api: work.api,
+        baseUrl: work.baseUrl,
         enabled: true,
         models: [
-          ...ioply.models,
+          ...work.models,
           {
             id: "mock-coder",
             name: "Mock 编程模型",
@@ -297,7 +323,7 @@ describe("设置·模型渠道", () => {
         ],
       });
     });
-    await waitFor(async () => expect((await ioplyRow()).textContent).toContain("3 个模型"));
+    await waitFor(async () => expect((await visibleRow()).textContent).toContain("3 个模型"));
   });
 
   it("合并获取结果：保留已勾选与改过的参数，接口未列出但已勾选的模型保留", () => {

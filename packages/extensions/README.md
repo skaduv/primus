@@ -9,7 +9,6 @@
 | `checkpoint` | `turn_start`、`tool_call`（write/edit） | 影子仓库快照、回滚、变更清单 | `primus:changes`；`/primus-restore`、`/primus-revert-file` |
 | `subagent` | 自定义工具 `subagent` | 子 Agent 进程管理与结果汇总 | `primus:subagents` |
 | `plan` | `session_start`、`session_compact`、`before_agent_start`、`agent_start`、`turn_end`、`agent_before_settle`（待办提醒）；自定义工具 `plan_submit`、`todo`、`ask_user`（只读约束由 `guard` 经 `plan/gate.ts` 执行） | 计划模式（只读调研 → 提交结构化计划 → 审批后执行）、待办、澄清提问 | `primus:plan`、`primus:todo`、`primus:ask`；`/primus-plan on\|off\|status\|approve <JSON>\|revise <JSON>\|answer <JSON>` |
-| `shell` | `before_agent_start`；`tool_call`（bash/powershell） | 命令工具只有 PowerShell 时往系统提示词追加 PowerShell 写法要点（技术方案第 12.3 节）；Windows 编码修正、环境变量清理 | — |
 | `narrate` | `before_agent_start` | 往系统提示词末尾追加“进度说明”：调用工具前、每个阶段结束时用一两句话说明在做什么，最后一条回复写总结（桌面端按“工作过程 + 总结”展示） | — |
 | `preview` | 自定义工具 `preview`（只读、不联网，guard 不弹确认） | 在右栏打开文件或文件夹的预览；返回结构化状态 `shown` / `unsupported` / `not_found` / `denied` / `too_large` / `no_ui`（`@primus/protocol` 的 `PreviewToolDetails`） | `primus:preview` |
 

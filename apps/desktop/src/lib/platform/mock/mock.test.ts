@@ -23,7 +23,7 @@ describe("mock 平台", () => {
       loginAvailable: false,
     });
     const [ioply] = await platform.providersList();
-    expect(ioply).toMatchObject({ id: "ioply", hasKey: true, keyHint: "c74e" });
+    expect(ioply).toMatchObject({ id: "ioply", hasKey: true, keyHint: "c74e", hidden: true });
     expect(JSON.stringify(ioply)).not.toContain("placeholder");
     expect((await platform.modelsGet()).defaultModel).toBe("ioply/mock-large");
 

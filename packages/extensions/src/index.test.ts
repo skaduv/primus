@@ -8,7 +8,6 @@ import primus, { modules } from "./index.ts";
 import narrate from "./narrate/index.ts";
 import plan from "./plan/index.ts";
 import preview from "./preview/index.ts";
-import shell from "./shell/index.ts";
 import subagent from "./subagent/index.ts";
 
 describe("primus-bundle 扩展入口", () => {
@@ -16,9 +15,9 @@ describe("primus-bundle 扩展入口", () => {
     expect(typeof primus).toBe("function");
   });
 
-  it("注册全部 10 个第一方扩展且不重复", () => {
-    expect(modules).toHaveLength(10);
-    expect(new Set(modules).size).toBe(10);
+  it("注册全部 9 个第一方扩展且不重复", () => {
+    expect(modules).toHaveLength(9);
+    expect(new Set(modules).size).toBe(9);
     for (const ext of modules) expect(typeof ext).toBe("function");
     expect(modules).toEqual(
       expect.arrayContaining([
@@ -27,7 +26,6 @@ describe("primus-bundle 扩展入口", () => {
         checkpoint,
         subagent,
         plan,
-        shell,
         narrate,
         contextStats,
         attach,
