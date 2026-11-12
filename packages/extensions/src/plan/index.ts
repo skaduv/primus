@@ -404,8 +404,8 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     for (const resolve of pending.values()) resolve({ kind: "cancel" });
     pending.clear();
     if (state.status === "awaiting") state.status = "cancelled";
-    // 规划阶段的提问随计划模式一起作废：卡片收起，工具按未回答返回（这一轮结束）
-    if (wasPlanning) cancelAsks();
+    // 等待中的提问（规划或执行阶段）随计划模式一起作废：卡片收起，工具按未回答返回（这一轮结束）
+    cancelAsks();
   }
 
   /** 撤销所有等待中的 ask_user：提问卡片与逐题 select 两种界面都结束 */

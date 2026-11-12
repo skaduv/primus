@@ -362,6 +362,29 @@ describe("primus-plan", () => {
     expect(ctx.ui.setWidget.mock.calls.at(-1)).toEqual([ASK_WIDGET, undefined]);
   });
 
+  it("ask_user：执行阶段提问时关闭计划模式，提问同样作废", async () => {
+    const { tools, ctx, cmd, plan } = setup();
+    await cmd("on");
+    const submit = (tools[PLAN_SUBMIT_TOOL] as Tool).execute("t", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p1" })}`);
+    await submit;
+    expect(plan.state.phase).toBe("executing");
+    const q = [{ id: "x", question: "选哪个？", options: [{ label: "A" }, { label: "B" }] }];
+    const pending = (tools[ASK_USER_TOOL] as Tool).execute(
+      "t",
+      { questions: q },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await Promise.resolve();
+    await cmd("off");
+    const r = await pending;
+    expect(r.isError).toBe(true);
+    expect(ctx.ui.setWidget.mock.calls.at(-1)).toEqual([ASK_WIDGET, undefined]);
+  });
+
   it("ask_user：没有 setWidget 时逐题 select，“其他”转文本输入；没有界面时报错", async () => {
     const { tools, ctx } = setup();
     const ask = tools[ASK_USER_TOOL] as Tool;

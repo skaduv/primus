@@ -322,6 +322,12 @@ describe("primus-guard 计划模式（只读）", () => {
       "cat ~/.ssh/id_rsa",
       "cat .en?",
       "type C:\\Users\\a\\.ssh\\id_rsa",
+      // 递归读取、不跳过隐藏或被忽略的文件
+      "rg -uu secret",
+      "rg --hidden --no-ignore key",
+      "grep -rn key .",
+      "diff -ru a b",
+      "git grep --untracked key",
     ])
       expect(decidePlan({ toolName: "bash", input: { command } }, undefined, "/w"), command).toBe(
         "ask",

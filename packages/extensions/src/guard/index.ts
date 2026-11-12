@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type PlanGate, planGate } from "../plan/gate.ts";
-import { classifyCommand } from "../plan/readonly.ts";
+import { classifyCommand, splitSegments } from "../plan/readonly.ts";
 
 export const MODES = ["ask", "edit", "full"] as const;
 export type PermissionMode = (typeof MODES)[number];
@@ -257,7 +257,10 @@ export function decidePlan(
     if (c === "unknown") return "ask";
     // 只读命令也可能读受保护的文件（cat .env、git show HEAD:.env、type ~\.ssh\id_rsa）：
     // 与 read 工具一样要确认，不能因为是只读命令就直接放行
-    return commandTouchesProtected(command, cwd, ge) ? "ask" : "allow";
+    return commandTouchesProtected(command, cwd, ge) ||
+      searchesHidden(command, call.toolName === "powershell")
+      ? "ask"
+      : "allow";
   }
   if (annotations?.readOnlyHint === true && annotations.openWorldHint === false) return undefined;
   return "ask";
@@ -289,6 +292,53 @@ export function commandTouchesProtected(
       return false;
     }
   });
+}
+
+/**
+ * 会递归读取文件内容、且不跳过隐藏或被忽略文件的写法：搜到的 .env、.git 里的内容会进到输出里，
+ * 与直接读受保护文件一样要确认。rg 默认跳过隐藏与 .gitignore 里的文件，加 -u / --hidden / --no-ignore
+ * 就不跳过；grep -r、diff -r、findstr /s 本来就不跳过；PowerShell 的 * 也匹配 .env，
+ * 带 -Recurse 或通配符读取内容（Get-ChildItem -Recurse | Select-String、Get-Content *）同样要确认
+ */
+export function searchesHidden(command: string, powershell: boolean): boolean {
+  return (
+    splitSegments(command, powershell).some((seg) => {
+      const ws = seg.match(/'[^']*'|"[^"]*"|\S+/g) ?? [];
+      const name = (ws[0] ?? "")
+        .replace(/^&/, "")
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/\.exe$/i, "")
+        .toLowerCase();
+      const args = ws.slice(1);
+      const has = (re: RegExp) => args.some((a) => re.test(a));
+      if (name === "rg")
+        return has(/^(-[a-zA-Z]*[u.L]|--unrestricted|--hidden|--no-ignore|--follow)/);
+      if (name === "grep" || name === "egrep" || name === "fgrep")
+        return has(
+          /^(-[a-zA-Z]*[rR]|--recursive|--dereference-recursive|--directories=recurse|-d$)/,
+        );
+      if (name === "diff") return has(/^(-[a-zA-Z]*r|--recursive)/);
+      if (name === "findstr") return has(/^\/s$/i);
+      if (name === "git")
+        return /\bgrep\b/.test(seg) && has(/^--(no-index|untracked|no-exclude-standard)$/);
+      return false;
+    }) ||
+    (powershell && psReadsMany(command))
+  );
+}
+
+/** PowerShell：读取内容的 cmdlet 配上递归或通配符 */
+function psReadsMany(command: string): boolean {
+  // Select-String 的匹配模式（-Pattern 之后或第一个位置参数）是正则，里面的 * ? 不是通配符；
+  // 路径参数即使加引号，* ? 仍是通配符（只有 -LiteralPath 不展开）
+  const text = command
+    .replace(/(-pattern\s+)('[^']*'|"[^"]*"|\S+)/gi, "$1P")
+    .replace(/\b(select-string|sls)(\s+)('[^']*'|"[^"]*"|[^-\s]\S*)/gi, "$1$2P");
+  if (!/(^|[\s|;(])(select-string|sls|get-content|gc|cat|type)\b/i.test(text)) return false;
+  return (
+    /(^|\s)-(recurse|r|depth)\b/i.test(text) || /(^|[\s\\/,])[^\s'"|;]*[*?][^\s|;]*/.test(text)
+  );
 }
 
 /** 按模式判断一次工具调用是否需要询问（拒绝也算需要处理） */

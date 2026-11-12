@@ -217,6 +217,20 @@ const GIT_READONLY = new Set([
   "help",
 ]);
 
+/** 子命令前允许出现的 git 全局选项（不带参数的） */
+const GIT_GLOBAL_FLAGS = new Set([
+  "--no-pager",
+  "-P",
+  "-p",
+  "--paginate",
+  "--no-optional-locks",
+  "--bare",
+  "--literal-pathspecs",
+  "--no-replace-objects",
+  "--version",
+  "--help",
+]);
+
 /** 会改动仓库或远端的 git 子命令 */
 const GIT_WRITE = new Set([
   "add",
@@ -405,6 +419,9 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   const sub = args.find((a) => !a.startsWith("-"))?.toLowerCase();
 
   if (WRITE_COMMANDS.has(name)) return "write";
+  // PowerShell 脚本块里可以是任意代码。sort、where、echo、cat、ls 等在 PowerShell 里都是 cmdlet 的别名，
+  // 不能先按通用白名单放行：只要段里有脚本块，先在这里判断
+  if (powershell && unquoted(segment).includes("{")) return classifyPsBlock(segment, name);
   // 嵌套的 shell（bash -c、powershell -Command、cmd /c 等）：内容判断不了
   if (["bash", "sh", "zsh", "powershell", "pwsh", "cmd", "wsl"].includes(name)) return "unknown";
   if (name === "git") {
@@ -412,23 +429,31 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
     if (args.includes("-c") || hasArg(/^--config-env/)) return "unknown";
     // 只读子命令也能把结果写进文件（git diff --output=x、git log -o x 不存在但 --output 通用）
     if (hasArg(/^--output(=|$)/)) return "write";
-    // git -C <dir> <子命令>
+    // 子命令前的全局选项只认这几个；--exec-path 等能换掉实际执行的程序，判断不了
     let i = 0;
     while (i < args.length && (args[i] as string).startsWith("-")) {
-      i += args[i] === "-C" || args[i] === "-c" ? 2 : 1;
+      const a = args[i] as string;
+      if (a === "-C" || a === "--git-dir" || a === "--work-tree") i += 2;
+      else if (/^--(git-dir|work-tree)=/.test(a) || GIT_GLOBAL_FLAGS.has(a)) i += 1;
+      else return "unknown";
     }
     const gsub = args[i]?.toLowerCase();
     if (gsub === undefined) return "readonly";
     if (GIT_WRITE.has(gsub)) return "write";
+    const rest = args.slice(i + 1);
+    // 只读子命令里会调用外部程序的选项：git grep -O / --open-files-in-pager（在分页器里打开），
+    // 外部 diff（--ext-diff）、文本转换与过滤器（--textconv、--filters），git help 打开浏览器 / man / info
+    if (gsub === "grep" && rest.some((a) => /^--open-files-in-pager|^-[a-zA-Z]*O/.test(a)))
+      return "unknown";
+    if (rest.some((a) => /^--(ext-diff|textconv|filters)$/.test(a))) return "unknown";
+    if (gsub === "help" && rest.some((a) => a.startsWith("-"))) return "unknown";
     if (gsub === "branch" || gsub === "remote") {
-      const rest = args.slice(i + 1);
       const listing = rest.every((a) =>
         ["-a", "-r", "-v", "-vv", "--list", "-l", "--show-current", "--all"].includes(a),
       );
       return listing ? "readonly" : "write";
     }
     if (gsub === "config") {
-      const rest = args.slice(i + 1);
       return rest.some((a) => ["--get", "--list", "-l", "--get-all"].includes(a))
         ? "readonly"
         : "unknown";
@@ -485,35 +510,36 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
   if (name === "rg" && hasArg(/^--pre(=|$)/)) return "unknown";
   if (name === "fd" && hasArg(/^(-x|-X|--exec|--exec-batch)(=|$)/)) return "unknown";
   if (COMMON_READONLY.has(name)) return "readonly";
-  if (powershell && PS_READONLY.has(name)) {
-    // 脚本块里可能有任意代码：ForEach-Object / Where-Object 的块内再判断一次；
-    // 其他 cmdlet 带脚本块（Sort-Object -Property { … }、Select-Object @{ e = { … } }、Group-Object { … }）判断不了
-    const block = /\{([\s\S]*)\}/.exec(unquoted(segment))?.[1];
-    if (
-      block !== undefined &&
-      !["foreach-object", "%", "where-object", "where", "?"].includes(name)
-    )
-      return "unknown";
-    if (block !== undefined) {
-      // 块内以 $、引号、数字开头的段是表达式（$_.Length -gt 1000），不是命令；表达式里再用括号调用命令
-      // （$_.Name -eq (Get-Item a)）、以括号开头的段判断不了；其余段按命令判断
-      let inner: CommandClass = "readonly";
-      for (const seg of splitSegments(block, true)) {
-        if (PS_ASSIGNMENT.test(seg) || /^\(|\(\s*[A-Za-z]/.test(unquoted(seg))) return "unknown";
-        if (/^[$'"\d!]/.test(seg)) continue;
-        const c = classifySegment(seg, true);
-        if (c === "write") return "write";
-        if (c === "unknown") inner = "unknown";
-      }
-      if (inner === "unknown") return "unknown";
-      // 块里调用对象方法（$_.Delete()）或调用脚本（&）判断不了
-      return /\.\w+\s*\(|&/.test(unquoted(block)) ? "unknown" : "readonly";
-    }
-    return "readonly";
-  }
+  if (powershell && PS_READONLY.has(name)) return "readonly";
   // 变量读取（$x、$PSVersionTable）
   if (powershell && /^\$[\w:]+$/.test(first) && args.length === 0) return "readonly";
   return "unknown";
+}
+
+/** 能执行脚本块的过滤 / 遍历 cmdlet（含别名）：块内再判断一次；其他命令带脚本块判断不了 */
+const PS_BLOCK_CMDLETS = new Set(["foreach-object", "foreach", "%", "where-object", "where", "?"]);
+
+function classifyPsBlock(segment: string, name: string): CommandClass {
+  const bare = unquoted(segment);
+  if (!PS_BLOCK_CMDLETS.has(name)) return "unknown";
+  const open = bare.indexOf("{");
+  const close = bare.lastIndexOf("}");
+  if (close < open) return "unknown";
+  const block = bare.slice(open + 1, close);
+  // 嵌套脚本块、调用符 & 与点调用 . { }、静态方法 [IO.File]::Delete()、对象方法 $_.Delete()、
+  // 括号里调用命令 (Remove-Item a)：都判断不了
+  if (/[{}]|&|::|(^|[\s;(])\.\s|\.\w+\s*\(|\(\s*[A-Za-z]/.test(block)) return "unknown";
+  // 块外只能有参数（-FilterScript、-Process 等）
+  let inner: CommandClass = "readonly";
+  for (const seg of splitSegments(block, true)) {
+    if (PS_ASSIGNMENT.test(seg) || seg.startsWith("(")) return "unknown";
+    // 以 $、引号、数字开头的段是表达式（$_.Length -gt 1000），不是命令；其余段按命令判断
+    if (/^[$'"\d!]/.test(seg)) continue;
+    const c = classifySegment(seg, true);
+    if (c === "write") return "write";
+    if (c === "unknown") inner = "unknown";
+  }
+  return inner;
 }
 
 /** 判断一条命令；`powershell` 为 true 时按 PowerShell 语法（Windows 默认的命令工具） */
