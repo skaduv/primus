@@ -355,6 +355,11 @@ export interface Platform {
    * 最多 2000 项（`truncated`）；隐藏 / 系统项带 `hidden`
    */
   previewDir(path: string): Promise<DirListing>;
+  /**
+   * 右栏可运行的网页预览：登记文件所在文件夹（校验同 `openPath`），返回 `primus-preview` 协议下该文件的 URL。
+   * 页面放进只给 `allow-scripts` 的沙箱 iframe，脚本、同文件夹的相对资源与 https 资源都能加载
+   */
+  previewServe(path: string): Promise<string>;
   storageUsage(): Promise<Record<string, number>>;
   storageClean(category: string): Promise<void>;
   diagnosticsExport(options?: Record<string, unknown>): Promise<string>;
@@ -487,6 +492,7 @@ export const COMMANDS = {
   previewFile: "preview_file",
   previewFileBytes: "preview_file_bytes",
   previewDir: "preview_dir",
+  previewServe: "preview_serve",
   storageUsage: "storage_usage",
   storageClean: "storage_clean",
   diagnosticsExport: "diagnostics_export",

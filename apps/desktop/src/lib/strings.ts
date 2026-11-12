@@ -51,6 +51,7 @@ export const strings = {
     renderFailed: "无法显示此文件：",
     /** 网页预览（iframe 的可访问名称） */
     webPage: "网页预览",
+    svgPage: "SVG 预览",
     /** PDF 预览（iframe 的可访问名称） */
     pdf: "PDF 预览",
     /** 表格预览（网格的可访问名称） */

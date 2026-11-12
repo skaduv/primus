@@ -78,6 +78,36 @@ describe("右栏文件预览：显示打开后的样子", () => {
     expect(screen.queryByText(/<h1>/)).toBeNull();
   });
 
+  it("有预览协议时网页在只许运行脚本的沙箱里打开协议地址（动画、交互页面能动）", async () => {
+    const { platform, previewFile } = setup();
+    vi.spyOn(platform, "previewServe").mockResolvedValue(
+      "http://primus-preview.localhost/abc/index.html",
+    );
+    previewFile.mockResolvedValue({ kind: "text", text: "<p>x</p>", truncated: true, size: 2e6 });
+    render(<FilePreview />);
+    act(() => showPreview("C:/w/index.html"));
+    const frame = (await screen.findByLabelText(t.webPage)) as HTMLIFrameElement;
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(frame.getAttribute("src")).toMatch(
+      /^http:\/\/primus-preview\.localhost\/abc\/index\.html\?v=/,
+    );
+    expect(frame.getAttribute("srcdoc")).toBeNull();
+    // 协议提供整份文件，不提示截断
+    expect(screen.queryByText(t.truncated)).toBeNull();
+  });
+
+  it("有预览协议时 SVG 也在沙箱 iframe 中打开（JS 动画能动）", async () => {
+    const { platform, previewFile } = setup();
+    vi.spyOn(platform, "previewServe").mockResolvedValue(
+      "http://primus-preview.localhost/abc/a.svg",
+    );
+    previewFile.mockResolvedValue({ kind: "text", text: "<svg/>", truncated: false, size: 6 });
+    render(<FilePreview />);
+    act(() => showPreview("/w/a.svg"));
+    const frame = (await screen.findByLabelText(t.svgPage)) as HTMLIFrameElement;
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+  });
+
   it("截断的网页仍渲染，并提示只显示了开头", async () => {
     const { previewFile } = setup();
     previewFile.mockResolvedValue({ kind: "text", text: "<p>x</p>", truncated: true, size: 2e6 });
@@ -87,7 +117,7 @@ describe("右栏文件预览：显示打开后的样子", () => {
     expect(screen.getByText(t.truncated)).toBeTruthy();
   });
 
-  it("SVG 按图片显示", async () => {
+  it("没有预览协议时 SVG 按图片显示", async () => {
     const { previewFile } = setup();
     previewFile.mockResolvedValue({ kind: "text", text: "<svg/>", truncated: false, size: 6 });
     render(<FilePreview />);

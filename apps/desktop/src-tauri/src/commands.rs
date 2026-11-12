@@ -101,6 +101,17 @@ pub(crate) fn preview_dir(path: String) -> Result<crate::preview::DirListing, St
     crate::preview::list_dir(&checked.path, crate::platform::is_hidden_entry)
 }
 
+/// 右栏可运行的网页预览（附录 B `preview_serve`）：校验同 `open_path`，登记文件所在文件夹，
+/// 返回 `primus-preview` 协议下该文件的 URL（见 preview_protocol）
+#[tauri::command(async)]
+pub(crate) fn preview_serve(
+    roots: tauri::State<'_, crate::preview_protocol::PreviewRoots>,
+    path: String,
+) -> Result<String, String> {
+    let checked = crate::open_path::check_path(&path)?;
+    roots.serve(&checked.path)
+}
+
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
 #[tauri::command]
 pub fn window_set_bounds(

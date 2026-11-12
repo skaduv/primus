@@ -18,6 +18,7 @@ mod open_path;
 mod paths;
 mod platform;
 mod preview;
+mod preview_protocol;
 mod providers;
 mod rpc_bridge;
 mod session_index;
@@ -108,6 +109,17 @@ pub fn run() {
         }))
         // 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files）
         .plugin(tauri_plugin_dialog::init())
+        // 右栏可运行的网页预览（preview_protocol）：只读提供已登记文件夹里的文件，读文件放到阻塞线程池
+        .register_asynchronous_uri_scheme_protocol(
+            preview_protocol::SCHEME,
+            |ctx, request, responder| {
+                let app = ctx.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let roots = app.state::<preview_protocol::PreviewRoots>();
+                    responder.respond(preview_protocol::respond(&roots, &request));
+                });
+            },
+        )
         // 自动更新：只在 Rust 侧使用（updater.rs），capabilities 不授予 WebView 任何 updater 权限
         .plugin(tauri_plugin_updater::Builder::new().build())
         // WebView2 用户数据放进 data\users\<SID>\webview（约束 C2，第 4.2 节），不落到 %LOCALAPPDATA%：
@@ -241,6 +253,7 @@ pub fn run() {
         .manage(data_paths)
         .manage(supervisor)
         .manage(sessions::AppSessions::default())
+        .manage(preview_protocol::PreviewRoots::default())
         .manage(workspaces::Workspaces::new(&workspaces_dir))
         .manage(model_config)
         .manage(updater)
@@ -253,6 +266,7 @@ pub fn run() {
             commands::preview_file,
             commands::preview_file_bytes,
             commands::preview_dir,
+            commands::preview_serve,
             commands::workspace_open,
             commands::workspace_list,
             commands::workspace_inspect,

@@ -1306,6 +1306,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       if (!MOCK_PREVIEW_BYTES.test(absolute)) throw new Error("该类型的文件不能按文档预览");
       return notAvailable("读取本机文档");
     },
+    // 浏览器预览没有 primus-preview 协议：前端退回 srcdoc（不运行脚本）
+    previewServe: async (path) => {
+      mockAbsolutePath(path);
+      return notAvailable("可运行的网页预览");
+    },
     // 浏览器预览读不到本机文件夹：返回固定的示例列表（文件夹在前）
     previewDir: async (path) => {
       mockAbsolutePath(path);
