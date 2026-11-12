@@ -333,6 +333,8 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   let epoch = 0;
   /** 等待回答的 ask_user：id → 兑现函数（undefined 表示用户关闭了提问） */
   const pendingAsk = new Map<string, (a: Record<string, AskAnswer> | undefined) => void>();
+  /** 逐题 select 界面的提问：撤销时中止对话框 */
+  const askAborts = new Set<AbortController>();
   let askCount = 0;
   /** 执行计划时：距上次调用 todo（或上次提醒）的模型回合数；这一轮已调用过 todo；这一轮结束前已提醒过 */
   let turnsWithoutTodo = 0;
@@ -402,6 +404,16 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     for (const resolve of pending.values()) resolve({ kind: "cancel" });
     pending.clear();
     if (state.status === "awaiting") state.status = "cancelled";
+    // 规划阶段的提问随计划模式一起作废：卡片收起，工具按未回答返回（这一轮结束）
+    if (wasPlanning) cancelAsks();
+  }
+
+  /** 撤销所有等待中的 ask_user：提问卡片与逐题 select 两种界面都结束 */
+  function cancelAsks(): void {
+    for (const resolve of pendingAsk.values()) resolve(undefined);
+    pendingAsk.clear();
+    for (const c of askAborts) c.abort();
+    askAborts.clear();
   }
 
   /** 这一轮要注入的提示（只在用户发起的回合调用） */
@@ -656,8 +668,27 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     // 没有提问卡片的界面：逐题 select，“其他”再弹输入框
     const select = ctx.ui?.select;
     if (typeof select !== "function") return result(t.noUi, undefined, { isError: true });
+    const own = new AbortController();
+    askAborts.add(own);
+    if (signal?.aborted) own.abort();
+    signal?.addEventListener("abort", () => own.abort(), { once: true });
+    try {
+      return await askBySelect(questions, own.signal, ctx, select);
+    } finally {
+      askAborts.delete(own);
+    }
+  }
+
+  async function askBySelect(
+    questions: Exclude<ReturnType<typeof normalizeQuestions>, string>,
+    signal: AbortSignal,
+    ctx: PlanContext,
+    select: NonNullable<NonNullable<PlanContext["ui"]>["select"]>,
+  ): Promise<ToolResult> {
+    const t = TEXT.askUser;
     const answers: Record<string, AskAnswer> = {};
     for (const q of questions) {
+      if (signal.aborted) return result(t.unanswered, { answers }, { isError: true });
       const labels = q.options.map((o) =>
         o.description ? `${o.label}：${o.description}` : o.label,
       );
@@ -818,8 +849,7 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     pi.on("session_start", (_event, ctx) => {
       lastCtx = ctx;
       // 会话（重新）开始：之前没回答的提问已失效
-      for (const resolve of pendingAsk.values()) resolve(undefined);
-      pendingAsk.clear();
+      cancelAsks();
       ctx.ui?.setWidget?.(ASK_WIDGET, undefined);
       restore(ctx);
       syncGate();

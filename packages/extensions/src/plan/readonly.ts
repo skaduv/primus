@@ -368,8 +368,16 @@ function commandName(word: string): string {
   return base.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
 }
 
+/**
+ * PowerShell 的变量赋值（`$x = …`、`$env:PATH += …`、`${function:ls} = {…}`、`$a.b = …`）：
+ * 能改环境变量、换掉命令（function: / alias: 驱动器）或改对象属性，判断不了
+ */
+const PS_ASSIGNMENT =
+  /(^|[\s;{(|])\$(\{[^}]*\}|[\w:]+)(\.[\w]+|\[[^\]]*\])*\s*[-+*/%?]?\?{0,1}=(?!=)/;
+
 function classifySegment(segment: string, powershell: boolean): CommandClass {
   const bare = unquoted(segment);
+  if (powershell && PS_ASSIGNMENT.test(bare)) return "unknown";
   // 写文件的重定向：`>`、`>>`、`&>`，含紧贴参数的 `echo hi>out.txt`；
   // 只允许把输出丢弃或合并（2>$null、2>/dev/null、2>&1、>$null、>NUL）
   for (const m of bare.matchAll(/>>?\s*(&\d|[^\s|;&<>]*)/g)) {
@@ -442,7 +450,12 @@ function classifySegment(segment: string, powershell: boolean): CommandClass {
     // sed 脚本里的 w / W 命令、s///w 写文件，e 命令、s///e 执行命令；脚本文件（-f）内容看不到
     if (hasArg(/^(-f|--file)/)) return "unknown";
     const script = /(^|[;\n{}!\d$\s/])\s*[wWe](\s|$|;)|\/[gpIiMm\d]*[we]\b/;
-    return args.some((a) => !a.startsWith("-") && script.test(a)) ? "unknown" : "readonly";
+    // 脚本可以是单独的参数、`-e 脚本`、`--expression=脚本`，也可以紧贴短选项（`-e'w out'`、`-ne'…'`），
+    // 引号里还可能有空格：不按参数拆，直接在命令名之后的整段文字（引号换成空格）里找
+    const text = segment
+      .replace(/^\s*\S+/, "")
+      .replace(/['"]|--expression=|(^|\s)-[a-zA-Z]*e/g, " ");
+    return script.test(text) ? "unknown" : "readonly";
   }
   if (name === "find") {
     return args.some((a) =>

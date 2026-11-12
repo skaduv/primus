@@ -468,8 +468,40 @@ export const MOCK_ASK: AskData = {
   ],
 };
 
+/**
+ * 按提问的回答调整演示计划：目录层级、位置的选择与自己写的想法都写进计划（步骤说明与前提），
+ * 没有回答时就是 MOCK_PLAN
+ */
+export function mockPlanFromAnswers(
+  answers?: Record<string, { selected?: string; other?: string }>,
+): PlanDoc {
+  if (!answers) return MOCK_PLAN;
+  const pick = (id: string) => answers[id]?.selected ?? answers[id]?.other;
+  const depth = pick("toc_depth");
+  const position = pick("position");
+  const deep = depth?.includes("三级") ?? false;
+  const steps = MOCK_PLAN.steps.map((step) =>
+    step.id === "2"
+      ? {
+          ...step,
+          title: position ? `生成目录并插入${position.replace(/（.*）/, "")}` : step.title,
+          detail: deep ? "用二级、三级标题生成锚点链接" : step.detail,
+        }
+      : step,
+  );
+  const assumptions = [
+    depth ? `目录层级：${depth.replace(/（.*）/, "")}` : (MOCK_PLAN.assumptions?.[0] ?? ""),
+    ...(position ? [`目录位置：${position}`] : []),
+  ].filter(Boolean);
+  return { ...MOCK_PLAN, steps, assumptions };
+}
+
 /** 计划模式下的一次 prompt：读取一次文件后调用 plan_submit，停在等待审批（不结束这一轮） */
-export function planScenario(prompt: string, now: number): ScenarioResult & { callId: string } {
+export function planScenario(
+  prompt: string,
+  now: number,
+  plan: PlanDoc = MOCK_PLAN,
+): ScenarioResult & { callId: string } {
   const records: CoreRecord[] = [];
   const messages: AgentMessage[] = [];
   const callId = `call_plan_${now}`;
@@ -483,7 +515,7 @@ export function planScenario(prompt: string, now: number): ScenarioResult & { ca
     role: "assistant",
     content: [
       { type: "text", text },
-      { type: "toolCall", id: callId, name: PLAN_SUBMIT_TOOL, arguments: { ...MOCK_PLAN } },
+      { type: "toolCall", id: callId, name: PLAN_SUBMIT_TOOL, arguments: { ...plan } },
     ],
     stopReason: "toolUse",
     usage: u,
@@ -505,7 +537,7 @@ export function planScenario(prompt: string, now: number): ScenarioResult & { ca
       toolName: PLAN_SUBMIT_TOOL,
     },
   });
-  for (const delta of chunk(JSON.stringify(MOCK_PLAN), 24))
+  for (const delta of chunk(JSON.stringify(plan), 24))
     records.push({
       type: "message_update",
       usage: u,
@@ -517,7 +549,7 @@ export function planScenario(prompt: string, now: number): ScenarioResult & { ca
     type: "tool_execution_start",
     toolCallId: callId,
     toolName: PLAN_SUBMIT_TOOL,
-    args: { ...MOCK_PLAN },
+    args: { ...plan },
   });
   return { records, messages, callId };
 }
@@ -530,16 +562,17 @@ export function planDecisionScenario(
   callId: string,
   decision: { approved: true } | { approved: false; feedback: string } | { cancelled: true },
   now: number,
+  plan: PlanDoc = MOCK_PLAN,
 ): ScenarioResult {
   const records: CoreRecord[] = [];
   const messages: AgentMessage[] = [];
   const cancelled = "cancelled" in decision;
   const approved = !cancelled && decision.approved;
   const details: PlanSubmitDetails = cancelled
-    ? { id: "p1", status: "cancelled", plan: MOCK_PLAN }
+    ? { id: "p1", status: "cancelled", plan }
     : decision.approved
-      ? { id: "p1", status: "approved", plan: MOCK_PLAN }
-      : { id: "p1", status: "revising", plan: MOCK_PLAN, feedback: decision.feedback };
+      ? { id: "p1", status: "approved", plan }
+      : { id: "p1", status: "revising", plan, feedback: decision.feedback };
   const text = cancelled
     ? "用户关闭了计划模式，计划已取消。"
     : decision.approved

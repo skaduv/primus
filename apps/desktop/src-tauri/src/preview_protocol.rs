@@ -9,8 +9,9 @@
 //! - 每个文件夹登记时得到一个随机令牌，URL 形如 `<协议源>/<令牌>/<相对路径>`；只提供该文件夹（含子文件夹）里的
 //!   普通文件，解析后的真实路径必须仍在文件夹内（`..`、链接跳出都拒绝）；未登记的令牌一律 404。
 //! - 只提供网页静态资源（[`mime_of`] 清单内的类型）；隐藏文件与文件夹（`.env`、`.git/`）和其他文件（文本、配置、密钥）403。
-//! - 响应的 CSP 允许内联脚本与 https 的脚本、样式、图片等资源（常见的 CDN 库），但 `connect-src` 只有本协议与 data / blob：
-//!   页面不能用 fetch / XHR / WebSocket 把读到的内容发出去；不允许连 `ipc.localhost`；不缓存。CORS 只放行不透明源 `null`。
+//! - 不联网：响应的 CSP 只允许本协议与 data / blob 的资源（允许内联脚本），任何外部地址的脚本、样式、图片、字体、媒体、
+//!   fetch / XHR / WebSocket 都被拦下，页面读到的内容没有外传的通道（外部 CDN 库因此加载不了，需随页面放在文件夹里）；
+//!   iframe 自己导航到外部地址由 App 的 `frame-src` 拦下。不允许连 `ipc.localhost`；不缓存。CORS 只放行不透明源 `null`。
 //! - 只读不写，单个文件最多 [`MAX_FILE_BYTES`]（超限时 `serve` 直接报错，前端退回文本预览）。
 
 use std::collections::HashMap;
@@ -28,19 +29,21 @@ pub(crate) const SCHEME: &str = "primus-preview";
 /// 单个文件最多提供的字节数（64 MiB，与音频视频预览一致）
 pub(crate) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-/// 预览页面的 CSP：脚本、样式、图片、字体、媒体可来自本协议、https、data / blob；不允许连 ipc
+/// 预览页面的 CSP：所有资源只能来自本协议与 data / blob（不联网）；允许内联脚本；不允许连 ipc
 fn page_csp() -> String {
     let own = origin();
     format!(
-        "default-src {own} https: data: blob:; \
-         script-src {own} https: data: blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; \
-         style-src {own} https: data: 'unsafe-inline'; \
-         img-src {own} https: http: data: blob:; \
-         media-src {own} https: data: blob:; \
-         font-src {own} https: data:; \
+        "default-src {own} data: blob:; \
+         script-src {own} data: blob: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; \
+         style-src {own} data: 'unsafe-inline'; \
+         img-src {own} data: blob:; \
+         media-src {own} data: blob:; \
+         font-src {own} data:; \
          connect-src {own} data: blob:; \
          worker-src {own} blob: data:; \
-         frame-src {own} https: data: blob:; \
+         frame-src {own} data: blob:; \
+         manifest-src 'none'; \
+         object-src 'none'; \
          form-action 'none'; \
          base-uri {own}"
     )
@@ -388,12 +391,9 @@ mod tests {
             .to_str()
             .unwrap();
         assert!(csp.contains("'unsafe-inline'") && !csp.contains("ipc"));
-        // 页面不能把读到的内容用 fetch / WebSocket 发到外部
-        let connect = csp
-            .split(';')
-            .find(|d| d.trim().starts_with("connect-src"))
-            .unwrap();
-        assert!(!connect.contains("https:") && !connect.contains("wss:"));
+        // 不联网：任何指令都不放行外部地址
+        let rest = csp.replace(&origin(), "");
+        assert!(!rest.contains("https:") && !rest.contains("http:") && !rest.contains("wss:"));
         assert_eq!(res.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN], "null");
         assert_eq!(res.body(), b"<script>1</script>");
         let _ = std::fs::remove_dir_all(&dir);

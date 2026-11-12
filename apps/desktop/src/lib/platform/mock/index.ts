@@ -10,6 +10,7 @@ import {
   PLAN_COMMAND,
   PLAN_WIDGET,
   type PlanData,
+  type PlanDoc,
   type PlanPhase,
   type RpcCommand,
   type RpcResponse,
@@ -42,6 +43,7 @@ import {
   MOCK_NETWORK_DOWN,
   MOCK_PLAN,
   mockErrorKind,
+  mockPlanFromAnswers,
   planDecisionScenario,
   planScenario,
   promptScenario,
@@ -279,6 +281,8 @@ interface MockSession {
   asked?: boolean;
   /** 等待回答的 ask_user：回答后用这条消息继续生成计划 */
   askPrompt?: string;
+  /** 当前计划（按提问的回答调整过的演示计划） */
+  plan?: PlanDoc;
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -601,7 +605,10 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     if (s.planCall) {
       s.planCall = undefined;
       s.planPhase = "planning";
-      emit(s, planWidget({ phase: "planning", id: "p1", status: "cancelled", plan: MOCK_PLAN }));
+      emit(
+        s,
+        planWidget({ phase: "planning", id: "p1", status: "cancelled", plan: s.plan ?? MOCK_PLAN }),
+      );
     }
   };
 
@@ -609,8 +616,23 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   const handlePlanCommand = (s: MockSession, args: string) => {
     const [verb = "", ...rest] = args.split(" ");
     if (verb === "on" || verb === "off") {
+      // 与真实扩展一致：关闭计划模式时规划中的提问作废，卡片收起，这一轮结束
+      if (verb === "off" && s.askPrompt !== undefined) {
+        s.askPrompt = undefined;
+        emit(
+          s,
+          {
+            type: "extension_ui_request",
+            id: `mock-widget-${now()}-${Math.random()}`,
+            method: "setWidget",
+            widgetKey: ASK_WIDGET,
+          },
+          { type: "agent_end", messages: [], willRetry: false },
+          { type: "agent_settled", aborted: false },
+        );
+      }
       if (verb === "off" && s.planCall) {
-        emit(s, ...planDecisionScenario(s.planCall, { cancelled: true }, now()).records);
+        emit(s, ...planDecisionScenario(s.planCall, { cancelled: true }, now(), s.plan).records);
         s.planCall = undefined;
       }
       s.planPhase = verb === "on" ? "planning" : "off";
@@ -635,8 +657,12 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     }
     if (verb === "answer" && s.askPrompt !== undefined) {
       let cancel = false;
+      let answers: Record<string, { selected?: string; other?: string }> | undefined;
       try {
-        cancel = (JSON.parse(rest.join(" ")) as { cancel?: unknown }).cancel === true;
+        const parsed = JSON.parse(rest.join(" ")) as { cancel?: unknown; answers?: unknown };
+        cancel = parsed.cancel === true;
+        if (parsed.answers && typeof parsed.answers === "object")
+          answers = parsed.answers as typeof answers;
       } catch {}
       const message = s.askPrompt;
       s.askPrompt = undefined;
@@ -654,14 +680,15 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         );
         return;
       }
-      // 开头的 agent_start、turn_start 与用户消息在提问前已推送
-      const plan = planScenario(message, now());
+      // 开头的 agent_start、turn_start 与用户消息在提问前已推送；计划按回答调整
+      s.plan = mockPlanFromAnswers(answers);
+      const plan = planScenario(message, now(), s.plan);
       s.planPhase = "awaiting";
       s.planCall = plan.callId;
       emit(
         s,
         ...plan.records.slice(4),
-        planWidget({ phase: "awaiting", id: "p1", status: "awaiting", plan: MOCK_PLAN }),
+        planWidget({ phase: "awaiting", id: "p1", status: "awaiting", plan: s.plan }),
       );
       return;
     }
@@ -675,6 +702,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         ? { approved: true as const }
         : { approved: false as const, feedback };
       const call = s.planCall;
+      const current = s.plan ?? MOCK_PLAN;
       s.planCall = undefined;
       s.planPhase = approved ? "executing" : "planning";
       emit(
@@ -683,12 +711,12 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           phase: s.planPhase,
           id: "p1",
           status: approved ? "approved" : "revising",
-          plan: MOCK_PLAN,
+          plan: current,
         }),
         ...(approved
           ? [
               todoWidget(
-                MOCK_PLAN.steps.map((step, i) => ({
+                current.steps.map((step, i) => ({
                   id: step.id,
                   text: step.title,
                   status: i === 0 ? "in_progress" : "pending",
@@ -696,7 +724,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
               ),
             ]
           : []),
-        ...planDecisionScenario(call, decision, now()).records,
+        ...planDecisionScenario(call, decision, now(), current).records,
       );
     }
   };
@@ -780,14 +808,15 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           return;
         }
         if (s.planPhase === "planning") {
-          const plan = planScenario(message, now());
+          s.plan ??= MOCK_PLAN;
+          const plan = planScenario(message, now(), s.plan);
           s.planPhase = "awaiting";
           s.planCall = plan.callId;
           emit(
             s,
             respond(cmd, { disposition: "started" }),
             ...plan.records,
-            planWidget({ phase: "awaiting", id: "p1", status: "awaiting", plan: MOCK_PLAN }),
+            planWidget({ phase: "awaiting", id: "p1", status: "awaiting", plan: s.plan }),
           );
           return;
         }

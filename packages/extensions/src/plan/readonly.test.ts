@@ -48,6 +48,10 @@ describe("计划模式的只读命令判定", () => {
       "sed -n 's/a/b/w out.txt' in",
       "sed 's/.*/date/e' in",
       "sed -f script.sed in",
+      "sed --expression='w out.txt' in",
+      "sed --expression 's/a/b/e' in",
+      "sed -e'w out' in",
+      "sed -ne's/a/b/w out' in",
     ])
       expect(bash(c), c).toBe("unknown");
     expect(bash("echo '$(touch out.txt)'")).toBe("readonly");
@@ -138,6 +142,8 @@ describe("计划模式的只读命令判定", () => {
       "type a.txt",
       "findstr /s plan *.ts",
       "Get-FileHash a.msi",
+      "Get-ChildItem | Where-Object { $_.Length -gt 1000 }",
+      "Get-ChildItem | Where-Object { $_.Name -eq 'a=b' }",
     ])
       expect(ps(c), c).toBe("readonly");
   });
@@ -165,6 +171,13 @@ describe("计划模式的只读命令判定", () => {
       "powershell -EncodedCommand AAA",
       "& .\\build.ps1",
       "Get-Content $(Get-Item a)",
+      "$env:PATH = 'C:\\evil'; git status",
+      "$x = 1",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: PowerShell 的 ${function:…} 变量写法
+      "${function:Get-ChildItem} = { Remove-Item a }",
+      "Get-ChildItem | ForEach-Object { $env:X = 1 }",
+      "Get-ChildItem | ForEach-Object { $_.IsReadOnly = $false }",
+      "Get-ChildItem | Where-Object { $global:n += 1 }",
     ])
       expect(ps(c), c).toBe("unknown");
   });

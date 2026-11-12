@@ -2,7 +2,7 @@
 
 // 右栏“打开后的样子”：网页、Word、PowerPoint、PDF 的渲染视图。
 // - 网页与 SVG：iframe 打开 primus-preview 协议下的地址（Rust preview_protocol 提供所在文件夹的文件，响应自带宽松 CSP），
-//   sandbox 只给 allow-scripts：脚本、动画、同文件夹的相对资源与 https 资源正常；不同源（不透明源）、不弹窗、不提交表单、
+//   sandbox 只给 allow-scripts：脚本、动画、同文件夹的相对资源正常（协议的 CSP 不联网，外部资源加载不了）；不同源（不透明源）、不弹窗、不提交表单、
 //   不能导航顶层窗口，调不到 App 的 IPC。没有该协议时（浏览器预览）退回 srcdoc + 空 sandbox，此时继承 App 的 CSP、不运行脚本。
 // - Word：docx-preview；PowerPoint：@aiden0z/pptx-renderer。两者体积大，按需动态加载，不进启动包。
 // - Word / PowerPoint 里的外部链接（文件来自 Agent，不可信）：不在 WebView 里导航，经确认框用系统浏览器打开；
