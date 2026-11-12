@@ -39,7 +39,7 @@ describe("Tauri 窗口控制", () => {
     resized?.();
     await flush();
     expect(win.setMinSize).toHaveBeenCalledTimes(1);
-    expect((win.setMinSize.mock.calls[0]?.[0] as { width: number }).width).toBe(1200);
+    expect(win.setMinSize.mock.calls[0]?.[0]).toMatchObject({ width: 1200 });
     // 没有变化时不重复设置
     resized?.();
     await flush();
