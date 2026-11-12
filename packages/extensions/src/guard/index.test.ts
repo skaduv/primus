@@ -6,6 +6,7 @@ import { createPlanGate } from "../plan/gate.ts";
 import {
   approvalKey,
   CHOICES,
+  commandTouchesProtected,
   createGuard,
   decide,
   decidePlan,
@@ -147,6 +148,20 @@ describe("primus-guard 权限判断", () => {
     expect(isProtectedPath(`${chat}/.git/config`, env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath(`${chat}/.env/secret.txt`, env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/work/proj/.env.d/a/b.txt", env, "linux", "/home/u")).toBe(true);
+    // 引号与相邻文字拼成一个词：安装目录带空格
+    const spaced = {
+      platform: "linux" as const,
+      home: "/home/u",
+      env: { PRIMUS_CODING_AGENT_DIR: "/opt/Primus Install/data/users/S-1/core" },
+    };
+    for (const command of [
+      'cat "/opt/Primus Install"/data/users/S-1/core/config.json',
+      "cat /opt/Primus\\ Install/data/x.json",
+      "cat '/opt/Primus Install/data/x.json'",
+    ])
+      expect(commandTouchesProtected(command, "/w", spaced), command).toBe(true);
+    expect(commandTouchesProtected('cat "/opt/Primus Install"/README', "/w", spaced)).toBe(false);
+    expect(commandTouchesProtected('cat "unclosed', "/w", spaced)).toBe(true);
     expect(
       decide("ask", { toolName: "read", input: { path: ".env/secret.txt" } }, chat, undefined, ge),
     ).toBe("ask");
@@ -334,6 +349,7 @@ describe("primus-guard 计划模式（只读）", () => {
       'cat .e"n"v',
       "cat $'\\x2eenv'",
       "cat .\\git/config",
+      "cat .e'nv",
       // 递归读取、不跳过隐藏或被忽略的文件
       "rg -uu secret",
       "rg --hidden --no-ignore key",

@@ -279,29 +279,22 @@ export function commandTouchesProtected(
 ): boolean {
   // bash 的 ANSI-C 引号（$'\x2eenv'）还原不了
   if (!powershell && command.includes("$'")) return true;
-  // 转义与引号拼接（bash 的 .\env、.e''nv、.e"n"v，PowerShell 的 .`env）展开后才是真正的路径：
-  // 原文与去掉转义符和引号后的文字都检查
-  const plain = command.replace(powershell ? /`/g : /\\(?=[^\s])/g, "").replace(/['"]/g, "");
-  return [command, plain].some((text) => touchesProtected(text, cwd, ge));
-}
-
-function touchesProtected(command: string, cwd: string, ge: GuardEnv): boolean {
-  if (/(^|[\s\\/'"=:;|&(<>])\.(env|git(?![\w-])|ssh(?![\w-]))/i.test(command)) return true;
+  const words = shellWords(command, powershell);
+  // 引号没闭合：解析不了，确认
+  if (!words) return true;
+  // 原文与按 shell 规则拆词、去掉引号和转义后的词都检查：.\env、.e''nv、"/opt/A B"/data/… 展开后才是真正的路径
+  const text = [command, ...words.map((w) => w.word)].join("\n");
+  if (/(^|[\s\\/'"=:;|&(<>])\.(env|git(?![\w-])|ssh(?![\w-]))/im.test(text)) return true;
   // 隐藏路径段里带通配符：可能展开成 .env、.git
-  if (/(^|[\s\\/'"=])\.[^\s\\/'"]*[*?[]/.test(command)) return true;
-  const tokens = command.match(/'[^']*'|"[^"]*"|[^\s|;&<>()]+/g) ?? [];
-  return tokens.some((t) => {
-    const w = t.replace(/^(['"])(.*)\1$/, "$2").replace(/^-[^=]*=/, "");
+  if (/(^|[\s\\/'"=])\.[^\s\\/'"]*[*?[]/m.test(text)) return true;
+  return words.some(({ word, expands }) => {
+    const w = word.replace(/^-[^=]*=/, "");
     if (!w || w.startsWith("-")) return false;
     // 展开范围限定不了的路径：工作区外（绝对路径、~、..）带通配符，或含变量（$HOME/…、$env:APPDATA\…）。
     // 展开后可能落进 App 数据目录或 ~/.ssh，按受保护处理
     if (/[*?[]/.test(w) && (isAbsolute(w) || /^[a-zA-Z]:|^~|(^|[\\/])\.\.([\\/]|$)/.test(w)))
       return true;
-    if (
-      !t.startsWith("'") &&
-      /\$(\{|[A-Za-z])/.test(w) &&
-      !/^\$(_|psitem|true|false|null)\b/i.test(w)
-    )
+    if (expands && /\$(\{|[A-Za-z])/.test(w) && !/^\$(_|psitem|true|false|null)\b/i.test(w))
       return true;
     if (!/[\\/~.]/.test(w)) return false;
     try {
@@ -314,6 +307,59 @@ function touchesProtected(command: string, cwd: string, ge: GuardEnv): boolean {
       return false;
     }
   });
+}
+
+/**
+ * 按 shell 规则拆词：空白与 | ; & < > ( ) 分词，引号与相邻文字拼成一个词（"/opt/A B"/data → /opt/A B/data），
+ * 去掉引号与转义符（bash 的 \，PowerShell 的 `）。expands 表示词里有引号外或双引号里的 $（会展开变量）。
+ * 引号没闭合返回 undefined
+ */
+function shellWords(
+  command: string,
+  powershell: boolean,
+): { word: string; expands: boolean }[] | undefined {
+  const esc = powershell ? "`" : "\\";
+  const out: { word: string; expands: boolean }[] = [];
+  let word = "";
+  let expands = false;
+  let started = false;
+  const flush = () => {
+    if (started) out.push({ word, expands });
+    word = "";
+    expands = false;
+    started = false;
+  };
+  for (let i = 0; i < command.length; i++) {
+    const c = command.charAt(i);
+    if (c === esc && i + 1 < command.length) {
+      if (command[i + 1] !== "\n") word += command[i + 1];
+      started = true;
+      i++;
+    } else if (c === "'") {
+      const j = command.indexOf("'", i + 1);
+      if (j < 0) return undefined;
+      word += command.slice(i + 1, j);
+      started = true;
+      i = j;
+    } else if (c === '"') {
+      started = true;
+      let j = i + 1;
+      for (; j < command.length && command[j] !== '"'; j++) {
+        if (command[j] === esc && j + 1 < command.length) j++;
+        if (command[j] === "$") expands = true;
+        word += command[j];
+      }
+      if (j >= command.length) return undefined;
+      i = j;
+    } else if (/[\s|;&<>()]/.test(c)) flush();
+    else {
+      if (c === "$") expands = true;
+      word += c;
+      started = true;
+    }
+  }
+  flush();
+  return out;
 }
 
 /**
