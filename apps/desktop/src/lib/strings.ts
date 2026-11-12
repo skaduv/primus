@@ -111,7 +111,7 @@ export const strings = {
     linkCancel: "取消",
     linkFailed: "无法打开链接",
     /** 回复里的外部链接（附在链接文字后的屏幕阅读器提示） */
-    linkExternal: "（外部链接）",
+    linkExternal: "外部链接",
     /** 回复里的文件引用：点击用系统默认程序打开，右键（或菜单键）有打开、在文件夹中显示、复制路径 */
     fileRef: {
       label: "文件 {name}，点击预览",

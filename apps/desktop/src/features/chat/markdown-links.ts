@@ -85,6 +85,8 @@ function transform(children: Token[], TokenCtor: StateCore["Token"]): Token[] {
       }
       if (EXTERNAL.test(href) && close < children.length) {
         tok.attrSet("class", "md-link");
+        // 外链提示只给屏幕阅读器，不放进正文：复制链接时得到的就是原文
+        tok.attrSet("aria-description", strings.chat.linkExternal);
         (children[close] as Token).meta = { external: true };
       }
       inLink = true;
@@ -146,9 +148,7 @@ export function linksPlugin(md: MarkdownIt): void {
   const externalIcon = iconHtml("external-link", "md-link-icon", "xs");
   md.renderer.rules.link_close = (tokens, idx, options, env, self) => {
     const external = (tokens[idx]?.meta as { external?: boolean } | null)?.external;
-    const tail = external
-      ? `<span class="sr-only">${escapeHtml(strings.chat.linkExternal)}</span>${externalIcon}`
-      : "";
+    const tail = external ? externalIcon : "";
     return tail + defaultClose(tokens, idx, options, env, self);
   };
 }
