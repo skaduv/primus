@@ -238,6 +238,11 @@ html.window-effects.glass-clear body {
   background: transparent;
 }
 
+/* Win10：没有系统背景材质，关掉亚克力，铺实色底（与浏览器预览一致）；玻璃面板照常叠在上面 */
+html.window-effects.solid-window body {
+  background: var(--wallpaper);
+}
+
 /* 浮层进出场（Radix 用 data-state 驱动；动画 scale 属性而不是 transform，避免和 translate 类冲突） */
 /* 统一悬停提示（components/ui/tooltip.tsx）：两种主题都是深底浅字。浅色主题近黑；深色主题比窗口底色亮一档并加细描边，
  * 叠在深色界面上仍分得清。出现时轻微淡入并朝触发元素反方向挪 2px；关闭直接消失（Radix 关闭即卸载）。 */

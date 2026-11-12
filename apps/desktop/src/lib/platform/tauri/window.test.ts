@@ -6,6 +6,8 @@ const win = {
   isMaximized: vi.fn(async () => state.maximized),
   isFullscreen: vi.fn(async () => state.fullscreen),
   setMinSize: vi.fn(async (_s: unknown) => {}),
+  setEffects: vi.fn(async (_e: unknown) => {}),
+  clearEffects: vi.fn(async () => {}),
   onResized: vi.fn(async (cb: () => void) => {
     resized = cb;
     return () => {};
@@ -53,5 +55,37 @@ describe("Tauri 窗口控制", () => {
     const seen: boolean[] = [];
     await c.onMaximizedChange((m) => seen.push(m));
     expect(seen).toEqual([true]);
+  });
+});
+
+describe("isLegacyWindows", () => {
+  const setUA = (v: unknown) =>
+    Object.defineProperty(navigator, "userAgentData", {
+      configurable: true,
+      value: v === undefined ? undefined : { getHighEntropyValues: async () => v },
+    });
+
+  it("Win10 的 platformVersion 主版本低于 13，Win11 为 13 及以上", async () => {
+    const { isLegacyWindows } = await import("./window");
+    setUA({ platform: "Windows", platformVersion: "10.0.0" });
+    expect(await isLegacyWindows()).toBe(true);
+    setUA({ platform: "Windows", platformVersion: "15.0.0" });
+    expect(await isLegacyWindows()).toBe(false);
+    setUA({ platform: "macOS", platformVersion: "10.15.7" });
+    expect(await isLegacyWindows()).toBe(false);
+    setUA(undefined);
+    expect(await isLegacyWindows()).toBe(false);
+  });
+
+  it("Win10 上不开亚克力", async () => {
+    setUA({ platform: "Windows", platformVersion: "10.0.0" });
+    win.setEffects.mockClear();
+    await createTauriWindowControls().setAcrylic(true);
+    expect(win.setEffects).not.toHaveBeenCalled();
+    expect(win.clearEffects).toHaveBeenCalled();
+    setUA({ platform: "Windows", platformVersion: "15.0.0" });
+    await createTauriWindowControls().setAcrylic(true);
+    expect(win.setEffects).toHaveBeenCalledTimes(1);
+    setUA(undefined);
   });
 });

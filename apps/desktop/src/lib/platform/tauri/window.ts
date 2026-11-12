@@ -6,6 +6,31 @@ import type { WindowControls } from "../window";
 // 与 tauri.conf.json 的 minHeight 一致
 const MIN_HEIGHT = 640;
 
+/**
+ * Win10（含更早）没有 DWM 系统背景材质：window-vibrancy 的亚克力会退回 SetWindowCompositionAttribute，
+ * 不传颜色时几乎不着色，只剩模糊的桌面，发灰发脏且拖动卡顿。这类系统不开亚克力，页面铺实色底（public/theme-init.js 加 solid-window）。
+ * WebView2 判断 Win11 的官方办法：UA Client Hints 的 platformVersion 主版本 ≥ 13。
+ */
+export async function isLegacyWindows(): Promise<boolean> {
+  const ua = (
+    navigator as Navigator & {
+      userAgentData?: {
+        getHighEntropyValues?(
+          hints: string[],
+        ): Promise<{ platform?: string; platformVersion?: string }>;
+      };
+    }
+  ).userAgentData;
+  try {
+    const v = await ua?.getHighEntropyValues?.(["platformVersion"]);
+    if (v?.platform !== "Windows") return false;
+    const major = Number.parseInt(String(v.platformVersion ?? "").split(".")[0] ?? "", 10);
+    return major > 0 && major < 13;
+  } catch {
+    return false;
+  }
+}
+
 // 当前窗口的标题栏操作；权限见 src-tauri/capabilities/default.json
 //
 // 最大化 / 全屏时不改窗口尺寸约束：tao 在 Windows 上的 set_min_inner_size 会用当前尺寸再调一次 set_inner_size
@@ -13,6 +38,7 @@ const MIN_HEIGHT = 640;
 // 之后的开合又按普通窗口去伸缩，布局就乱了。这里只记下想要的最小宽度，等窗口回到普通状态再设置。
 export function createTauriWindowControls(): WindowControls {
   const win = getCurrentWindow();
+  const legacy = isLegacyWindows();
   /** 铺满屏幕（最大化或全屏）：窗口尺寸由系统决定 */
   const filled = async () => {
     const [max, full] = await Promise.all([win.isMaximized(), win.isFullscreen()]);
@@ -97,6 +123,8 @@ export function createTauriWindowControls(): WindowControls {
       wantedMin = width;
       await applyMin();
     },
-    setAcrylic: (on) => (on ? win.setEffects({ effects: [Effect.Acrylic] }) : win.clearEffects()),
+    // tauri.conf.json 建窗时已开亚克力；Win10 上 AppearanceController 首次调用这里时关掉
+    setAcrylic: async (on) =>
+      on && !(await legacy) ? win.setEffects({ effects: [Effect.Acrylic] }) : win.clearEffects(),
   };
 }

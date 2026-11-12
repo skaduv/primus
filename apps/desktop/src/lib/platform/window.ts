@@ -17,6 +17,6 @@ export interface WindowControls {
   animateWidth(delta: number, duration: number, ease: (t: number) => number): Promise<boolean>;
   /** 设置窗口最小宽度（逻辑像素），随侧栏开合变化；最大化 / 全屏时先记下，还原后再生效（否则会退出最大化） */
   setMinWidth(width: number): Promise<void>;
-  /** 开关窗口亚克力磨砂（外观"玻璃效果"拉到最低时关闭，窗口背景完全透明） */
+  /** 开关窗口亚克力磨砂（外观"玻璃效果"拉到最低时关闭，窗口背景完全透明）；Win10 上始终关闭，页面改铺实色底 */
   setAcrylic(on: boolean): Promise<void>;
 }
