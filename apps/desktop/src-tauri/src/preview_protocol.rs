@@ -150,6 +150,7 @@ impl PreviewRoots {
         let file = std::fs::File::open(&path).map_err(|_| StatusCode::NOT_FOUND)?;
         let opened = crate::platform::opened_path(&file, &path).ok_or(StatusCode::FORBIDDEN)?;
         check_inside(&root, &opened)?;
+        check_static(&opened)?;
         if !file
             .metadata()
             .map_err(|_| StatusCode::NOT_FOUND)?
@@ -184,12 +185,12 @@ fn resolve_in(root: &Path, rel: &str) -> Result<PathBuf, StatusCode> {
     if !real.is_file() {
         return Err(StatusCode::NOT_FOUND);
     }
+    check_static(&real)?;
     Ok(real)
 }
 
 /// 解析链接后的真实路径仍须在文件夹内，且相对文件夹的每一段都不是隐藏的（public -> .private 这类链接也拒绝）；
-/// 文件夹本身的上级目录不检查，它们可以在隐藏目录里。只提供网页会用到的静态资源（网页、脚本、样式、图片、
-/// 字体、音视频等）；文本、配置、密钥等其他文件即使在同一文件夹也不给页面读
+/// 文件夹本身的上级目录不检查，它们可以在隐藏目录里
 fn check_inside(root: &Path, real: &Path) -> Result<(), StatusCode> {
     let rel_real = real.strip_prefix(root).map_err(|_| StatusCode::FORBIDDEN)?;
     if rel_real
@@ -198,6 +199,12 @@ fn check_inside(root: &Path, real: &Path) -> Result<(), StatusCode> {
     {
         return Err(StatusCode::FORBIDDEN);
     }
+    Ok(())
+}
+
+/// 只提供网页会用到的静态资源（网页、脚本、样式、图片、字体、音视频等）；
+/// 文本、配置、密钥等其他文件即使在同一文件夹也不给页面读
+fn check_static(real: &Path) -> Result<(), StatusCode> {
     if mime_of(real).is_none() {
         return Err(StatusCode::FORBIDDEN);
     }
