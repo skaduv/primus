@@ -124,6 +124,16 @@ pub(crate) fn secret_command(exe: &Path, provider_id: &str) -> io::Result<String
     ))
 }
 
+/// 内置渠道是否仍保持种子配置。用户修改或停用后，它按普通渠道显示，避免隐藏后无法恢复。
+fn is_pristine_builtin(provider: &Provider) -> bool {
+    let seed = crate::builtin::seed_provider();
+    provider.id == seed.id
+        && provider.name == seed.name
+        && provider.api == seed.api
+        && provider.base_url == seed.base_url
+        && provider.enabled
+}
+
 /// 内容不同才写：先写临时文件再替换。返回是否写入。
 fn write_if_changed(file: &Path, text: &str) -> io::Result<bool> {
     if fs::read_to_string(file).is_ok_and(|current| current == text) {
@@ -445,37 +455,60 @@ impl ModelConfigState {
         }
     }
 
-    /// 首次启动写入内置渠道（只在 `providers.json` 不存在时），并删除旧版内置令牌。返回是否写入了内置渠道
-    /// （调用方随后在后台获取它的模型列表）。失败只记日志，下次启动再试。
-    pub(crate) fn seed_and_migrate(&self) -> bool {
+    /// 确保内置渠道、密钥与旧版令牌迁移就绪；返回是否需要获取内置渠道的模型列表。
+    ///
+    /// 首次启动写入种子；之后只要渠道仍是种子配置且模型清单为空，就在下次启动重试获取。
+    /// 用户修改或停用后不再覆盖，该渠道也不再隐藏，用户可以从界面继续管理。
+    pub(crate) fn prepare_builtin(&self) -> bool {
         let _inner = self.lock();
         let vault = self.vault();
         if let Err(e) = vault.remove(crate::builtin::LEGACY_TOKEN_ID) {
             eprintln!("[core_config] 删除旧版内置令牌失败：{e}");
         }
-        if self.providers_file.exists() {
+        if !self.providers_file.exists() {
+            let provider = crate::builtin::seed_provider();
+            // 先存密钥再写文件：密钥存不进去时不写文件，下次启动重试
+            if let Err(e) = vault.ensure(
+                &providers::secret_name(&provider.id),
+                crate::builtin::BUILTIN_API_KEY,
+            ) {
+                eprintln!("[core_config] 内置渠道密钥写入保险库失败：{e}");
+                return false;
+            }
+            let store = ProviderStore {
+                providers: vec![provider],
+                ..ProviderStore::default()
+            };
+            return match store.save(&self.providers_file) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("[core_config] {e}");
+                    false
+                }
+            };
+        }
+        let store = match self.load() {
+            Ok(store) => store,
+            Err(e) => {
+                eprintln!("[core_config] {e}");
+                return false;
+            }
+        };
+        let Some(provider) = store.get(crate::builtin::SEED_PROVIDER_ID) else {
+            return false;
+        };
+        if !is_pristine_builtin(provider) {
             return false;
         }
-        let provider = crate::builtin::seed_provider();
-        // 先存密钥再写文件：密钥存不进去时不写文件，下次启动重试
+        // 旧安装可能仍缓存着已更换的内置密钥；隐藏后无法从界面更新，启动时同步为当前常量。
         if let Err(e) = vault.ensure(
             &providers::secret_name(&provider.id),
             crate::builtin::BUILTIN_API_KEY,
         ) {
-            eprintln!("[core_config] 内置渠道密钥写入保险库失败：{e}");
+            eprintln!("[core_config] 内置渠道密钥更新失败：{e}");
             return false;
         }
-        let store = ProviderStore {
-            providers: vec![provider],
-            ..ProviderStore::default()
-        };
-        match store.save(&self.providers_file) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("[core_config] {e}");
-                false
-            }
-        }
+        provider.models.is_empty()
     }
 
     /// 重新读取 `providers.json` 并生成 Core 配置（启动时与 `models_refresh`）。失败时记录原因，不影响 App 启动。
@@ -541,7 +574,7 @@ impl ModelConfigState {
                     provider: p.clone(),
                     has_key: key.is_some(),
                     key_hint: key.as_deref().and_then(providers::key_hint),
-                    hidden: p.id == crate::builtin::SEED_PROVIDER_ID,
+                    hidden: is_pristine_builtin(p),
                 }
             })
             .collect()
@@ -570,9 +603,16 @@ impl ModelConfigState {
                 ),
                 None => None,
             };
+            if index.is_some_and(|i| is_pristine_builtin(&store.providers[i])) {
+                return Err("内置渠道由系统管理，不能修改".to_owned());
+            }
             let id = match &input.id {
                 Some(id) => id.clone(),
-                None => providers::generate_id(&name, &store.ids()),
+                None => {
+                    let mut reserved = store.ids();
+                    reserved.push(crate::builtin::SEED_PROVIDER_ID);
+                    providers::generate_id(&name, &reserved)
+                }
             };
             if index.is_none() && key.is_none() {
                 return Err("请填写 API 密钥".to_owned());
@@ -629,6 +669,9 @@ impl ModelConfigState {
         let providers = {
             let mut inner = self.lock();
             let mut store = self.load_for_write();
+            if store.get(id).is_some_and(is_pristine_builtin) {
+                return Err("内置渠道由系统管理，不能删除".to_owned());
+            }
             let before = store.providers.len();
             store.providers.retain(|p| p.id != id);
             if store.providers.len() == before {
@@ -1011,7 +1054,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_only_once_and_migrates_legacy_token() {
+    fn prepares_builtin_and_retries_missing_models() {
         let (root, state) = state("seed");
         let vault = Vault::new(&root.join("vault"));
         vault
@@ -1019,7 +1062,7 @@ mod tests {
             .unwrap();
         assert!(state.info().error.is_some(), "未就绪");
 
-        assert!(state.seed_and_migrate(), "首次启动写入内置渠道");
+        assert!(state.prepare_builtin(), "首次启动写入内置渠道并获取模型");
         assert_eq!(
             vault.get(crate::builtin::LEGACY_TOKEN_ID).unwrap(),
             None,
@@ -1050,6 +1093,13 @@ mod tests {
             !json.contains(crate::builtin::BUILTIN_API_KEY),
             "不返回密钥"
         );
+        vault.set("provider:ioply", "stale-key").unwrap();
+        assert!(state.prepare_builtin(), "空模型继续重试");
+        assert_eq!(
+            vault.get("provider:ioply").unwrap().as_deref(),
+            Some(crate::builtin::BUILTIN_API_KEY),
+            "隐藏渠道的密钥同步为当前内置密钥"
+        );
 
         // 内置渠道还没有模型：空配置 + 提示，不崩溃
         let info = state.refresh();
@@ -1057,14 +1107,33 @@ mod tests {
         assert_eq!(info.error.as_deref(), Some(NO_MODELS));
         assert_eq!(info.version, Some(1));
 
-        // 用户删掉内置渠道后不再写回
-        state.provider_delete("ioply").unwrap();
-        assert_eq!(
-            vault.get("provider:ioply").unwrap(),
-            None,
-            "删除渠道同时删除密钥"
+        // 模型仍为空时下次启动重试；内置渠道本身不能通过渠道命令修改或删除
+        assert!(state.prepare_builtin(), "获取失败后下次启动重试");
+        assert!(state.provider_delete("ioply").is_err());
+        assert!(
+            state
+                .provider_save(input(Some("ioply"), "ioply", None, &[]))
+                .is_err()
         );
-        assert!(!state.seed_and_migrate());
+        let user = state
+            .provider_save(input(None, "ioply", Some("sk-user-5678"), &["m"]))
+            .unwrap();
+        assert_eq!(user.providers[1].provider.id, "ioply-2");
+        assert!(!user.providers[1].hidden);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn modified_builtin_is_visible_and_manageable() {
+        let (root, state) = state("modified-builtin");
+        assert!(state.prepare_builtin());
+        let file = root.join("app").join(PROVIDERS_FILE);
+        let mut store = ProviderStore::load(&file).unwrap().unwrap();
+        store.providers[0].enabled = false;
+        store.save(&file).unwrap();
+        assert!(!state.prepare_builtin(), "修改后不再自动获取");
+        assert!(!state.providers_list().unwrap()[0].hidden);
+        state.provider_delete("ioply").unwrap();
         assert!(state.providers_list().unwrap().is_empty());
         let _ = fs::remove_dir_all(&root);
     }
