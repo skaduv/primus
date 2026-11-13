@@ -134,6 +134,8 @@ jobs:
     # 先过 Linux 检查再占用 Windows runner（README「CI 与依赖升级」）
     needs: checks
     runs-on: windows-2025
+    # 作业级上限：运行器失联时步骤级 timeout-minutes 与取消都不生效，只有作业级超时能结束（正常约 15 分钟）
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -385,6 +387,9 @@ jobs:
     # 与 x64 作业并行；Linux 检查通过后才占用 ARM64 运行器
     needs: checks
     runs-on: windows-11-arm
+    # 作业级上限：windows-11-arm 运行器偶发失联，卡在某一步时步骤级 timeout-minutes 与取消都不生效，
+    # 不设上限会挂到默认 360 分钟；只有作业级超时能结束（正常约 25–28 分钟）
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7.0.1
 
