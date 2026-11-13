@@ -50,7 +50,7 @@ describe("gen-update-manifest", () => {
     const m = buildManifest({
       version: "0.0.7",
       tag: "v0.0.7",
-      repo: "skaduv/primus",
+      repo: "skaduv/primus-releases",
       notes: "  更新说明\n",
       pubDate: "2026-11-05T12:00:00Z",
       signatures: signaturesFor("0.0.7"),
@@ -58,11 +58,11 @@ describe("gen-update-manifest", () => {
     // 只发 MSI（ADR 0007）：旧 NSIS 版的 windows-<arch>-nsis 不再出现在清单中
     expect(Object.keys(m.platforms).sort()).toEqual(["windows-aarch64-msi", "windows-x86_64-msi"]);
     expect(m.platforms["windows-x86_64-msi"]).toEqual({
-      url: "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_x64_zh-CN.msi",
+      url: "https://github.com/skaduv/primus-releases/releases/download/v0.0.7/Primus_0.0.7_x64_zh-CN.msi",
       signature: sigFor("Primus_0.0.7_x64_zh-CN.msi"),
     });
     expect(m.platforms["windows-aarch64-msi"].url).toBe(
-      "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_arm64_zh-CN.msi",
+      "https://github.com/skaduv/primus-releases/releases/download/v0.0.7/Primus_0.0.7_arm64_zh-CN.msi",
     );
     expect(m).toMatchObject({
       version: "0.0.7",

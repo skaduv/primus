@@ -13,7 +13,7 @@ pub(crate) mod speech;
 pub(crate) mod webview_permissions;
 
 /// 安装包下载页：修复引导中“重新安装到其他目录”打开它。
-pub(crate) const REINSTALL_URL: &str = "https://github.com/skaduv/primus/releases";
+pub(crate) const REINSTALL_URL: &str = "https://github.com/skaduv/primus-releases/releases";
 
 /// 修复引导的标题。
 const GUIDE_TITLE: &str = "乾元 Primus：数据目录不可写";

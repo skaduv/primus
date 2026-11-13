@@ -33,8 +33,8 @@ use sha2::{Digest, Sha256};
 /// 编译时注入的 updater 公钥（tauri signer 的格式：minisign 公钥文件整体 base64）。
 const PUBKEY: Option<&str> = option_env!("TAURI_SIGNING_PUBLIC_KEY");
 
-/// 更新清单所在的 Release（`update-feed` 标签下的附件，见 release.yml 的 publish 作业）。
-const FEED_BASE: &str = "https://github.com/skaduv/primus/releases/download/update-feed";
+/// 公开更新清单所在的 Release（源码仓私有时仍可匿名读取，见 release.yml 的 publish 作业）。
+const FEED_BASE: &str = "https://github.com/skaduv/primus-releases/releases/download/update-feed";
 /// 调试构建覆盖更新源（完整的清单 URL），便于本地起静态服务器测试。
 const ENDPOINT_OVERRIDE_ENV: &str = "PRIMUS_UPDATE_ENDPOINT";
 /// 待装包描述文件与设置文件。
@@ -1142,11 +1142,15 @@ mod tests {
     fn endpoints_per_channel_and_debug_override() {
         assert_eq!(
             endpoints(UpdateChannel::Stable, None),
-            vec!["https://github.com/skaduv/primus/releases/download/update-feed/stable.json"]
+            vec![
+                "https://github.com/skaduv/primus-releases/releases/download/update-feed/stable.json"
+            ]
         );
         assert_eq!(
             endpoints(UpdateChannel::Beta, Some(" ")),
-            vec!["https://github.com/skaduv/primus/releases/download/update-feed/beta.json"]
+            vec![
+                "https://github.com/skaduv/primus-releases/releases/download/update-feed/beta.json"
+            ]
         );
         assert_eq!(
             endpoints(UpdateChannel::Beta, Some("http://127.0.0.1:8080/x.json")),
@@ -1219,7 +1223,7 @@ mod tests {
     fn package_file_names_are_sanitized() {
         assert_eq!(
             package_file_name(
-                "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_x64_zh-CN.msi"
+                "https://github.com/skaduv/primus-releases/releases/download/v0.0.7/Primus_0.0.7_x64_zh-CN.msi"
             )
             .as_deref(),
             Some("Primus_0.0.7_x64_zh-CN.msi")
