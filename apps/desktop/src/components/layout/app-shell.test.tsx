@@ -2,7 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { useRouter } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { showPreview, usePreviewStore } from "@/features/files/preview-store";
-import { setPlatformForTesting } from "@/lib/platform";
+import {
+  setPlatformForTesting,
+  setWindowControlsForTesting,
+  type WindowControls,
+} from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
@@ -17,6 +21,22 @@ function setViewport(width: number, height: number) {
 const panelStyle = (el: HTMLElement) =>
   ((el.closest(".seam-mask") ?? el.closest(".shrink-0")) as HTMLElement).style;
 
+function fakeWindowControls(): WindowControls {
+  return {
+    minimize: vi.fn(async () => {}),
+    toggleMaximize: vi.fn(async () => {}),
+    close: vi.fn(async () => {}),
+    isMaximized: vi.fn(async () => false),
+    animateWidth: vi.fn(async () => true),
+    setMinWidth: vi.fn(async () => {}),
+    setAcrylic: vi.fn(async () => {}),
+    onMaximizedChange: vi.fn(async (listener) => {
+      listener(false);
+      return () => {};
+    }),
+  };
+}
+
 describe("主界面外壳", () => {
   const original = { width: window.innerWidth, height: window.innerHeight };
   beforeEach(() => {
@@ -25,7 +45,10 @@ describe("主界面外壳", () => {
     usePreviewStore.setState({ path: null, seq: 0 });
     setViewport(1280, 800);
   });
-  afterEach(() => setViewport(original.width, original.height));
+  afterEach(() => {
+    setViewport(original.width, original.height);
+    setWindowControlsForTesting(undefined);
+  });
 
   it("打开应用时默认收起右栏，只显示会话列表与对话区", () => {
     useAppStore.setState(initialAppState);
@@ -166,6 +189,24 @@ describe("主界面外壳", () => {
     expect(panelStyle(nav).width).toBe("248px");
     act(() => useAppStore.setState({ sessionsPanelOpen: false }));
     expect(screen.queryByRole("separator", { name: strings.layout.resizeSessions })).toBeNull();
+  });
+
+  it("屏幕边缘截短窗口时，最小宽度跟随实际宽度，不会再次撑出屏幕", async () => {
+    const controls = fakeWindowControls();
+    vi.mocked(controls.animateWidth).mockImplementationOnce(async () => {
+      setViewport(840, 640);
+      window.dispatchEvent(new Event("resize"));
+      return true;
+    });
+    setWindowControlsForTesting(controls);
+    useAppStore.setState({ ...initialAppState, inspectorPanelOpen: false });
+    setViewport(700, 640);
+    render(<AppShell />);
+
+    await waitFor(() => expect(controls.setMinWidth).toHaveBeenCalledWith(596));
+    fireEvent.click(screen.getByRole("button", { name: strings.layout.showInspector }));
+    await waitFor(() => expect(controls.setMinWidth).toHaveBeenLastCalledWith(840));
+    expect(controls.setMinWidth).not.toHaveBeenCalledWith(960);
   });
 
   it("最小窗口 960×640 下把过宽的栏收缩到中央放得下，窗口放大后恢复", async () => {

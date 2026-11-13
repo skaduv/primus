@@ -131,10 +131,12 @@ describe("resolvePanelLayout", () => {
     expect(r.drawer.max).toBeGreaterThanOrEqual(BOTTOM_DRAWER.initial);
   });
 
-  it("小于最小窗口时按最小窗口计算（外壳 min-width / min-height 出现滚动而不是挤压）", () => {
+  it("小于最小窗口时按真实视口压缩各栏，不向屏幕外溢出", () => {
     const tiny = resolvePanelLayout({ width: 600, height: 400 }, defaults);
-    const min = resolvePanelLayout({ width: 960, height: 640 }, defaults);
-    expect(tiny).toEqual(min);
+    expect(tiny.left.size).toBe(LEFT_PANEL.min);
+    expect(tiny.right.size).toBe(RIGHT_PANEL.min);
+    expect(tiny.center?.width).toBe(600 - 2 * SHELL_PADDING - LEFT_PANEL.min - RIGHT_PANEL.min);
+    expect(tiny.center?.width).toBeLessThan(CENTER_MIN_WIDTH);
   });
 
   it("没有视口（静态导出预渲染）时只按各栏上下限夹住", () => {

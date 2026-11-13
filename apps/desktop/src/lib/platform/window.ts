@@ -13,6 +13,7 @@ export interface WindowControls {
    * 侧栏展开/收起时窗口宽度逐帧变化 delta 逻辑像素（>0 加宽，<0 收窄），duration 毫秒内按 ease 曲线走完。
    * 只动右边缘、左上角原点不动：WebView2 的画面挂在窗口原点上，移动左边缘时旧画面会先随原点平移、
    * 下一帧才重排，必然抖动，所以任何一侧都不移动左边缘。最大化时不调整，返回 false。
+   * 加宽最多到当前显示器工作区的右边缘，不能伸到屏幕外；窗口本来已越界时保持当前宽度。
    */
   animateWidth(delta: number, duration: number, ease: (t: number) => number): Promise<boolean>;
   /** 设置窗口最小宽度（逻辑像素），随侧栏开合变化；最大化 / 全屏时先记下，还原后再生效（否则会退出最大化） */

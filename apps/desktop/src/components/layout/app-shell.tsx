@@ -242,7 +242,8 @@ function seamStyle(leftOpen: boolean, rightOpen: boolean, animate: boolean): CSS
  * 窗口只动右边缘、原点不动（移动左边缘在 WebView2 上必然让画面抖一帧）：左栏开合时左边缘不动，
  * 中央与右栏随左栏平移，宽度不变。收起前先放宽窗口最小宽度，保证窗口能收到目标宽度、中央不被撑宽。
  * 一次开关进行中按钮禁用防叠加；窗口目标宽度按"记住的中央宽度 + 已开侧栏"计算（不低于最小窗口），
- * 不累加增量，反复开关不会越来越大；用户手动改窗口或拖动侧栏后重新记住中央宽度。
+ * 不累加增量，反复开关不会越来越大；实际加宽到当前显示器工作区右边缘为止，不会伸出屏幕。
+ * 用户手动改窗口或拖动侧栏后重新记住中央宽度。
  * 最大化或浏览器预览下窗口不能变，退回到中央随侧栏伸缩（windowMode=false）。
  */
 function useWindowChoreography(
@@ -332,7 +333,12 @@ function useWindowChoreography(
       try {
         if (minAfter < minBefore) await c.setMinWidth(minAfter);
         await c.animateWidth(delta, snapDuration(), snapEase);
-        if (minAfter > minBefore) await c.setMinWidth(minAfter);
+        if (minAfter > minBefore) {
+          // SetWindowPos 后先等一帧让 WebView 收到新尺寸；屏幕边缘可能把目标宽度截短，
+          // 此时最小宽度必须跟随实际宽度，否则 Windows 会按旧目标再次把窗口撑出屏幕。
+          await frame();
+          await c.setMinWidth(Math.min(minAfter, Math.floor(window.innerWidth)));
+        }
       } catch {
         // 窗口操作失败也要走完清理，否则开关按钮会一直禁用、中央宽度被锁住
       }

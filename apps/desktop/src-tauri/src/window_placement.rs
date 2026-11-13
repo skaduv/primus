@@ -33,6 +33,24 @@ pub(crate) struct Bounds {
     pub height: u32,
 }
 
+/// 侧栏展开只向右边缘加宽：保留窗口原点与高度，把宽度截到当前显示器工作区右边缘。
+/// `minimum_width` 为本次动画开始时的宽度：窗口本来已越界时保持现状，不因展开侧栏而反向缩窄。
+/// 多显示器坐标可能为负，统一用 i64 计算，避免屏幕右侧坐标相加时溢出。
+pub(crate) fn clip_width_to_work_area(
+    bounds: Bounds,
+    area: WorkArea,
+    minimum_width: u32,
+) -> Bounds {
+    let right = i64::from(area.x) + i64::from(area.width);
+    let available = (right - i64::from(bounds.x)).max(1) as u64;
+    let minimum_width = u64::from(minimum_width.min(bounds.width));
+    Bounds {
+        width: u32::try_from(u64::from(bounds.width).min(available).max(minimum_width))
+            .unwrap_or(u32::MAX),
+        ..bounds
+    }
+}
+
 /// 首次打开时窗口宽占工作区的比例：70%。
 const FIRST_RUN_WIDTH_FRACTION: f64 = 0.7;
 /// 首次打开时窗口高占工作区的比例：82%（比宽高一些，对话区一屏能看到更多内容）。
@@ -294,6 +312,69 @@ mod tests {
         };
         assert_eq!(centered_bounds(area, 0.0, SIZE, MIN).width, 1120);
         assert_eq!(centered_bounds(area, f64::NAN, SIZE, MIN).width, 1120);
+    }
+
+    #[test]
+    fn clips_sidebar_expansion_to_work_area_right_edge() {
+        let area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let bounds = Bounds {
+            x: 1600,
+            y: 80,
+            width: 1000,
+            height: 700,
+        };
+        assert_eq!(
+            clip_width_to_work_area(bounds, area, 1),
+            Bounds {
+                width: 320,
+                ..bounds
+            }
+        );
+
+        // 已经在屏幕内时保持目标宽度；副屏负坐标同样按当前屏右边缘计算
+        let inside = Bounds {
+            x: 100,
+            y: 80,
+            width: 1200,
+            height: 700,
+        };
+        assert_eq!(clip_width_to_work_area(inside, area, 1), inside);
+        let left = WorkArea {
+            x: -2560,
+            y: 0,
+            width: 2560,
+            height: 1400,
+        };
+        let near_right = Bounds {
+            x: -400,
+            y: 100,
+            width: 800,
+            height: 900,
+        };
+        assert_eq!(
+            clip_width_to_work_area(near_right, left, 1),
+            Bounds {
+                width: 400,
+                ..near_right
+            }
+        );
+
+        // 窗口本来已有一部分在屏幕外：展开侧栏不得把它反向缩窄
+        let already_overflowed = Bounds {
+            x: 1800,
+            y: 80,
+            width: 700,
+            height: 700,
+        };
+        assert_eq!(
+            clip_width_to_work_area(already_overflowed, area, 700),
+            already_overflowed
+        );
     }
 
     #[test]
