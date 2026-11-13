@@ -57,6 +57,11 @@ for (const platform of Object.keys(runtimePin.platforms ?? {})) {
     fail(`scripts/python-runtime.json ${platform} 缺少或含有格式不正确的 SHA-256`);
 }
 const pip = pythonPin.pip ?? {};
+// pip 用两段或三段数字版本（26.3、26.3.1）；拒绝 rc / dev / post 等后缀与版本范围，即使与基线一致
+if (!/^\d+\.\d+(?:\.\d+)?$/.test(pip.version ?? ""))
+  fail(`scripts/python-runtime.json pip.version（${pip.version}）须为精确的稳定版`);
+if (!/^\d+\.\d+(?:\.\d+)?$/.test(baseline.toolchain.pip ?? ""))
+  fail(`版本基线 toolchain.pip（${baseline.toolchain.pip}）须为精确的稳定版`);
 if (pip.version !== baseline.toolchain.pip)
   fail(
     `scripts/python-runtime.json pip.version 为 ${pip.version}，基线为 ${baseline.toolchain.pip}`,

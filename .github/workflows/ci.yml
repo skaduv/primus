@@ -435,8 +435,11 @@ jobs:
           $sig = Get-AuthenticodeSignature -FilePath $py
           if ($sig.Status -ne 'Valid') { throw "python.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
           if ($sig.SignerCertificate.Subject -notmatch 'O="?Python Software Foundation') { throw "python.exe 签名者不是 Python Software Foundation：$($sig.SignerCertificate.Subject)" }
-          $machine = & $py -c "import platform; print(platform.machine())"
-          if ($machine -ne 'ARM64') { throw "内置 python.exe 的架构为 $machine，应为 ARM64" }
+          # 读 PE 头的 Machine 字段（0xAA64 = ARM64）；platform.machine() 报的是宿主 CPU，x64 包在 ARM64 上也会通过
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $py))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0xAA64) { throw ("内置 python.exe 的 PE Machine 为 0x{0:X4}，应为 0xAA64（ARM64）" -f $machine) }
           & $py -m pip --version
           if ($LASTEXITCODE -ne 0) { throw "内置 pip 不可用" }
 

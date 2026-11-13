@@ -170,8 +170,9 @@ export function patchPythonPth(text) {
 /**
  * 写进 `Lib\site-packages\sitecustomize.py`。embed 包的 `._pth` 让解释器运行在隔离模式（忽略 PYTHON* 环境变量、
  * `safe_path`），这里补回普通 Python 的三处行为：
- * 1. `PYTHONPATH`：pip 默认的隔离构建（virtual）靠它注入构建环境自己的 sitecustomize；把这些目录放到最前并执行
- *    其中的 sitecustomize。只有 pip 的隔离构建目录（临时目录下的 `pip-build-env-xxx\site`）不加入用户包，其他钩子照常加入。
+ * 1. `PYTHONPATH`：pip 默认的隔离构建（virtual）靠它注入构建环境自己的 sitecustomize。只恢复 pip 隔离构建目录
+ *    （临时目录下的 `pip-build-env-xxx\site`）：放进 sys.path 并执行其中的 sitecustomize，不加入用户包；
+ *    其他 `PYTHONPATH` 一律不生效（薄壳也会清掉继承的值）。
  * 2. 脚本目录：`python main.py` 的同目录模块、`python -m pkg` 的当前目录、`-c` / 交互模式的 ''，按标准规则放到 sys.path[0]。
  *    命令行显式给出 `-I` / `-E` 时不恢复 `PYTHONPATH`，`-I` / `-P` 时不恢复脚本目录（以 sys.orig_argv 判断）。
  * 3. 用户包与字节码：加入薄壳经 PRIMUS_PYTHON_PACKAGES 指定、数据目录中的包目录（pip 经 PIP_TARGET 装到那里），
@@ -215,20 +216,18 @@ def _primus_setup():
     else:
         sys.dont_write_bytecode = True
 
-    hooks = []
-    isolated_build = False
+    # 只恢复 pip 默认隔离构建（virtual）设置的 PYTHONPATH：<临时目录>/pip-build-env-*/site，其中的 sitecustomize
+    # 负责加载构建后端；用户环境里的 PYTHONPATH 不生效（薄壳也会清掉），构建环境中不放用户包
+    build_site = None
     if not explicit & {"I", "E"}:
-        extra = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
-        for entry in reversed(extra):
-            sys.path.insert(0, entry)
-        for entry in extra:
-            candidate = os.path.join(entry, "sitecustomize.py")
-            if os.path.isfile(candidate):
-                hooks.append(candidate)
-                # pip 默认隔离构建：<临时目录>/pip-build-env-*/site/sitecustomize.py，构建环境中不放用户包
-                parent = os.path.basename(os.path.dirname(os.path.abspath(entry)))
-                if os.path.basename(os.path.abspath(entry)) == "site" and parent.startswith("pip-build-env-"):
-                    isolated_build = True
+        for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+            entry = os.path.abspath(entry) if entry else ""
+            if (
+                os.path.basename(entry) == "site"
+                and os.path.basename(os.path.dirname(entry)).startswith("pip-build-env-")
+                and os.path.isfile(os.path.join(entry, "sitecustomize.py"))
+            ):
+                build_site = entry
                 break
 
     if sys.flags.safe_path and not explicit & {"I", "P"}:
@@ -243,12 +242,14 @@ def _primus_setup():
             path0 = os.path.dirname(os.path.realpath(argv0))
         sys.path.insert(0, path0)
 
-    if packages and not isolated_build:
-        site.addsitedir(packages)
-    for hook in hooks:
+    if build_site:
+        sys.path.insert(1 if sys.flags.safe_path and not explicit & {"I", "P"} else 0, build_site)
+        hook = os.path.join(build_site, "sitecustomize.py")
         with open(hook, encoding="utf-8") as fp:
             code = compile(fp.read(), hook, "exec")
         exec(code, {"__name__": "sitecustomize", "__file__": hook})
+    elif packages:
+        site.addsitedir(packages)
 
 
 _primus_setup()

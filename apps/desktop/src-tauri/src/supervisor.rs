@@ -324,7 +324,10 @@ fn apply_python_env(
         .env("PIP_TARGET", &packages)
         .env("PIP_CACHE_DIR", paths.python_dir().join("cache"))
         .env("PIP_DISABLE_PIP_VERSION_CHECK", "1")
-        .env("PIP_NO_WARN_SCRIPT_LOCATION", "1");
+        .env("PIP_NO_WARN_SCRIPT_LOCATION", "1")
+        // 用户环境里的 PYTHONPATH / PYTHONHOME 不进入内置 Python（ADR 0010）；pip 隔离构建会自行设置 PYTHONPATH
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME");
 }
 
 /// 最近若干行 stderr（线程安全，读取线程写入、界面读取）。
@@ -1201,7 +1204,12 @@ pub(crate) mod tests {
 
         let mut cmd = Command::new("node");
         let inherited = std::env::join_paths([tmp.0.join("sys-bin")]).unwrap();
-        apply_python_env(&mut cmd, &layout.python, &paths, Some(inherited.as_os_str()));
+        apply_python_env(
+            &mut cmd,
+            &layout.python,
+            &paths,
+            Some(inherited.as_os_str()),
+        );
 
         let packages = paths.python_packages_dir();
         let path = env_of(&cmd, "PATH").flatten().expect("PATH 应被设置");
@@ -1218,6 +1226,16 @@ pub(crate) mod tests {
         assert_eq!(env_of(&cmd, "PIP_TARGET"), Some(Some(pkgs.clone())));
         assert_eq!(env_of(&cmd, "PRIMUS_PYTHON_PACKAGES"), Some(Some(pkgs)));
         assert!(packages.starts_with(paths.user_dir()), "用户包只进数据目录");
+        assert_eq!(
+            env_of(&cmd, "PYTHONPATH"),
+            Some(None),
+            "清掉继承的 PYTHONPATH"
+        );
+        assert_eq!(
+            env_of(&cmd, "PYTHONHOME"),
+            Some(None),
+            "清掉继承的 PYTHONHOME"
+        );
         assert_eq!(
             env_of(&cmd, "PIP_CACHE_DIR"),
             Some(Some(
