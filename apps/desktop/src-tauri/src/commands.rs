@@ -541,13 +541,21 @@ pub(crate) fn providers_list(
     models.providers_list()
 }
 
-/// 新建（`input.id` 缺省）或修改渠道；`input.apiKey` 缺省为保留已存的密钥。保存后重写 Core 配置。
+/// 新建（`input.id` 缺省）或修改渠道；`input.apiKey` 缺省为保留已存的密钥。保存后重写 Core 配置；
+/// 内置渠道恢复为空白种子配置时，同步密钥并在后台获取模型。
 #[tauri::command(async)]
 pub(crate) fn provider_save(
+    app: tauri::AppHandle,
     models: State<'_, ModelConfigState>,
     input: ProviderInput,
 ) -> Result<ProvidersChanged, String> {
-    models.provider_save(input)
+    let changed = models.provider_save(input)?;
+    // 已停用且模型为空的内置渠道改回种子配置后会立即重新隐藏；此时同步密钥并在后台获取，
+    // 否则用户只能重启 App 才能拿到模型。
+    if changed.fetch_builtin_models && models.prepare_builtin() {
+        crate::spawn_builtin_models_fetch(app);
+    }
+    Ok(changed)
 }
 
 /// 删除渠道及其密钥，重写 Core 配置。

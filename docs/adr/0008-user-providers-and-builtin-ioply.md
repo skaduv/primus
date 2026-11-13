@@ -22,7 +22,7 @@ ADR 0005 在账号服务接入前用一份内置客户端配置（`builtin/catal
 - 新增命令 `providers_list`、`provider_save`、`provider_delete`、`provider_fetch_models`、`models_watch`（附录 B）；`models_get` / `models_refresh` / `models_set_default` 形状不变，`models_refresh` 只重读 `providers.json` 并重写 `models.json`，不联网。
 
 ### 内置 ioply 渠道（种子）
-- 首次启动（`providers.json` 不存在）写入一个预置渠道 `ioply`（openai-responses，`http://218.93.48.244:3304/openai/v1`），密钥写入保险库后再写文件；模型清单为空，启动后在后台获取，成功后经 `models_watch` 推送。只要渠道未被修改、仍启用且模型仍为空，每次启动都会重试。后台结果只在该渠道仍存在、仍没有模型、协议与地址与获取时相同的情况下写入，不覆盖用户在获取期间的修改。
+- 首次启动（`providers.json` 不存在）写入一个预置渠道 `ioply`（openai-responses，`http://218.93.48.244:3304/openai/v1`），密钥写入保险库后再写文件；模型清单为空，启动后在后台获取，成功后经 `models_watch` 推送。只要渠道未被修改、仍启用且模型仍为空，每次启动都会重试；已停用的渠道改回种子配置并保存后也会立即重试，无需重启。后台结果只在该渠道仍存在、仍没有模型、协议与地址与获取时相同的情况下写入，不覆盖用户在获取期间的修改。
 - 2026-11-12 起，未被修改且启用的内置渠道作为隐藏的系统渠道：`providers_list` 返回 `hidden: true`，设置·模型的渠道管理不显示它，用户不能从界面编辑、停用或删除；它的模型仍正常显示在模型选择器中。用户修改或停用后，该渠道不再隐藏，按普通渠道显示，避免旧安装升级后无法恢复。
 - 密钥只放在 `apps/desktop/src-tauri/src/builtin.rs` 的常量 `BUILTIN_API_KEY` 一处。项目负责人明确选择直接内置在源码中，并知悉仓库公开、任何人都能取出使用该渠道额度的风险，会自行更换密钥。未被修改且启用的内置渠道会在启动时把保险库同步为当前常量。
 

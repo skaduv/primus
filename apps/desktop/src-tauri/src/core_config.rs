@@ -308,6 +308,9 @@ pub(crate) struct ProviderView {
 pub(crate) struct ProvidersChanged {
     pub(crate) providers: Vec<ProviderView>,
     pub(crate) models: ModelsInfo,
+    /// 仅供薄壳命令判断是否要在保存后后台获取内置渠道模型，不返回 WebView。
+    #[serde(skip)]
+    pub(crate) fetch_builtin_models: bool,
 }
 
 /// `provider_save` 的参数。不实现 Debug：含密钥。
@@ -639,15 +642,23 @@ impl ModelConfigState {
             }
             store.save(&self.providers_file)?;
             let views = self.views(&store);
+            let fetch_builtin_models = index.is_some_and(|i| {
+                let provider = &store.providers[i];
+                provider.id == crate::builtin::SEED_PROVIDER_ID
+                    && is_pristine_builtin(provider)
+                    && provider.models.is_empty()
+            });
             self.regenerate(&mut inner, Ok(store));
             if key_changed && index.is_some() {
                 self.touch_models_file();
             }
-            views
+            (views, fetch_builtin_models)
         };
+        let (providers, fetch_builtin_models) = providers;
         Ok(ProvidersChanged {
             providers,
             models: self.notify(),
+            fetch_builtin_models,
         })
     }
 
@@ -705,6 +716,7 @@ impl ModelConfigState {
         Ok(ProvidersChanged {
             providers,
             models: self.notify(),
+            fetch_builtin_models: false,
         })
     }
 
@@ -1135,6 +1147,29 @@ mod tests {
         assert!(!state.providers_list().unwrap()[0].hidden);
         state.provider_delete("ioply").unwrap();
         assert!(state.providers_list().unwrap().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn re_enabling_empty_builtin_requests_model_fetch() {
+        let (root, state) = state("re-enable-builtin");
+        assert!(state.prepare_builtin());
+        let file = root.join("app").join(PROVIDERS_FILE);
+        let mut store = ProviderStore::load(&file).unwrap().unwrap();
+        store.providers[0].enabled = false;
+        store.save(&file).unwrap();
+
+        let seed = crate::builtin::seed_provider();
+        let mut reenable = input(Some("ioply"), "ioply", None, &[]);
+        reenable.api = seed.api;
+        reenable.base_url = seed.base_url;
+        let changed = state.provider_save(reenable).unwrap();
+        assert!(changed.providers[0].hidden, "恢复种子配置后重新隐藏");
+        assert!(
+            changed.fetch_builtin_models,
+            "保存后应由薄壳命令后台获取模型"
+        );
+        assert!(state.prepare_builtin(), "模型仍为空时允许后台获取");
         let _ = fs::remove_dir_all(&root);
     }
 

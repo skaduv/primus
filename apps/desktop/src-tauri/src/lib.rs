@@ -35,6 +35,16 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+/// 内置渠道模型为空时后台获取；启动与重新启用渠道后共用，失败只记日志。
+pub(crate) fn spawn_builtin_models_fetch(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<core_config::ModelConfigState>();
+        if let Err(e) = state.fetch_and_save(builtin::SEED_PROVIDER_ID).await {
+            eprintln!("[core_config] 内置渠道模型列表获取失败：{e}");
+        }
+    });
+}
+
 pub fn run() {
     // Core 经 models.json 的取令牌命令拉起的子进程：不初始化 Tauri、不触发单实例转发，输出令牌后立即退出（第 9.4 节）
     if let Some(id) = vault::parse_secret_arg(std::env::args_os().skip(1)) {
@@ -148,13 +158,7 @@ pub fn run() {
                 model_config.apply_shell_tools(platform::powershell_available());
                 if fetch_builtin_models {
                     // 内置渠道模型为空时后台获取，不阻塞启动；失败只记日志，下次启动重试
-                    let handle = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        let state = handle.state::<core_config::ModelConfigState>();
-                        if let Err(e) = state.fetch_and_save(builtin::SEED_PROVIDER_ID).await {
-                            eprintln!("[core_config] 内置渠道模型列表获取失败：{e}");
-                        }
-                    });
+                    spawn_builtin_models_fetch(app.handle().clone());
                 }
                 // 会话索引（第 10.2 节）：同样在 setup 中打开，第二个实例不碰主实例的库。
                 // 库文件打不开时退回内存库，本次运行内列表照常可用
