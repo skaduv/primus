@@ -1,7 +1,8 @@
-// 与锁定版本 Core 的 RPC 文档、导出类型逐项对照（开发计划第 3 周第 4 项验收）。
-// 从 agent-core/ 中的文档与源码提取命令、事件、扩展 UI 方法、消息角色、会话条目的名称，
+// 与锁定版本 Core 的导出类型与 RPC 实现逐项对照（开发计划第 3 周第 4 项验收）。
+// 从 agent-core/ 的源码提取命令、事件、扩展 UI 方法、消息角色、会话条目的名称，
 // 与本包导出的清单做集合比较：Core 升级后多出或少了任何一项，这里都会失败。
-// 字段级对照见 README.md；字段类型由 contract.typecheck.ts 用文档示例做编译期校验。
+// agent-core/ 不再携带上游文档（docs/ 已裁剪），只以源码为准。
+// 字段类型由 contract.typecheck.ts 用文档示例做编译期校验。
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -19,16 +20,10 @@ import {
 const CORE = new URL("../../../agent-core/packages/", import.meta.url);
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, CORE)), "utf8");
 
-const docs = {
-  commands: read("coding-agent/docs/rpc-commands.md"),
-  events: read("coding-agent/docs/json.md"),
-  extensionUi: read("coding-agent/docs/rpc-extension-ui.md"),
-  messages: read("coding-agent/docs/message-types.md"),
-  session: read("coding-agent/docs/session-format.md"),
-};
 const src = {
   rpcTypes: read("coding-agent/src/modes/rpc/rpc-types.ts"),
   rpcMode: read("coding-agent/src/modes/rpc/rpc-mode.ts"),
+  messages: read("coding-agent/src/core/messages.ts"),
   agentSession: read("coding-agent/src/core/agent-session.ts"),
   agentTypes: read("agent/src/types.ts"),
   aiTypes: read("ai/src/types.ts"),
@@ -37,14 +32,6 @@ const src = {
 
 const sorted = (values: Iterable<string>) => [...new Set(values)].sort();
 const matches = (text: string, re: RegExp) => [...text.matchAll(re)].map((m) => m[1] as string);
-
-/** 取两个标题之间的正文 */
-function section(text: string, start: string, end?: string): string {
-  const from = text.indexOf(start);
-  expect(from, `找不到「${start}」`).toBeGreaterThanOrEqual(0);
-  const to = end ? text.indexOf(end, from + start.length) : -1;
-  return text.slice(from, to < 0 ? undefined : to);
-}
 
 /** 取一个 TS 类型声明（到下一个顶层 export / 空行分隔的声明为止） */
 function typeBlock(text: string, start: string): string {
@@ -55,15 +42,7 @@ function typeBlock(text: string, start: string): string {
   return rest.slice(0, end < 0 ? undefined : end);
 }
 
-/** Markdown 表格首列中的反引号名称 */
-const tableNames = (text: string) => matches(text, /^\|\s*`([a-z_]+)`\s*\|/gm);
-
 describe("RPC 命令", () => {
-  it("与 rpc-commands.md 的命令章节一致", () => {
-    const body = section(docs.commands, "## Prompting", "## Model object");
-    expect(sorted(RPC_COMMAND_TYPES)).toEqual(sorted(matches(body, /^### ([a-z_]+)$/gm)));
-  });
-
   it("与 Core 导出的 RpcCommand 联合一致", () => {
     const union = typeBlock(src.rpcTypes, "export type RpcCommand =");
     expect(sorted(RPC_COMMAND_TYPES)).toEqual(sorted(matches(union, /type: "([a-z_]+)"/g)));
@@ -81,18 +60,6 @@ describe("RPC 命令", () => {
 });
 
 describe("会话事件", () => {
-  it("与 json.md 的事件表与示例一致", () => {
-    const body = section(docs.events, "## Agent and turn events", "## TypeScript types");
-    const nested = section(docs.events, "The nested event is one of", "The normal agent loop");
-    const nestedNames = new Set(tableNames(nested));
-    const tabled = tableNames(body).filter((name) => !nestedNames.has(name));
-    // 不在表格中的事件只出现在 JSON 示例里：取每个示例对象的顶层 type
-    const examples = matches(body, /^\s*\{?\s*"type":\s*"([a-z_]+)"/gm);
-    const documented = new Set([...tabled, ...examples]);
-    documented.delete("extension_error"); // RPC 独有，单独核对
-    expect(sorted(SESSION_EVENT_TYPES)).toEqual(sorted(documented));
-  });
-
   it("与 Core 的 AgentSessionEvent / AgentEvent 联合一致", () => {
     const sessionUnion = typeBlock(src.agentSession, "export type AgentSessionEvent =");
     const agentUnion = typeBlock(src.agentTypes, "export type AgentEvent =");
@@ -103,14 +70,11 @@ describe("会话事件", () => {
     expect(sorted(SESSION_EVENT_TYPES)).toEqual(sorted(names));
   });
 
-  it("RPC 独有的 extension_error 在文档与 rpc-mode.ts 中都存在", () => {
-    expect(docs.events).toContain('"type":"extension_error"');
+  it("RPC 独有的 extension_error 由 rpc-mode.ts 发出", () => {
     expect(src.rpcMode).toContain('type: "extension_error"');
   });
 
-  it("message_update 的增量事件与 json.md、AssistantMessageEvent 一致", () => {
-    const nested = section(docs.events, "The nested event is one of", "The normal agent loop");
-    expect(sorted(ASSISTANT_MESSAGE_EVENT_TYPES)).toEqual(sorted(tableNames(nested)));
+  it("message_update 的增量事件与 AssistantMessageEvent 一致", () => {
     const union = typeBlock(src.aiTypes, "export type AssistantMessageEvent =");
     expect(sorted(ASSISTANT_MESSAGE_EVENT_TYPES)).toEqual(
       sorted(matches(union, /type: "([a-z_]+)"/g)),
@@ -119,17 +83,22 @@ describe("会话事件", () => {
 });
 
 describe("扩展 UI", () => {
-  it("请求方法与 rpc-extension-ui.md 及 RpcExtensionUIRequest 一致", () => {
-    const body = section(docs.extensionUi, "## Requests from", "## Responses to");
-    expect(sorted(EXTENSION_UI_METHODS)).toEqual(sorted(matches(body, /^### ([A-Za-z_]+)$/gm)));
+  it("请求方法与 RpcExtensionUIRequest 一致", () => {
     const union = typeBlock(src.rpcTypes, "export type RpcExtensionUIRequest =");
     expect(sorted(EXTENSION_UI_METHODS)).toEqual(sorted(matches(union, /method: "([A-Za-z_]+)"/g)));
   });
 
-  it("对话框方法与文档一致", () => {
-    const intro = section(docs.extensionUi, "**Dialog methods**", "**Fire-and-forget methods**");
-    const listed = intro.match(/\(([^)]*)\)/)?.[1] ?? "";
-    expect(sorted(EXTENSION_UI_DIALOG_METHODS)).toEqual(sorted(matches(listed, /`([a-z]+)`/g)));
+  it("对话框方法与 rpc-mode.ts 中等待响应的请求一致", () => {
+    // 扩展 UI 上下文里每个方法一段；登记了待回复请求（直接或经 createDialogPromise）的是对话框
+    const start = src.rpcMode.indexOf("const createExtensionUIContext");
+    expect(start, "找不到 createExtensionUIContext").toBeGreaterThanOrEqual(0);
+    const chunks = src.rpcMode.slice(start).split(/\n\t\t(?=(?:async )?[A-Za-z_]+[(:])/);
+    const dialogs = chunks
+      .filter(
+        (c) => c.includes("createDialogPromise(") || c.includes("pendingExtensionRequests.set"),
+      )
+      .flatMap((c) => matches(c, /method: "([A-Za-z_]+)"/g));
+    expect(sorted(EXTENSION_UI_DIALOG_METHODS)).toEqual(sorted(dialogs));
   });
 
   it("响应形状与 RpcExtensionUIResponse 一致（value / confirmed / cancelled）", () => {
@@ -143,17 +112,15 @@ describe("扩展 UI", () => {
 });
 
 describe("消息与会话条目", () => {
-  it("消息角色与 message-types.md 一致", () => {
-    expect(sorted(AGENT_MESSAGE_ROLES)).toEqual(
-      sorted(matches(docs.messages, /role: "([A-Za-z]+)";/g)),
-    );
+  it("消息角色与 Core 的 Message 及 coding-agent 自定义消息一致", () => {
+    const roles = [
+      ...matches(src.aiTypes, /^\t+role: "([A-Za-z]+)";$/gm),
+      ...matches(src.messages, /^\t+role: "([A-Za-z]+)";$/gm),
+    ];
+    expect(sorted(AGENT_MESSAGE_ROLES)).toEqual(sorted(roles));
   });
 
-  it("会话条目类型与 session-format.md、SessionEntry 联合一致", () => {
-    const examples = matches(docs.session, /^\{"type":"([a-z_]+)"/gm).filter(
-      (t) => t !== "session",
-    );
-    expect(sorted(SESSION_ENTRY_TYPES)).toEqual(sorted(examples));
+  it("会话条目类型与 SessionEntry 联合一致", () => {
     const entryTypes = matches(
       src.sessionManager,
       /^export interface \w+Entry(?:<T = unknown>)? extends SessionEntryBase \{\n\ttype: "([a-z_]+)";/gm,

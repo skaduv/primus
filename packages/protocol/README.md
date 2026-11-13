@@ -1,7 +1,7 @@
 # @primus/protocol
 
 前端、薄壳与第一方扩展共用的 RPC 记录与 `primus:*` 数据的 TS 类型（技术方案第 7 章、附录 A）。
-类型与锁定版本的 Agent Core 逐项对照，来源是 `agent-core/packages/coding-agent/docs/` 下的文档与 Core 导出的类型。
+类型与锁定版本的 Agent Core 逐项对照，来源是 Core 导出的类型与 RPC 实现（上游文档已从 `agent-core/` 裁剪，下表“Core 文档”列为上游原始出处）。
 
 | 文件 | 内容 | Core 文档 |
 |---|---|---|
@@ -18,8 +18,8 @@
 
 ## 对照方式
 
-- **名称覆盖**（`src/coverage.test.ts`，随 `pnpm test` 运行）：从 Core 文档和源码（`rpc-types.ts`、`rpc-mode.ts`、
-  `agent-session.ts`、`AgentEvent`、`AssistantMessageEvent`、`session-manager.ts`）提取命令、响应、事件、增量事件、
+- **名称覆盖**（`src/coverage.test.ts`，随 `pnpm test` 运行）：从 Core 源码（`rpc-types.ts`、`rpc-mode.ts`、
+  `agent-session.ts`、`AgentEvent`、`AssistantMessageEvent`、`messages.ts`、`session-manager.ts`）提取命令、响应、事件、增量事件、
   扩展 UI 方法与响应形状、消息角色、会话条目的名称，与本包清单做集合比较。Core 升级后多出或少了任何一项都会失败。
 - **字段形状**（`src/contract.typecheck.ts`，随 `pnpm --filter @primus/protocol typecheck` 运行）：Core 文档中的
   JSON 示例逐条用本包类型标注，多字段、缺必填字段、取值不符都会编译失败；同时校验各清单与联合类型完全一致。
