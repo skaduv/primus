@@ -170,9 +170,10 @@ export function patchPythonPth(text) {
 /**
  * 写进 `Lib\site-packages\sitecustomize.py`。embed 包的 `._pth` 让解释器运行在隔离模式（忽略 PYTHON* 环境变量、
  * `safe_path`），这里补回普通 Python 的三处行为：
- * 1. `PYTHONPATH`：pip 默认的隔离构建（virtual）靠它注入构建环境自己的 sitecustomize；检测到时把这些目录放到最前
- *    并执行那份 sitecustomize，不再加入用户包，保证源码包构建与普通 Python 一致。
+ * 1. `PYTHONPATH`：pip 默认的隔离构建（virtual）靠它注入构建环境自己的 sitecustomize；把这些目录放到最前并执行
+ *    其中的 sitecustomize。只有 pip 的隔离构建目录（临时目录下的 `pip-build-env-xxx\site`）不加入用户包，其他钩子照常加入。
  * 2. 脚本目录：`python main.py` 的同目录模块、`python -m pkg` 的当前目录、`-c` / 交互模式的 ''，按标准规则放到 sys.path[0]。
+ *    命令行显式给出 `-I` / `-E` 时不恢复 `PYTHONPATH`，`-I` / `-P` 时不恢复脚本目录（以 sys.orig_argv 判断）。
  * 3. 用户包与字节码：加入薄壳经 PRIMUS_PYTHON_PACKAGES 指定、数据目录中的包目录（pip 经 PIP_TARGET 装到那里），
  *    `.pyc` 缓存重定向到同级 `pycache`；没有该变量时不写字节码，避免在安装目录生成 `__pycache__`（约束 C2）。
  */
@@ -182,24 +183,50 @@ import site
 import sys
 
 
+def _explicit_flags():
+    # 命令行上显式给出的解释器选项（-I / -E / -P 等）：用户明确要求的隔离不能被下面的兼容逻辑放宽
+    flags = set()
+    args = list(getattr(sys, "orig_argv", [])[1:])
+    while args:
+        arg = args.pop(0)
+        if arg == "--" or arg == "-" or not arg.startswith("-") or arg.startswith("--"):
+            break
+        if arg[1] in "cm":
+            break
+        for index, ch in enumerate(arg[1:], 1):
+            if ch in "WX":
+                if index == len(arg) - 1 and args:
+                    args.pop(0)
+                break
+            flags.add(ch)
+    return flags
+
+
 def _primus_setup():
+    explicit = _explicit_flags()
     packages = os.environ.get("PRIMUS_PYTHON_PACKAGES")
     if packages:
         sys.pycache_prefix = os.path.join(os.path.dirname(os.path.abspath(packages)), "pycache")
     else:
         sys.dont_write_bytecode = True
 
-    foreign = None
-    extra = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
-    for entry in reversed(extra):
-        sys.path.insert(0, entry)
-    for entry in extra:
-        candidate = os.path.join(entry, "sitecustomize.py")
-        if os.path.isfile(candidate):
-            foreign = candidate
-            break
+    hooks = []
+    isolated_build = False
+    if not explicit & {"I", "E"}:
+        extra = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]
+        for entry in reversed(extra):
+            sys.path.insert(0, entry)
+        for entry in extra:
+            candidate = os.path.join(entry, "sitecustomize.py")
+            if os.path.isfile(candidate):
+                hooks.append(candidate)
+                # pip 默认隔离构建：<临时目录>/pip-build-env-*/site/sitecustomize.py，构建环境中不放用户包
+                parent = os.path.basename(os.path.dirname(os.path.abspath(entry)))
+                if os.path.basename(os.path.abspath(entry)) == "site" and parent.startswith("pip-build-env-"):
+                    isolated_build = True
+                break
 
-    if sys.flags.safe_path:
+    if sys.flags.safe_path and not explicit & {"I", "P"}:
         argv0 = sys.argv[0] if sys.argv else ""
         if argv0 in ("", "-c"):
             path0 = ""
@@ -211,12 +238,12 @@ def _primus_setup():
             path0 = os.path.dirname(os.path.realpath(argv0))
         sys.path.insert(0, path0)
 
-    if foreign:
-        with open(foreign, encoding="utf-8") as fp:
-            code = compile(fp.read(), foreign, "exec")
-        exec(code, {"__name__": "sitecustomize", "__file__": foreign})
-    elif packages:
+    if packages and not isolated_build:
         site.addsitedir(packages)
+    for hook in hooks:
+        with open(hook, encoding="utf-8") as fp:
+            code = compile(fp.read(), hook, "exec")
+        exec(code, {"__name__": "sitecustomize", "__file__": hook})
 
 
 _primus_setup()

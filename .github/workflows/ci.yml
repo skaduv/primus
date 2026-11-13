@@ -240,7 +240,7 @@ jobs:
           # 默认隔离构建安装源码包（构建后端 setuptools 装在 pip 的临时构建环境里，经 PYTHONPATH 注入）
           $sdist = Join-Path $env:RUNNER_TEMP 'primus-py-sdist'
           New-Item -ItemType Directory -Force -Path (Join-Path $sdist 'primus_demo') | Out-Null
-          Set-Content -LiteralPath (Join-Path $sdist 'pyproject.toml') -Value "[build-system]`nrequires = [`"setuptools>=68`"]`nbuild-backend = `"setuptools.build_meta`"`n[project]`nname = `"primus-demo`"`nversion = `"0.1`""
+          Set-Content -LiteralPath (Join-Path $sdist 'pyproject.toml') -Value "[build-system]`nrequires = [`"setuptools==84.2.1`"]`nbuild-backend = `"setuptools.build_meta`"`n[project]`nname = `"primus-demo`"`nversion = `"0.1`""
           Set-Content -LiteralPath (Join-Path $sdist 'primus_demo/__init__.py') -Value 'Y = 2'
           & $py -B -m pip install --target $pkgs $sdist
           if ($LASTEXITCODE -ne 0) { throw "源码包隔离构建安装失败" }

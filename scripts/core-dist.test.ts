@@ -324,7 +324,9 @@ describe("内置 Python（ADR 0010）", () => {
     expect(PYTHON_SITECUSTOMIZE).toContain("site.addsitedir(packages)");
     // ._pth 隔离模式下补回 PYTHONPATH（pip 隔离构建）、脚本目录（safe_path）并重定向字节码
     expect(PYTHON_SITECUSTOMIZE).toContain('os.environ.get("PYTHONPATH", "")');
-    expect(PYTHON_SITECUSTOMIZE).toContain("if sys.flags.safe_path:");
+    expect(PYTHON_SITECUSTOMIZE).toContain('if sys.flags.safe_path and not explicit & {"I", "P"}:');
+    expect(PYTHON_SITECUSTOMIZE).toContain('if not explicit & {"I", "E"}:');
+    expect(PYTHON_SITECUSTOMIZE).toContain('parent.startswith("pip-build-env-")');
     expect(PYTHON_SITECUSTOMIZE).toContain("sys.pycache_prefix =");
     expect(PYTHON_SITECUSTOMIZE).toContain("sys.dont_write_bytecode = True");
     expect(PIP_CMD).toBe('@"%~dp0python.exe" -B -m pip %*\r\n');
