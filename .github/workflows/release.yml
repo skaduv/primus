@@ -1,10 +1,14 @@
-# 乾元 Primus 发布（技术方案第 3.1、22 章）：按标签为 Windows x64 与 ARM64 各构建一个 MSI，发布到公开的
-# `skaduv/primus-releases`。源码仓保持私有；发布使用只授权该公开仓 Contents 写权限的 PRIMUS_RELEASES_TOKEN。
+# 乾元 Primus 发布（技术方案第 3.1、22 章）：按标签为 Windows x64 与 ARM64 各构建一个 MSI，先发布到源码仓
+# `skaduv/primus` 的 Release（github.token），再同步到公开的 `skaduv/primus-releases`（ADR 0009）。源码仓保持私有；
+# 写公开仓使用只授权该公开仓 Contents 写权限的 PRIMUS_RELEASES_TOKEN。两边附件与正文由 scripts/publish-release.sh 生成，
+# 内容一致；自动更新清单 update-feed 只在公开仓维护（客户端只能匿名读取公开仓）
 # （只发 MSI，ADR 0007：按机器安装在 Program Files，附带按需启动的更新服务 PrimusUpdate，应用内静默升级）
 # - 推送 v* 标签时自动运行；Release 不存在则创建。版本含预发布标识（含 '-'，如 1.2.0-beta.1）时标为 prerelease，
 #   否则为正式版并设为 Latest
 # - workflow_dispatch 输入已有标签（例如 v0.0.9），重新构建该标签并更新对应 Release：同名附件覆盖上传
 #   （失败时回滚到旧附件），不在本次清单中的旧附件（例如早期的 NSIS 安装程序、SBOM、.sha256）删除，prerelease / Latest 按上一条规则更正
+# - workflow_dispatch 勾选 backfill_source：不构建，只把公开仓已有的该版本 2 个 MSI 回填到源码仓的 Release
+#   （用于只发到公开仓、源码仓缺 Release 的版本），不改公开仓与 update-feed
 # - Release 附件只有 2 个安装包：Primus_<ver>_<x64|arm64>_zh-CN.msi。updater 签名 .sig 照常生成，但只经 workflow
 #   artifact 在作业之间传递（.sig 内容内联进 update-feed 清单的 signature 字段），不上传到 Release；SBOM 与被禁 SDK
 #   检查、安装包检查、静默安装 / 卸载冒烟照常在构建作业中运行，但不作为附件，SHA-256 写在 Release 正文
@@ -30,6 +34,11 @@ on:
         description: 已有标签（例如 v0.0.1），构建该标签并更新对应 Release 的附件
         required: true
         type: string
+      backfill_source:
+        description: 只把公开仓已有的该版本 Release（2 个 MSI 与正文）回填到源码仓，不重新构建、不改公开仓与 update-feed
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,6 +53,7 @@ env:
 jobs:
   build:
     name: 构建安装包（Windows ${{ matrix.arch }}）
+    if: ${{ !inputs.backfill_source }}
     strategy:
       # 任一架构失败即整体失败，不发布只有部分架构的 Release
       fail-fast: true
@@ -214,9 +224,9 @@ jobs:
       group: release-publish-update-feed
       cancel-in-progress: false
       queue: max
-    # 源码仓始终只读；写公开仓的权限来自跨仓库令牌，不使用 github.token
+    # github.token 只写源码仓的 Release；写公开仓的权限来自跨仓库令牌 PRIMUS_RELEASES_TOKEN
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: 检查公开发布仓凭证
         env:
@@ -268,171 +278,51 @@ jobs:
           [[ "$(wc -l < ../SHA256SUMS.txt)" -eq "${#want[@]}" ]] || { echo "::error::校验清单应有 ${#want[@]} 行"; exit 1; }
           sha256sum --check --strict ../SHA256SUMS.txt
 
-      - name: 创建 Release 或更新附件
+      # update-feed 已指向本标签的安装包时不能原地重建：--clobber 换掉安装包后、清单更新前，客户端会拿旧清单里的
+      # 签名校验新安装包而拒绝更新（中途失败则一直如此）。在发布到任何一个仓库之前检查，请升版本号重新发布
+      - name: 检查 update-feed 是否已引用本标签
         env:
           GH_TOKEN: ${{ secrets.PRIMUS_RELEASES_TOKEN }}
           GH_REPO: skaduv/primus-releases
-          VERSION: ${{ needs.build.outputs.version }}
-          PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
           set -euo pipefail
-          names=(
-            "Primus_${VERSION}_x64_zh-CN.msi"
-            "Primus_${VERSION}_arm64_zh-CN.msi"
-          )
-          # 只上传 2 个安装包；.sig 内联进 update-feed 清单
-          files=()
-          for n in "${names[@]}"; do files+=("assets/${n}"); done
-
-          # 正文的「## 校验」段：全部附件（2 个安装包）的 SHA-256
-          {
-            printf '## 校验\n\n| 文件 | SHA-256 |\n| --- | --- |\n'
-            for n in "${names[@]}"; do
-              printf '| `%s` | `%s` |\n' "$n" "$(awk -v n="$n" '$2 == n { print $1 }' SHA256SUMS.txt)"
-            done
-            printf '\n```powershell\nGet-FileHash .\\<文件名> -Algorithm SHA256\n```\n'
-          } > checksums.md
-          if grep -Eq '\| `[0-9a-f]{0,63}` \|' checksums.md; then echo "::error::校验表缺少哈希"; exit 1; fi
-
-          # 正文的「## 已知限制」与「## 安装包」段：创建时写入，更新已有 Release 时整段替换
-          {
-            printf '## 已知限制\n\n'
-            printf -- '- **未做代码签名**：首次运行安装包时 Windows SmartScreen 会拦截，需要点「更多信息」→「仍要运行」。\n'
-          } > limits.md
-          {
-            printf '## 安装包\n\n'
-            printf -- '- `%s`、`%s`：MSI 安装包（简体中文，x64 / ARM64），按机器安装，之后的版本在退出 Primus 时静默更新\n' "${names[0]}" "${names[1]}"
-            printf -- '- 之前装过 NSIS 版（`-setup.exe`）的电脑：运行一次 MSI 即可，会自动卸载 NSIS 版并沿用原来的数据\n'
-            printf -- '- 应用内自动更新的签名直接写在更新清单里，不再单独提供 `.sig` 附件\n'
-          } > packages.md
-
-          # 只有预发布版本标 prerelease；正式版取消 prerelease 并设为 Latest
-          if [[ "$PRERELEASE" == "true" ]]; then
-            channel=(--prerelease --latest=false)
-          else
-            channel=(--prerelease=false --latest)
+          if ! gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
+            echo "公开仓还没有 ${RELEASE_TAG}，无需检查"
+            exit 0
           fi
-
-          if gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
-            echo "Release ${RELEASE_TAG} 已存在：更新附件（prerelease=${PRERELEASE}）"
-            # 自动更新清单（update-feed）已指向本标签的安装包时不能原地重建：--clobber 换掉安装包后、清单更新前，
-            # 客户端会拿旧清单里的签名校验新安装包而拒绝更新（中途失败则一直如此）。请升版本号重新发布
-            if gh release view update-feed --json id >/dev/null 2>&1; then
-              feed_assets="$(gh release view update-feed --json assets --jq '.assets[].name')"
-              mkdir -p feed-check
-              for ch in stable.json beta.json; do
-                grep -Fxq -- "$ch" <<<"$feed_assets" || continue
-                gh release download update-feed --pattern "$ch" --dir feed-check --clobber
-                # jq -e：0 = 引用了本标签，1 = 没有引用，其他 = 清单读不出（无法确认，按引用处理）
-                rc=0
-                jq -e --arg tag "$RELEASE_TAG" \
-                  '[.platforms[]?.url // empty | select(contains("/releases/download/" + ($tag | @uri) + "/"))] | length > 0' \
-                  "feed-check/$ch" >/dev/null || rc=$?
-                if [[ $rc -ne 1 ]]; then
-                  echo "::error::update-feed/${ch} 正在引用 ${RELEASE_TAG} 的安装包（或清单无法解析），不能原地重建（客户端会因签名不符拒绝更新），请升版本号后发布新标签"
-                  exit 1
-                fi
-              done
-            fi
-            existing="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
-            # --clobber 先删旧附件再上传：先备份同名旧附件，上传失败时整组回滚，避免 Release 缺安装包
-            mkdir -p backup
-            for n in "${names[@]}"; do
-              if grep -Fxq -- "$n" <<<"$existing"; then
-                gh release download "$RELEASE_TAG" --pattern "$n" --dir backup
-              fi
-            done
-            if ! gh release upload "$RELEASE_TAG" "${files[@]}" --clobber; then
-              echo "::error::附件上传失败，回滚到上传前的附件"
-              for n in "${names[@]}"; do
-                if [[ -f "backup/$n" ]]; then
-                  gh release upload "$RELEASE_TAG" "backup/$n" --clobber || echo "::error::恢复旧附件 $n 失败"
-                elif gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fxq -- "$n"; then
-                  # 上传前不存在的附件：删掉本次留下的新版本，保持整组一致
-                  gh release delete-asset "$RELEASE_TAG" "$n" --yes || echo "::error::删除新附件 $n 失败"
-                fi
-              done
+          gh release view update-feed --json id >/dev/null 2>&1 || exit 0
+          feed_assets="$(gh release view update-feed --json assets --jq '.assets[].name')"
+          mkdir -p feed-check
+          for ch in stable.json beta.json; do
+            grep -Fxq -- "$ch" <<<"$feed_assets" || continue
+            gh release download update-feed --pattern "$ch" --dir feed-check --clobber
+            # jq -e：0 = 引用了本标签，1 = 没有引用，其他 = 清单读不出（无法确认，按引用处理）
+            rc=0
+            jq -e --arg tag "$RELEASE_TAG" \
+              '[.platforms[]?.url // empty | select(contains("/releases/download/" + ($tag | @uri) + "/"))] | length > 0' \
+              "feed-check/$ch" >/dev/null || rc=$?
+            if [[ $rc -ne 1 ]]; then
+              echo "::error::update-feed/${ch} 正在引用 ${RELEASE_TAG} 的安装包（或清单无法解析），不能原地重建（客户端会因签名不符拒绝更新），请升版本号后发布新标签"
               exit 1
             fi
-            # 新附件齐全后先更新正文与发布状态（有限重试，仍失败则步骤失败），全部成功后才删除不在本次清单中的旧附件
-            # （例如早期发布的 SBOM 与 .sha256）：中途失败时旧附件仍在，重新运行工作流即可恢复
-            retry() {
-              local i
-              for i in 1 2 3; do
-                "$@" && return 0
-                echo "::warning::第 ${i} 次失败：$*" >&2
-                sleep $((i * 10))
-              done
-              return 1
-            }
-            # 正文：替换「## 已知限制」「## 安装包」「## 校验」三段（各到下一个二级标题或结尾为止）；
-            # 前两段没有则加在正文开头，校验段没有则追加；其余正文（手动补充的变更说明等）不动
-            retry gh release view "$RELEASE_TAG" --json body --jq .body > body.md \
-              || { echo "::error::读取 Release 正文失败"; exit 1; }
-            LIMITS="$(cat limits.md)" PACKAGES="$(cat packages.md)" CHECKSUMS="$(cat checksums.md)" perl -0pi -e '
-              my $head = "";
-              for my $pair (["已知限制", $ENV{LIMITS}], ["安装包", $ENV{PACKAGES}]) {
-                my ($title, $text) = @$pair;
-                my $section = "$text\n\n";
-                $head .= $section unless s/^##[ \t]*\Q$title\E[ \t]*\r?\n.*?(?=^##[ \t]|\z)/$section/ms;
-              }
-              $_ = $head . $_ if $head ne "";
-              my $section = "$ENV{CHECKSUMS}\n\n";
-              if (!s/^##[ \t]*校验[ \t]*\r?\n.*?(?=^##[ \t]|\z)/$section/ms) {
-                s/\s*\z/\n\n$section/;
-              }
-              s/\s*\z/\n/;
-            ' body.md
-            retry gh release edit "$RELEASE_TAG" --draft=false "${channel[@]}" --notes-file body.md \
-              || { echo "::error::更新 Release 正文与发布状态失败，旧附件保留"; exit 1; }
-            while IFS= read -r old; do
-              [[ -z "$old" ]] && continue
-              if ! printf '%s\n' "${names[@]}" | grep -Fxq -- "$old"; then
-                echo "删除不在清单中的旧附件：$old"
-                retry gh release delete-asset "$RELEASE_TAG" "$old" --yes \
-                  || { echo "::error::删除旧附件 $old 失败"; exit 1; }
-              fi
-            done <<<"$existing"
-          else
-            echo "Release ${RELEASE_TAG} 不存在：创建（prerelease=${PRERELEASE}）"
-            {
-              cat limits.md
-              printf '\n'
-              cat packages.md
-              printf '\n'
-              cat checksums.md
-            } > notes.md
-            gh release create "$RELEASE_TAG" "${files[@]}" \
-              --target main \
-              --title "乾元 Primus ${VERSION}" \
-              --notes-file notes.md \
-              "${channel[@]}"
-          fi
+          done
 
-      - name: 核对发布结果
+      # 先在源码仓发布版本（ADR 0009 修订），成功后再把同样的附件与正文同步到公开发布仓
+      - name: 发布到源码仓 ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: bash .release-ci/scripts/publish-release.sh
+
+      - name: 同步到公开发布仓 skaduv/primus-releases
         env:
           GH_TOKEN: ${{ secrets.PRIMUS_RELEASES_TOKEN }}
           GH_REPO: skaduv/primus-releases
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets \
-            --jq '"draft=\(.isDraft) prerelease=\(.isPrerelease)", (.assets[] | "\(.name)\t\(.size)")'
-          state="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
-          [[ "$state" == "false ${PRERELEASE}" ]] || { echo "::error::Release 状态不符（draft prerelease = ${state}）"; exit 1; }
-          actual="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort)"
-          # 只应有 2 个安装包（.sig 不上传；重建旧标签时不在清单中的旧附件已在上一步删除）
-          want=(
-            "Primus_${VERSION}_arm64_zh-CN.msi"
-            "Primus_${VERSION}_x64_zh-CN.msi"
-          )
-          expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
-          [[ "$actual" == "$expected" ]] || { echo "::error::Release 附件与清单不符：${actual}"; exit 1; }
-          if [[ "$PRERELEASE" != "true" ]]; then
-            latest="$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)"
-            [[ "$latest" == "$RELEASE_TAG" ]] || { echo "::error::Latest 为 ${latest}，不是 ${RELEASE_TAG}"; exit 1; }
-          fi
+        run: bash .release-ci/scripts/publish-release.sh
 
       # 自动更新清单（技术方案第 3.6 节、ADR 0007）：固定的 Release `update-feed`（prerelease、不设 Latest）存放
       # stable.json / beta.json，桌面端按通道读取。先下载现有清单做版本比较：正式版写 stable 与 beta（beta 只在
@@ -498,3 +388,49 @@ jobs:
             [[ "$got" == "$VERSION" ]] || { echo "::error::update-feed 中的 ${name} 版本为 ${got}，应为 ${VERSION}"; exit 1; }
             echo "✓ update-feed/${name} → ${VERSION}"
           done
+
+  # 手动回填：公开仓已发布、源码仓还没有 Release 的版本（例如只发到公开仓的 v0.1.0），下载公开仓的 2 个 MSI，
+  # 按同样的脚本在源码仓创建或更新 Release。公开仓可匿名读取，这里只用 github.token 写源码仓
+  backfill:
+    name: 回填源码仓 Release（来自公开仓）
+    if: ${{ inputs.backfill_source }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: 校验标签名
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "::error::标签须为 v<SemVer>，实际：$RELEASE_TAG"; exit 1; }
+
+      - name: 取出工作流提交中的发布脚本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: 下载公开仓的安装包
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: skaduv/primus-releases
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          mkdir -p assets
+          for arch in x64 arm64; do
+            gh release download "$RELEASE_TAG" --pattern "Primus_${version}_${arch}_zh-CN.msi" --dir assets
+          done
+          (cd assets && sha256sum Primus_*.msi) > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+          { echo "VERSION=$version"; echo "PRERELEASE=$prerelease"; } >> "$GITHUB_ENV"
+
+      - name: 发布到源码仓 ${{ github.repository }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .release-ci/scripts/publish-release.sh
