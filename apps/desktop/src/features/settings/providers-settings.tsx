@@ -143,6 +143,7 @@ export function ProviderSettings() {
   // 读取失败（如 providers.json 损坏）时仍显示添加入口：薄壳保存时备份旧文件并重建配置
   const list = providers ?? (loadError ? [] : null);
   if (!list) return <p className="text-sm text-muted">{t.loading}</p>;
+  const visible = list.filter((p) => !p.hidden);
 
   return (
     <section className="flex flex-col gap-2">
@@ -161,10 +162,12 @@ export function ProviderSettings() {
         </div>
       )}
       <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
-        {list.length === 0 && <p className="px-4 py-3 text-xs text-muted">{t.empty}</p>}
-        {list.length > 0 && (
+        {visible.length === 0 && list.length === 0 && (
+          <p className="px-4 py-3 text-xs text-muted">{t.empty}</p>
+        )}
+        {visible.length > 0 && (
           <ul aria-label={t.title} className="divide-y divide-border">
-            {list.map((p) => (
+            {visible.map((p) => (
               <li key={p.id} className="flex items-center gap-3 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="flex min-w-0 items-center gap-2 text-sm">
