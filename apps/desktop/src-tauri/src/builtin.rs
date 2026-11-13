@@ -15,10 +15,10 @@ pub(crate) const SEED_PROVIDER_ID: &str = "ioply";
 const SEED_API: Api = Api::OpenAiResponses;
 
 /// 内置渠道接口地址。
-const SEED_BASE_URL: &str = "http://218.93.48.244:3304/openai/v1";
+const SEED_BASE_URL: &str = "https://api.mecode.cc.cd/v1";
 
 /// 内置渠道密钥，用户要求直接写在源码中，后续会更换。
-pub(crate) const BUILTIN_API_KEY: &str = "sk-bb4055656ec644379b3571c8be0dc74e";
+pub(crate) const BUILTIN_API_KEY: &str = "sk-xFAj92kTXnK6WCz9nGiKznBgzfFpWKi6uqg1j6xNRl3HLvEj";
 
 /// 旧版内置模型配置在保险库中的令牌 ID：启动时删除（迁移）。
 pub(crate) const LEGACY_TOKEN_ID: &str = "model-token";
