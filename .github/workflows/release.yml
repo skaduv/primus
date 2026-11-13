@@ -366,7 +366,7 @@ jobs:
               return 1
             }
             # 正文：替换「## 已知限制」「## 安装包」「## 校验」三段（各到下一个二级标题或结尾为止）；
-            # 前两段没有则加在正文开头，校验段没有则追加；其余正文（自动生成的变更说明等）不动
+            # 前两段没有则加在正文开头，校验段没有则追加；其余正文（手动补充的变更说明等）不动
             retry gh release view "$RELEASE_TAG" --json body --jq .body > body.md \
               || { echo "::error::读取 Release 正文失败"; exit 1; }
             LIMITS="$(cat limits.md)" PACKAGES="$(cat packages.md)" CHECKSUMS="$(cat checksums.md)" perl -0pi -e '
@@ -406,7 +406,6 @@ jobs:
               --target main \
               --title "乾元 Primus ${VERSION}" \
               --notes-file notes.md \
-              --generate-notes \
               "${channel[@]}"
           fi
 
