@@ -143,6 +143,23 @@ fn is_legacy_builtin(provider: &Provider) -> bool {
         && crate::builtin::LEGACY_BASE_URLS.contains(&provider.base_url.as_str())
 }
 
+/// 隐藏的内置渠道无法从界面更新密钥：保险库里没有密钥或是历史内置密钥时同步为当前常量；
+/// 其他值是用户自己换的密钥，保留。返回是否写入。
+fn sync_builtin_key(vault: &Vault, provider_id: &str) -> io::Result<bool> {
+    let secret = providers::secret_name(provider_id);
+    let stale = match vault.get(&secret) {
+        Ok(None) => true,
+        Ok(Some(key)) => crate::builtin::is_legacy_api_key(&key),
+        // 读不出来时交给 ensure 处理（它会备份后重建保险库）
+        Err(_) => true,
+    };
+    if stale {
+        vault.ensure(&secret, crate::builtin::BUILTIN_API_KEY)
+    } else {
+        Ok(false)
+    }
+}
+
 /// 内容不同才写：先写临时文件再替换。返回是否写入。
 fn write_if_changed(file: &Path, text: &str) -> io::Result<bool> {
     if fs::read_to_string(file).is_ok_and(|current| current == text) {
@@ -527,16 +544,7 @@ impl ModelConfigState {
         if !is_pristine_builtin(provider) {
             return false;
         }
-        // 隐藏后无法从界面更新密钥：保险库里没有密钥或是历史内置密钥时同步为当前常量；
-        // 其他值是用户自己换的密钥，保留。
-        let secret = providers::secret_name(&provider.id);
-        let stale = match vault.get(&secret) {
-            Ok(None) => true,
-            Ok(Some(key)) => crate::builtin::LEGACY_API_KEYS.contains(&key.as_str()),
-            // 读不出来时交给 ensure 处理（它会备份后重建保险库）
-            Err(_) => true,
-        };
-        if stale && let Err(e) = vault.ensure(&secret, crate::builtin::BUILTIN_API_KEY) {
+        if let Err(e) = sync_builtin_key(&vault, &provider.id) {
             eprintln!("[core_config] 内置渠道密钥更新失败：{e}");
             return false;
         }
@@ -670,13 +678,19 @@ impl ModelConfigState {
                 None => store.providers.push(provider),
             }
             store.save(&self.providers_file)?;
+            // 内置渠道恢复为种子配置后立即重新隐藏，用户无法再改密钥：先同步密钥（与模型清单无关），
+            // 模型清单为空时再由薄壳命令在后台获取
+            let restored_builtin = index.is_some_and(|i| is_pristine_builtin(&store.providers[i]));
+            let builtin_key_synced = restored_builtin
+                && sync_builtin_key(&self.vault(), &id).unwrap_or_else(|e| {
+                    eprintln!("[core_config] 内置渠道密钥更新失败：{e}");
+                    false
+                });
             let views = self.views(&store);
-            let fetch_builtin_models = index.is_some_and(|i| {
-                let provider = &store.providers[i];
-                is_pristine_builtin(provider) && provider.models.is_empty()
-            });
+            let fetch_builtin_models =
+                restored_builtin && index.is_some_and(|i| store.providers[i].models.is_empty());
             self.regenerate(&mut inner, Ok(store));
-            if key_changed && index.is_some() {
+            if (key_changed || builtin_key_synced) && index.is_some() {
                 self.touch_models_file();
             }
             (views, fetch_builtin_models)
@@ -1133,7 +1147,7 @@ mod tests {
             "不返回密钥"
         );
         vault
-            .set("provider:ioply", crate::builtin::LEGACY_API_KEYS[0])
+            .set("provider:ioply", crate::builtin::TEST_LEGACY_API_KEY)
             .unwrap();
         assert!(state.prepare_builtin(), "空模型继续重试");
         assert_eq!(
@@ -1205,7 +1219,7 @@ mod tests {
         store.providers[0].models = vec![model("old")];
         store.save(&file).unwrap();
         vault
-            .set("provider:ioply", crate::builtin::LEGACY_API_KEYS[0])
+            .set("provider:ioply", crate::builtin::TEST_LEGACY_API_KEY)
             .unwrap();
         assert!(
             !state.providers_list().unwrap()[0].hidden,
@@ -1260,7 +1274,7 @@ mod tests {
         let seed = crate::builtin::seed_provider();
         let mut reenable = input(Some("ioply"), "ioply", None, &[]);
         reenable.api = seed.api;
-        reenable.base_url = seed.base_url;
+        reenable.base_url = seed.base_url.clone();
         let changed = state.provider_save(reenable).unwrap();
         assert!(changed.providers[0].hidden, "恢复种子配置后重新隐藏");
         assert!(
@@ -1268,7 +1282,37 @@ mod tests {
             "保存后应由薄壳命令后台获取模型"
         );
         assert!(state.prepare_builtin(), "模型仍为空时允许后台获取");
+
+        // 已有模型的停用渠道恢复种子配置：不获取模型，但缺失或历史内置密钥仍要同步
+        let vault = Vault::new(&root.join("vault"));
+        let mut store = ProviderStore::load(&file).unwrap().unwrap();
+        store.providers[0].enabled = false;
+        store.providers[0].models = vec![model("kept")];
+        store.save(&file).unwrap();
+        vault.remove("provider:ioply").unwrap();
+        let mut reenable = input(Some("ioply"), "ioply", None, &["kept"]);
+        reenable.api = seed.api;
+        reenable.base_url = seed.base_url.clone();
+        let changed = state.provider_save(reenable).unwrap();
+        assert!(changed.providers[0].hidden);
+        assert!(!changed.fetch_builtin_models, "已有模型不获取");
+        assert_eq!(
+            vault.get("provider:ioply").unwrap().as_deref(),
+            Some(crate::builtin::BUILTIN_API_KEY),
+            "恢复种子配置时同步缺失的密钥"
+        );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn legacy_api_keys_are_matched_by_digest() {
+        assert!(crate::builtin::is_legacy_api_key(
+            crate::builtin::TEST_LEGACY_API_KEY
+        ));
+        assert!(!crate::builtin::is_legacy_api_key("sk-user-own-key"));
+        assert!(!crate::builtin::is_legacy_api_key(
+            crate::builtin::BUILTIN_API_KEY
+        ));
     }
 
     #[test]

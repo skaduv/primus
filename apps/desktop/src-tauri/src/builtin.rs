@@ -26,9 +26,24 @@ pub(crate) const BUILTIN_API_KEY: &str = "sk-xFAj92kTXnK6WCz9nGiKznBgzfFpWKi6uqg
 /// 更换地址时把旧值追加到这里。
 pub(crate) const LEGACY_BASE_URLS: &[&str] = &["http://218.93.48.244:3304/openai/v1"];
 
-/// 历史版本用过的内置密钥：保险库里是这些值（或没有密钥）时同步为 [`BUILTIN_API_KEY`]，
-/// 其他值视为用户自己换的密钥，不覆盖。更换密钥时把旧值追加到这里。
-pub(crate) const LEGACY_API_KEYS: &[&str] = &["sk-bb4055656ec644379b3571c8be0dc74e"];
+/// 历史版本用过的内置密钥的 SHA-256（小写十六进制）。只存摘要，真实密钥只有 [`BUILTIN_API_KEY`] 一处。
+/// 保险库里是这些密钥（或没有密钥）时同步为 [`BUILTIN_API_KEY`]，其他值视为用户自己换的密钥，不覆盖。
+/// 更换密钥时把旧密钥的摘要追加到这里。
+const LEGACY_API_KEY_SHA256: &[&str] =
+    &["54a2f0dbde8b80d465fb9272ef0f10ad8bec1075f1994bad12d430fbc8664fbd"];
+
+/// 测试用的“历史内置密钥”：测试里不能出现真实历史密钥，用它代替。
+#[cfg(test)]
+pub(crate) const TEST_LEGACY_API_KEY: &str = "sk-legacy-builtin-for-tests";
+
+/// 是否历史版本的内置密钥（按摘要比较）。
+pub(crate) fn is_legacy_api_key(key: &str) -> bool {
+    #[cfg(test)]
+    if key == TEST_LEGACY_API_KEY {
+        return true;
+    }
+    LEGACY_API_KEY_SHA256.contains(&crate::updater::sha256_hex(key.as_bytes()).as_str())
+}
 
 /// 旧版内置模型配置在保险库中的令牌 ID：启动时删除（迁移）。
 pub(crate) const LEGACY_TOKEN_ID: &str = "model-token";
