@@ -1,5 +1,6 @@
 import { Workbook } from "@cj-tech-master/excelts";
 import { ZipArchive, ZipReader } from "@cj-tech-master/excelts/archive";
+import { installChartSupport, uninstallChartSupport } from "@cj-tech-master/excelts/chart";
 import { describe, expect, it } from "vitest";
 import {
   columnName,
@@ -101,6 +102,30 @@ describe("表格预览数据模型", () => {
     expect(sales.cells.get(6)?.[0]?.spill).toBe(89 + 145);
     expect(sales.cells.get(0)?.[1]?.spill).toBeUndefined();
     expect(second.cells.get(1)?.[1]?.text).toBe("你好");
+  });
+
+  it("xlsx：带图表的工作簿也能预览（解析库的图表支持按需安装）", async () => {
+    // 写出时需要图表支持，写出后卸载，还原生产环境里“默认没装”的状态
+    installChartSupport();
+    let data: ArrayBuffer;
+    try {
+      data = await xlsxBytes((wb) => {
+        const ws = wb.addWorksheet("走势");
+        ws.addRow(["月份", "销量"]);
+        ws.addRow(["1 月", 10]);
+        ws.addRow(["2 月", 20]);
+        ws.addChart(
+          { type: "line", series: [{ values: "走势!B2:B3", categories: "走势!A2:A3" }] },
+          "D2:H12",
+        );
+      });
+    } finally {
+      uninstallChartSupport();
+    }
+    const [sheet] = await readWorkbook(data);
+    expect(sheet?.name).toBe("走势");
+    expect(sheet?.cells.get(0)?.map((c) => c?.text)).toEqual(["月份", "销量"]);
+    expect(sheet?.cells.get(2)?.map((c) => c?.text)).toEqual(["2 月", "20"]);
   });
 
   it("xlsx：超出 1000 行时改为流式读取开头，并标记", async () => {
