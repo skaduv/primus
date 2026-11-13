@@ -208,6 +208,26 @@ def _explicit_flags():
     return flags
 
 
+def _restore_home(before):
+    # embed 包里 site.getsitepackages() 含安装根目录（sys.prefix），pip 构建环境的 sitecustomize 会把它当作系统
+    # site 目录从 sys.path 删掉；而 _socket.pyd 等标准库扩展模块就在根目录，删掉后构建后端无法导入。
+    # 只补回根目录本身，Lib\\site-packages（内置 pip、用户包）仍按 pip 的意图排除在构建环境外
+    home = os.path.normcase(os.path.abspath(sys.prefix))
+    current = [os.path.normcase(os.path.abspath(p)) if p else p for p in sys.path]
+    if home in current:
+        return
+    for index, entry in enumerate(before):
+        if entry and os.path.normcase(os.path.abspath(entry)) == home:
+            # 放回原来的相对位置：紧跟在它之前、仍留在 sys.path 里的那一项后面
+            anchor = 0
+            for prev in reversed(before[:index]):
+                if prev in sys.path:
+                    anchor = sys.path.index(prev) + 1
+                    break
+            sys.path.insert(anchor, entry)
+            return
+
+
 def _primus_setup():
     explicit = _explicit_flags()
     packages = os.environ.get("PRIMUS_PYTHON_PACKAGES")
@@ -247,7 +267,9 @@ def _primus_setup():
         hook = os.path.join(build_site, "sitecustomize.py")
         with open(hook, encoding="utf-8") as fp:
             code = compile(fp.read(), hook, "exec")
+        before = list(sys.path)
         exec(code, {"__name__": "sitecustomize", "__file__": hook})
+        _restore_home(before)
     elif packages:
         site.addsitedir(packages)
 

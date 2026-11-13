@@ -326,6 +326,7 @@ describe("内置 Python（ADR 0010）", () => {
     // ._pth 隔离模式下补回 PYTHONPATH（pip 隔离构建）、脚本目录（safe_path）并重定向字节码
     expect(PYTHON_SITECUSTOMIZE).toContain('os.environ.get("PYTHONPATH", "")');
     expect(PYTHON_SITECUSTOMIZE).toContain("build_site = entry");
+    expect(PYTHON_SITECUSTOMIZE).toContain("_restore_home(before)");
     expect(PYTHON_SITECUSTOMIZE).toContain('if sys.flags.safe_path and not explicit & {"I", "P"}:');
     expect(PYTHON_SITECUSTOMIZE).toContain('if not explicit & {"I", "E"}:');
     expect(PYTHON_SITECUSTOMIZE).toContain('.startswith("pip-build-env-")');
@@ -361,6 +362,42 @@ describe("内置 Python（ADR 0010）", () => {
     expect(result.stderr).toBe("");
     expect(JSON.parse(result.stdout)).toEqual(cases.map((c) => c[1]));
   });
+
+  it.skipIf(!python3)(
+    "pip 构建环境删掉安装根目录后 sitecustomize 补回它，site-packages 仍排除",
+    () => {
+      const head = PYTHON_SITECUSTOMIZE.split("def _primus_setup")[0];
+      // 模拟 embed 包：sys.prefix 即安装根目录（_socket.pyd 所在），pip 构建环境的 sitecustomize 把
+      // getsitepackages() 里的根目录与 Lib/site-packages 都删掉，并追加构建环境自己的目录
+      const script = [
+        "import json, os, sys, tempfile",
+        "ns = {}",
+        "exec(sys.stdin.read(), ns)",
+        "home = tempfile.mkdtemp()",
+        "sys.prefix = home",
+        "zp = os.path.join(home, 'python314.zip')",
+        "sp = os.path.join(home, 'Lib', 'site-packages')",
+        "env = os.path.join(home, 'pip-build-env-x', 'overlay')",
+        "out = []",
+        "sys.path = [zp, home, sp]",
+        "before = list(sys.path)",
+        "sys.path = [zp, env]",
+        "ns['_restore_home'](before)",
+        "out.append(sys.path)",
+        "sys.path = [zp, home, env]",
+        "ns['_restore_home']([zp, home, sp])",
+        "out.append(sys.path)",
+        "print(json.dumps([[os.path.relpath(p, home) for p in o] for o in out]))",
+      ].join("\n");
+      const result = spawnSync("python3", ["-S", "-c", script], { input: head, encoding: "utf8" });
+      expect(result.stderr).toBe("");
+      const env = join("pip-build-env-x", "overlay");
+      expect(JSON.parse(result.stdout)).toEqual([
+        ["python314.zip", ".", env],
+        ["python314.zip", ".", env],
+      ]);
+    },
+  );
 
   it("python-runtime.json 覆盖 node-runtime.json 的全部平台", () => {
     const root = fileURLToPath(new URL("..", import.meta.url));
