@@ -35,6 +35,16 @@ use std::sync::Arc;
 
 use tauri::Manager;
 
+/// 内置渠道模型为空时后台获取；启动与重新启用渠道后共用，失败只记日志。
+pub(crate) fn spawn_builtin_models_fetch(handle: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let state = handle.state::<core_config::ModelConfigState>();
+        if let Err(e) = state.fetch_and_save(builtin::SEED_PROVIDER_ID).await {
+            eprintln!("[core_config] 内置渠道模型列表获取失败：{e}");
+        }
+    });
+}
+
 pub fn run() {
     // Core 经 models.json 的取令牌命令拉起的子进程：不初始化 Tauri、不触发单实例转发，输出令牌后立即退出（第 9.4 节）
     if let Some(id) = vault::parse_secret_arg(std::env::args_os().skip(1)) {
@@ -137,24 +147,18 @@ pub fn run() {
                 if updater::install_on_startup(&updater) {
                     std::process::exit(0);
                 }
-                // 模型配置：首次启动写入内置渠道与其密钥（之后由用户管理），删除旧版内置令牌，
-                // 再按 providers.json 生成 Core 的 models.json 与默认模型。
+                // 模型配置：确保内置渠道与密钥就绪，删除旧版内置令牌，再按 providers.json 生成
+                // Core 的 models.json 与默认模型。
                 // 插件（含单实例）在 setup 之前初始化，到这里已确认是主实例。
-                // 失败不阻止启动：设置页与输入框据 models_get 的 error 提示，并可用 models_refresh 重试
+                // 失败不阻止启动；models_refresh 只重新生成配置，不联网获取渠道模型。
                 let model_config = app.state::<core_config::ModelConfigState>();
-                let seeded = model_config.seed_and_migrate();
+                let fetch_builtin_models = model_config.prepare_builtin();
                 model_config.refresh();
                 // 命令工具：Windows 上找得到 PowerShell 时优先用它（Git Bash 只作后备），在拉起 Core 之前写好
                 model_config.apply_shell_tools(platform::powershell_available());
-                if seeded {
-                    // 内置渠道的模型列表在后台获取一次，不阻塞启动；失败时留空，设置页提示用户获取
-                    let handle = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        let state = handle.state::<core_config::ModelConfigState>();
-                        if let Err(e) = state.fetch_and_save(builtin::SEED_PROVIDER_ID).await {
-                            eprintln!("[core_config] 内置渠道模型列表获取失败：{e}");
-                        }
-                    });
+                if fetch_builtin_models {
+                    // 内置渠道模型为空时后台获取，不阻塞启动；失败只记日志，下次启动重试
+                    spawn_builtin_models_fetch(app.handle().clone());
                 }
                 // 会话索引（第 10.2 节）：同样在 setup 中打开，第二个实例不碰主实例的库。
                 // 库文件打不开时退回内存库，本次运行内列表照常可用

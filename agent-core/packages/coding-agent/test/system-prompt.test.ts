@@ -50,9 +50,11 @@ describe("buildSystemPrompt", () => {
 
 			expect(
 				defaultPrompt.startsWith(
-					"You are 乾元（Primus）, an expert coding assistant operating inside the Primus desktop agent",
+					"You are 乾元（Primus）, a general-purpose AI assistant operating inside the Primus desktop agent",
 				),
 			).toBe(true);
+			expect(defaultPrompt).toContain("You may also be called 小元");
+			expect(defaultPrompt).not.toContain("Address the user as 小元");
 			expect(customPrompt.startsWith("You are Exact.\n\n<cwd>")).toBe(true);
 		});
 

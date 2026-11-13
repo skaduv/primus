@@ -317,6 +317,39 @@ const isHidden = (state: unknown) => state === "hidden" || state === "veryHidden
  * 这条路径拿不到合并单元格与隐藏行列（大表的预览只求快速显示开头）。
  */
 export async function readWorkbook(data: ArrayBuffer): Promise<Sheet[]> {
+  try {
+    return await loadWorkbook(data);
+  } catch (e) {
+    // 解析库把图表支持拆成可选子包，读取带图表的工作簿（xl/charts/chartN.xml）时要求它已安装，
+    // 否则整份文件都读不出来。预览只显示表格、不渲染图表，但仍需装上图表支持才能解析这类文件：
+    // 装好重试一次（普通工作簿不走这条路径，不会额外加载图表代码）。
+    if (!isChartSupportMissing(e)) throw e;
+    await ensureChartSupport();
+    return loadWorkbook(data);
+  }
+}
+
+/** 解析库在没有图表支持时抛出的错误（消息里点名 installChartSupport） */
+const CHART_SUPPORT_MISSING = "No chart support is installed.";
+
+const isChartSupportMissing = (e: unknown): boolean =>
+  e instanceof Error && e.message.startsWith(CHART_SUPPORT_MISSING);
+
+let chartSupport: Promise<void> | null = null;
+
+/** 安装解析库的可选图表支持（幂等；失败后允许下次重试） */
+function ensureChartSupport(): Promise<void> {
+  chartSupport ??= import("@cj-tech-master/excelts/chart").then(
+    (chart) => chart.installChartSupport(),
+    (e: unknown) => {
+      chartSupport = null;
+      throw e;
+    },
+  );
+  return chartSupport;
+}
+
+async function loadWorkbook(data: ArrayBuffer): Promise<Sheet[]> {
   const lib = await import("@cj-tech-master/excelts");
   const displayText: DisplayText = (cell) => lib.getCellDisplayText(cell);
   const wb: Workbook = new lib.Workbook();

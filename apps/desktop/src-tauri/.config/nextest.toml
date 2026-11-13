@@ -16,3 +16,9 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 [profile.ci.junit]
 # 输出到 target/nextest/ci/junit.xml，CI 作为构件上传
 path = "junit.xml"
+
+# 吞吐验收（rpc_bridge 10MB/s）对 CPU 争用敏感：与其他测试并行时在 CI 上曾测出 4.8 MB/s 而误报，
+# 让它独占全部测试线程运行
+[[profile.default.overrides]]
+filter = "test(=rpc_bridge::tests::sustains_10mb_per_second_without_loss)"
+threads-required = "num-test-threads"
