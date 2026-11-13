@@ -84,7 +84,7 @@ function makeZip(files: { name: string; data: string; deflate?: boolean }[]): Bu
   return Buffer.concat([...locals, cen, eocd]);
 }
 
-const TOP = "node-v24.22.1-win-x64";
+const TOP = "node-v24.22.3-win-x64";
 const DIST_ZIP = () =>
   makeZip([
     { name: `${TOP}/`, data: "" },
@@ -112,9 +112,9 @@ describe("parseShasums", () => {
     const a = "a".repeat(64);
     const b = "B".repeat(64);
     const map = parseShasums(
-      `${a}  node-v24.22.1-win-x64.zip\r\n${b} *node.tar.xz\n\n-----BEGIN\n`,
+      `${a}  node-v24.22.3-win-x64.zip\r\n${b} *node.tar.xz\n\n-----BEGIN\n`,
     );
-    expect(map.get("node-v24.22.1-win-x64.zip")).toBe(a);
+    expect(map.get("node-v24.22.3-win-x64.zip")).toBe(a);
     expect(map.get("node.tar.xz")).toBe("b".repeat(64));
     expect(map.size).toBe(2);
   });

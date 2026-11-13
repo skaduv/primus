@@ -67,7 +67,7 @@ primus/
 
 | 工具 | 版本 |
 |---|---|
-| Node.js | 24.22.1 LTS（见 `.node-version`） |
+| Node.js | 24.22.3 LTS（见 `.node-version`） |
 | pnpm | 12.15.0 |
 | Rust | 1.99.1（见 `rust-toolchain.toml`） |
 | WiX Toolset | 7.0.0（仅 Windows，打包 MSI 时需要） |
