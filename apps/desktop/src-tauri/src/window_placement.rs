@@ -33,6 +33,17 @@ pub(crate) struct Bounds {
     pub height: u32,
 }
 
+/// 侧栏展开只向右边缘加宽：保留窗口原点与高度，把宽度截到当前显示器工作区右边缘。
+/// 多显示器坐标可能为负，统一用 i64 计算，避免屏幕右侧坐标相加时溢出。
+pub(crate) fn clip_width_to_work_area(bounds: Bounds, area: WorkArea) -> Bounds {
+    let right = i64::from(area.x) + i64::from(area.width);
+    let available = (right - i64::from(bounds.x)).max(1) as u64;
+    Bounds {
+        width: u32::try_from(u64::from(bounds.width).min(available)).unwrap_or(u32::MAX),
+        ..bounds
+    }
+}
+
 /// 首次打开时窗口宽占工作区的比例：70%。
 const FIRST_RUN_WIDTH_FRACTION: f64 = 0.7;
 /// 首次打开时窗口高占工作区的比例：82%（比宽高一些，对话区一屏能看到更多内容）。
@@ -294,6 +305,57 @@ mod tests {
         };
         assert_eq!(centered_bounds(area, 0.0, SIZE, MIN).width, 1120);
         assert_eq!(centered_bounds(area, f64::NAN, SIZE, MIN).width, 1120);
+    }
+
+    #[test]
+    fn clips_sidebar_expansion_to_work_area_right_edge() {
+        let area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1040,
+        };
+        let bounds = Bounds {
+            x: 1600,
+            y: 80,
+            width: 1000,
+            height: 700,
+        };
+        assert_eq!(
+            clip_width_to_work_area(bounds, area),
+            Bounds {
+                width: 320,
+                ..bounds
+            }
+        );
+
+        // 已经在屏幕内时保持目标宽度；副屏负坐标同样按当前屏右边缘计算
+        let inside = Bounds {
+            x: 100,
+            y: 80,
+            width: 1200,
+            height: 700,
+        };
+        assert_eq!(clip_width_to_work_area(inside, area), inside);
+        let left = WorkArea {
+            x: -2560,
+            y: 0,
+            width: 2560,
+            height: 1400,
+        };
+        let near_right = Bounds {
+            x: -400,
+            y: 100,
+            width: 800,
+            height: 900,
+        };
+        assert_eq!(
+            clip_width_to_work_area(near_right, left),
+            Bounds {
+                width: 400,
+                ..near_right
+            }
+        );
     }
 
     #[test]

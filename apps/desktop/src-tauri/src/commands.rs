@@ -113,7 +113,8 @@ pub(crate) fn preview_serve(
 }
 
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
-#[tauri::command]
+/// 宽度最多到窗口所在显示器工作区的右边缘，避免展开侧栏时把程序推出屏幕。
+#[tauri::command(async)]
 pub fn window_set_bounds(
     window: tauri::WebviewWindow,
     x: i32,
@@ -124,7 +125,33 @@ pub fn window_set_bounds(
     if width == 0 || height == 0 {
         return Err("window size must be positive".into());
     }
-    crate::platform::set_window_bounds(&window, x, y, width, height).map_err(|e| e.to_string())
+    let bounds = crate::window_placement::Bounds {
+        x,
+        y,
+        width,
+        height,
+    };
+    let center_x = f64::from(x) + f64::from(width) / 2.0;
+    let center_y = f64::from(y) + f64::from(height) / 2.0;
+    let bounds = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.monitor_from_point(center_x, center_y).ok().flatten())
+        .map_or(bounds, |monitor| {
+            let area = monitor.work_area();
+            crate::window_placement::clip_width_to_work_area(
+                bounds,
+                crate::window_placement::WorkArea {
+                    x: area.position.x,
+                    y: area.position.y,
+                    width: area.size.width,
+                    height: area.size.height,
+                },
+            )
+        });
+    crate::platform::set_window_bounds(&window, bounds.x, bounds.y, bounds.width, bounds.height)
+        .map_err(|e| e.to_string())
 }
 
 /// 打开（登记）工作区：必须是已存在目录的绝对路径，返回显示名与信任状态（第 15.1 节）。

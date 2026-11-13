@@ -102,6 +102,7 @@ export function createTauriWindowControls(): WindowControls {
         invoke("window_set_bounds", {
           x: pos.x,
           y: pos.y,
+          // 薄壳按窗口所在显示器的工作区右边缘裁剪：靠近屏幕边时动画停在边缘。
           width: size.width + k,
           height: size.height,
         }).catch(() => undefined);
