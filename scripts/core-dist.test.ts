@@ -321,8 +321,13 @@ describe("内置 Python（ADR 0010）", () => {
 
   it("sitecustomize 与 pip.cmd 内容", () => {
     expect(PYTHON_SITECUSTOMIZE).toContain('os.environ.get("PRIMUS_PYTHON_PACKAGES")');
-    expect(PYTHON_SITECUSTOMIZE).toContain("site.addsitedir(");
-    expect(PIP_CMD).toBe('@"%~dp0python.exe" -m pip %*\r\n');
+    expect(PYTHON_SITECUSTOMIZE).toContain("site.addsitedir(packages)");
+    // ._pth 隔离模式下补回 PYTHONPATH（pip 隔离构建）、脚本目录（safe_path）并重定向字节码
+    expect(PYTHON_SITECUSTOMIZE).toContain('os.environ.get("PYTHONPATH", "")');
+    expect(PYTHON_SITECUSTOMIZE).toContain("if sys.flags.safe_path:");
+    expect(PYTHON_SITECUSTOMIZE).toContain("sys.pycache_prefix =");
+    expect(PYTHON_SITECUSTOMIZE).toContain("sys.dont_write_bytecode = True");
+    expect(PIP_CMD).toBe('@"%~dp0python.exe" -B -m pip %*\r\n');
   });
 
   it("python-runtime.json 覆盖 node-runtime.json 的全部平台", () => {

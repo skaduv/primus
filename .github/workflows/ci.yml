@@ -230,6 +230,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "pip install --target 失败" }
           & $py -c "import os, sys; p = os.environ['PRIMUS_PYTHON_PACKAGES']; assert any(os.path.samefile(x, p) for x in sys.path if os.path.isdir(x)), sys.path"
           if ($LASTEXITCODE -ne 0) { throw "sitecustomize 未加入用户包目录" }
+          # safe_path 下仍能导入脚本同目录的模块
+          $proj = Join-Path $env:RUNNER_TEMP 'primus-py-proj'
+          New-Item -ItemType Directory -Force -Path $proj | Out-Null
+          Set-Content -LiteralPath (Join-Path $proj 'helper.py') -Value 'X = 1'
+          Set-Content -LiteralPath (Join-Path $proj 'main.py') -Value 'import helper; print("main ok", helper.X)'
+          & $py (Join-Path $proj 'main.py')
+          if ($LASTEXITCODE -ne 0) { throw "python main.py 无法导入同目录模块" }
+          # 默认隔离构建安装源码包（构建后端 setuptools 装在 pip 的临时构建环境里，经 PYTHONPATH 注入）
+          $sdist = Join-Path $env:RUNNER_TEMP 'primus-py-sdist'
+          New-Item -ItemType Directory -Force -Path (Join-Path $sdist 'primus_demo') | Out-Null
+          Set-Content -LiteralPath (Join-Path $sdist 'pyproject.toml') -Value "[build-system]`nrequires = [`"setuptools>=68`"]`nbuild-backend = `"setuptools.build_meta`"`n[project]`nname = `"primus-demo`"`nversion = `"0.1`""
+          Set-Content -LiteralPath (Join-Path $sdist 'primus_demo/__init__.py') -Value 'Y = 2'
+          & $py -B -m pip install --target $pkgs $sdist
+          if ($LASTEXITCODE -ne 0) { throw "源码包隔离构建安装失败" }
+          & $py -c "import primus_demo; assert primus_demo.Y == 2"
+          if ($LASTEXITCODE -ne 0) { throw "源码包安装后无法导入" }
+          # sitecustomize 自身在设置字节码策略前已被导入，目录可写（CI 为管理员）时会留下它自己的 .pyc，其余不应写入
+          $pyc = Get-ChildItem -LiteralPath dist/runtime/python -Recurse -File -Filter *.pyc | Where-Object { $_.Name -notlike 'sitecustomize.*.pyc' }
+          if ($pyc) { throw "安装目录中生成了字节码：$($pyc.FullName -join ', ')" }
 
       - name: 上传 Core 与运行时产物（dist/，供干净 Windows 机器验收）
         uses: actions/upload-artifact@v7.0.2
