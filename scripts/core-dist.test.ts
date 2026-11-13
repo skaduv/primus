@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -330,6 +331,34 @@ describe("内置 Python（ADR 0010）", () => {
     expect(PYTHON_SITECUSTOMIZE).toContain("sys.pycache_prefix =");
     expect(PYTHON_SITECUSTOMIZE).toContain("sys.dont_write_bytecode = True");
     expect(PIP_CMD).toBe('@"%~dp0python.exe" -B -m pip %*\r\n');
+  });
+
+  const python3 = spawnSync("python3", ["--version"]).status === 0;
+  it.skipIf(!python3)("sitecustomize 按 sys.orig_argv 识别显式隔离选项", () => {
+    const cases: [string[], string[]][] = [
+      [["python", "--check-hash-based-pycs", "always", "-I", "s.py"], ["I"]],
+      [["python", "-Bc", "import_P"], ["B"]],
+      [
+        ["python", "-BI", "s.py"],
+        ["B", "I"],
+      ],
+      [["python", "-X", "dev", "-P", "s.py"], ["P"]],
+      [["python", "-Xdev", "-E", "s.py"], ["E"]],
+      [["python", "-W", "ignore", "-mpip"], []],
+      [["python", "s.py", "-I"], []],
+    ];
+    const head = PYTHON_SITECUSTOMIZE.split("def _primus_setup")[0];
+    const script = `import json, sys\nns = {}\nexec(sys.stdin.read(), ns)\nout = []\nfor argv in json.loads(sys.argv[1]):\n    sys.orig_argv = argv\n    out.append(sorted(ns["_explicit_flags"]()))\nprint(json.dumps(out))`;
+    const result = spawnSync(
+      "python3",
+      ["-S", "-c", script, JSON.stringify(cases.map((c) => c[0]))],
+      {
+        input: head,
+        encoding: "utf8",
+      },
+    );
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual(cases.map((c) => c[1]));
   });
 
   it("python-runtime.json 覆盖 node-runtime.json 的全部平台", () => {

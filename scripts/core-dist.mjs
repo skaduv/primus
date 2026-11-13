@@ -189,11 +189,16 @@ def _explicit_flags():
     args = list(getattr(sys, "orig_argv", [])[1:])
     while args:
         arg = args.pop(0)
-        if arg == "--" or arg == "-" or not arg.startswith("-") or arg.startswith("--"):
+        if arg == "--" or arg == "-" or not arg.startswith("-"):
             break
-        if arg[1] in "cm":
-            break
+        if arg.startswith("--"):
+            # 唯一带参数的长选项；其余长选项（--help、--version 等）不带参数，继续扫描后面的短选项
+            if arg == "--check-hash-based-pycs" and args:
+                args.pop(0)
+            continue
         for index, ch in enumerate(arg[1:], 1):
+            if ch in "cm":
+                return flags
             if ch in "WX":
                 if index == len(arg) - 1 and args:
                     args.pop(0)
