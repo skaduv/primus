@@ -1,7 +1,7 @@
 # 0007 自动更新：更新源、公钥注入、只发 MSI、更新服务静默安装、待装包与非提权重启
 
 - 状态：已接受
-- 日期：2026-11-05（2026-11-10 修订：只发 MSI，新增更新服务 PrimusUpdate 静默安装，去掉 CI 自签名）
+- 日期：2026-11-05（2026-11-10 修订：只发 MSI，新增更新服务 PrimusUpdate 静默安装，去掉 CI 自签名；2026-11-13 修订：源码仓私有，产物发布到公开仓）
 
 ## 背景
 技术方案第 3.6 节只写了“用 `tauri-plugin-updater` + 自建静态 JSON、Windows 上用 msiexec 被动升级、两个通道、有运行中的 Agent 先确认”。产品要求是：设置中“自动更新”默认勾选；打开 Primus 后自动检查并下载最新版；下载完成并校验签名后提示“重启客户端以更新 Primus”；用户也可以不立即重启，下次打开 Primus 时直接安装新版本。落地时有几处技术方案没有写死、又与本项目已有约束（C2 数据目录、按用户 ACL、MSI 由 WiX 7 构建而非 Tauri bundler、安装器需要提权）相互影响的取舍。
@@ -21,7 +21,8 @@
 - 发布必须配置 `TAURI_SIGNING_PRIVATE_KEY` / `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` / `TAURI_SIGNING_PUBLIC_KEY` 三个仓库 Secret，缺一即失败（release.yml 先检查，构建脚本另以 `PRIMUS_REQUIRE_UPDATER_SIGNING=1` 拒绝）。私钥只在 CI 密钥库中，与代码签名证书互相独立。
 
 ### 更新源
-- 固定的 GitHub Release `update-feed`（标为 prerelease、不设 Latest，不触发 `v*` 发布）存放两个 Tauri 2 静态清单：`stable.json`、`beta.json`；地址 `https://github.com/skaduv/primus/releases/download/update-feed/<通道>.json`。
+- 源码仓 `skaduv/primus` 保持私有；安装包与更新清单发布到公开的 `skaduv/primus-releases`。固定的 GitHub Release `update-feed`（标为 prerelease、不设 Latest，不触发 `v*` 发布）存放两个 Tauri 2 静态清单：`stable.json`、`beta.json`；地址 `https://github.com/skaduv/primus-releases/releases/download/update-feed/<通道>.json`。
+- 私有源码仓的发布工作流在构建与冒烟全部通过后，用只授权 `skaduv/primus-releases` 的 `Contents: Read and write` Token 直接创建公开 Release 并上传 MSI，不使用人工同步任务。公钥、updater 私钥与 Token 只保存在私有源码仓的 Actions Secret 中。
 - 清单由 `scripts/gen-update-manifest.mjs` 生成：`platforms` 只含 `windows-x86_64-msi`、`windows-aarch64-msi`（只发 MSI，见下），`url` 指向本次版本 Release 的附件，`signature` 为同名 `.sig` 的内容（`.sig` 由构建作业经 workflow artifact 交给发布作业，不作为 Release 附件），`notes` 取 Release 说明。正式版同时写 `stable.json` 与 `beta.json`，预发布只写 `beta.json`；现有清单版本更高的通道不覆盖（重建旧标签不回退，Beta 用户在正式版更高时也收到正式版），同一版本允许覆盖（清单尚未指向该标签时重跑发布）。发布作业先下载现有清单再比较，用 `--clobber` 上传。
 - 清单已指向某标签的安装包时，发布工作流拒绝原地重建该标签：`--clobber` 换掉安装包后、清单更新前（或中途失败后），客户端会用旧清单里的签名校验新安装包而拒绝更新。需要重新出包时升版本号发布新标签。
 - `build-msi.mjs` 在 `Primus.exe.build.json` 里记录编译时 `TAURI_SIGNING_PUBLIC_KEY` 的指纹；`--skip-tauri` 复用 exe 时，若这次要签 `.sig`，内置公钥必须与签名公钥一致（未内置、不一致或旧记录无法确认都拒绝复用），避免出现带签名却装上后无法更新的安装包。
@@ -86,7 +87,7 @@
 - 待装包放在 `users/<SID>/updates/`（第 4.2 节目录布局新增）。
 
 ## 后果
-- 每次发布都依赖三个 updater Secret；私钥丢失后已安装的版本无法再自动更新（只能手动安装带新公钥的版本）。
+- 每次发布都依赖三个 updater Secret 与跨仓库发布 Token；私钥或 Token 丢失都会阻止发布。Token 只能访问公开发布仓，不能读取私有源码；Token 泄露最多能篡改公开下载内容，不能伪造 updater 签名。
 - `update-feed` Release 由发布工作流维护，不能手动删除；删除后客户端检查失败（只记日志），下次发布会重新创建。
 - 早于本功能的标签不能再用发布工作流重建（缺 setup.exe 的 `.sig` 与清单脚本）。
 - 多了一个 LocalSystem 服务：服务代码的任何缺陷都是潜在的本地提权，改动需格外谨慎（协议变化须加 `PROTOCOL_VERSION`，服务对不认识的版本返回错误，薄壳随即回退到 UAC）。

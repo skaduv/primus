@@ -1,4 +1,5 @@
-# 乾元 Primus 发布（技术方案第 3.1、22 章）：按标签为 Windows x64 与 ARM64 各构建一个 MSI，发布到 GitHub Releases
+# 乾元 Primus 发布（技术方案第 3.1、22 章）：按标签为 Windows x64 与 ARM64 各构建一个 MSI，发布到公开的
+# `skaduv/primus-releases`。源码仓保持私有；发布使用只授权该公开仓 Contents 写权限的 PRIMUS_RELEASES_TOKEN。
 # （只发 MSI，ADR 0007：按机器安装在 Program Files，附带按需启动的更新服务 PrimusUpdate，应用内静默升级）
 # - 推送 v* 标签时自动运行；Release 不存在则创建。版本含预发布标识（含 '-'，如 1.2.0-beta.1）时标为 prerelease，
 #   否则为正式版并设为 Latest
@@ -213,10 +214,24 @@ jobs:
       group: release-publish-update-feed
       cancel-in-progress: false
       queue: max
-    # 仅发布作业持有写权限；构建作业只读
+    # 源码仓始终只读；写公开仓的权限来自跨仓库令牌，不使用 github.token
     permissions:
-      contents: write
+      contents: read
     steps:
+      - name: 检查公开发布仓凭证
+        env:
+          GH_TOKEN: ${{ secrets.PRIMUS_RELEASES_TOKEN }}
+          GH_REPO: skaduv/primus-releases
+        run: |
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::缺少 PRIMUS_RELEASES_TOKEN；请配置只授权公开仓 Contents 写权限的 Fine-grained Token"
+            exit 1
+          fi
+          if ! gh repo view "$GH_REPO" --json nameWithOwner --jq .nameWithOwner >/dev/null; then
+            echo "::error::PRIMUS_RELEASES_TOKEN 无法访问 ${GH_REPO}"
+            exit 1
+          fi
+
       # 生成自动更新清单的脚本取自工作流自身的提交（与构建作业的共用 action 同一做法），不依赖标签内容
       - name: 取出工作流提交中的清单脚本
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -255,8 +270,8 @@ jobs:
 
       - name: 创建 Release 或更新附件
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.PRIMUS_RELEASES_TOKEN }}
+          GH_REPO: skaduv/primus-releases
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
@@ -388,7 +403,7 @@ jobs:
               cat checksums.md
             } > notes.md
             gh release create "$RELEASE_TAG" "${files[@]}" \
-              --verify-tag \
+              --target main \
               --title "乾元 Primus ${VERSION}" \
               --notes-file notes.md \
               --generate-notes \
@@ -397,8 +412,8 @@ jobs:
 
       - name: 核对发布结果
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.PRIMUS_RELEASES_TOKEN }}
+          GH_REPO: skaduv/primus-releases
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
@@ -425,8 +440,8 @@ jobs:
       # 本版本更高时覆盖），预发布只写 beta，现有版本更高的通道不覆盖；同名附件用 --clobber 覆盖上传
       - name: 更新自动更新清单（update-feed）
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.PRIMUS_RELEASES_TOKEN }}
+          GH_REPO: skaduv/primus-releases
           VERSION: ${{ needs.build.outputs.version }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
         run: |
@@ -436,7 +451,7 @@ jobs:
             gh release edit "$feed" --prerelease --latest=false
           else
             gh release create "$feed" \
-              --target "$GITHUB_SHA" \
+              --target main \
               --title "乾元 Primus 自动更新清单" \
               --notes "供应用内自动更新读取的清单（stable.json / beta.json），由发布工作流自动维护，请勿手动修改或删除。" \
               --prerelease --latest=false
