@@ -551,7 +551,8 @@ pub(crate) fn provider_save(
 ) -> Result<ProvidersChanged, String> {
     let changed = models.provider_save(input)?;
     // 已停用且模型为空的内置渠道改回种子配置后会立即重新隐藏；此时同步密钥并在后台获取，
-    // 否则用户只能重启 App 才能拿到模型。
+    // 否则用户只能重启 App 才能拿到模型。再走一次 prepare_builtin 是为了复用启动时的密钥同步
+    // （它也会删除旧版令牌、重读渠道文件，均为幂等操作），返回值确认仍需获取模型。
     if changed.fetch_builtin_models && models.prepare_builtin() {
         crate::spawn_builtin_models_fetch(app);
     }

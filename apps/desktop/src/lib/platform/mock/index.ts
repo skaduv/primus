@@ -109,19 +109,30 @@ interface MockProvider {
   enabled: boolean;
   models: ProviderModel[];
   apiKey: string | null;
-  hidden: boolean;
 }
+
+/** 内置渠道的种子配置（与薄壳 `builtin.rs` 同名同协议同地址） */
+const MOCK_SEED_ID = "ioply";
+const MOCK_SEED_API: ProviderApi = "openai-responses";
+const MOCK_SEED_BASE_URL = "https://api.mecode.cc.cd/v1";
+
+/** 与薄壳 `is_pristine_builtin` 一致：未被修改且启用的内置渠道隐藏，不能修改或删除 */
+const isPristineBuiltin = (p: Pick<MockProvider, "id" | "name" | "api" | "baseUrl" | "enabled">) =>
+  p.id === MOCK_SEED_ID &&
+  p.name === MOCK_SEED_ID &&
+  p.api === MOCK_SEED_API &&
+  p.baseUrl === MOCK_SEED_BASE_URL &&
+  p.enabled;
 
 /** 预置渠道（与薄壳首次启动写入的内置渠道同名同地址；密钥只是占位，模型只是示意，不连接任何端点） */
 const MOCK_SEED_PROVIDERS: MockProvider[] = [
   {
-    id: "ioply",
-    name: "ioply",
-    api: "openai-responses",
-    baseUrl: "http://218.93.48.244:3304/openai/v1",
+    id: MOCK_SEED_ID,
+    name: MOCK_SEED_ID,
+    api: MOCK_SEED_API,
+    baseUrl: MOCK_SEED_BASE_URL,
     enabled: true,
     apiKey: "mock-placeholder-key-c74e",
-    hidden: true,
     models: [
       {
         id: "mock-large",
@@ -488,7 +499,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     models: structuredClone(p.models),
     hasKey: p.apiKey !== null,
     keyHint: keyHint(p.apiKey),
-    hidden: p.hidden,
+    hidden: isPristineBuiltin(p),
   });
   const providersChanged = (): ProvidersChanged => {
     // 与薄壳一致：默认模型失效时改为第一个可用模型并写回（没有可用模型时清除），重新启用原渠道也不恢复旧默认值
@@ -1224,8 +1235,10 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       if (input.id === undefined) {
         if (input.apiKey === undefined) throw new Error("请填写 API 密钥");
         const base = providerSlug(name);
+        // 与薄壳一致：内置渠道 ID 保留，用户新建同名渠道得到 ioply-2
+        const taken = (id: string) => id === MOCK_SEED_ID || providers.some((p) => p.id === id);
         let id = base;
-        for (let n = 2; providers.some((p) => p.id === id); n++) id = `${base}-${n}`;
+        for (let n = 2; taken(id); n++) id = `${base}-${n}`;
         providers.push({
           id,
           name,
@@ -1234,11 +1247,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           enabled: input.enabled,
           models,
           apiKey: input.apiKey.trim(),
-          hidden: false,
         });
       } else {
         const existing = providers.find((p) => p.id === input.id);
         if (!existing) throw new Error("渠道不存在，可能已被删除");
+        if (isPristineBuiltin(existing)) throw new Error("内置渠道由系统管理，不能修改");
         Object.assign(existing, {
           name,
           api: input.api,
@@ -1251,7 +1264,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       return providersChanged();
     },
     providerDelete: async (id) => {
-      if (!providers.some((p) => p.id === id)) throw new Error("渠道不存在，可能已被删除");
+      const existing = providers.find((p) => p.id === id);
+      if (!existing) throw new Error("渠道不存在，可能已被删除");
+      if (isPristineBuiltin(existing)) throw new Error("内置渠道由系统管理，不能删除");
       providers = providers.filter((p) => p.id !== id);
       return providersChanged();
     },

@@ -67,7 +67,7 @@ describe("设置·模型渠道", () => {
     const row = await visibleRow();
     expect(screen.queryByText("ioply")).toBeNull();
     expect(row.textContent).toContain("OpenAI Responses");
-    expect(row.textContent).toContain("http://218.93.48.244:3304/openai/v1");
+    expect(row.textContent).toContain("https://api.mecode.cc.cd/v1");
     expect(row.textContent).toContain(`${t.key} ••••1234 · 2 个模型`);
     const toggle = within(row).getByRole("switch", {
       name: "启用 Work Gateway",
@@ -183,7 +183,7 @@ describe("设置·模型渠道", () => {
     expect(fetch).toHaveBeenCalledWith({
       id: "work-gateway",
       api: "openai-responses",
-      baseUrl: "http://218.93.48.244:3304/openai/v1",
+      baseUrl: "https://api.mecode.cc.cd/v1",
     });
     // 编辑时新获取到的模型默认不选，已保存的保持勾选
     const coder = (await within(dialog).findByRole("checkbox", {
@@ -200,7 +200,7 @@ describe("设置·模型渠道", () => {
       id: "work-gateway",
       name: "Work 网关",
       api: "openai-responses",
-      baseUrl: "http://218.93.48.244:3304/openai/v1",
+      baseUrl: "https://api.mecode.cc.cd/v1",
       enabled: true,
       models: [
         {

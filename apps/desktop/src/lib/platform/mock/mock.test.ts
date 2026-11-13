@@ -92,27 +92,47 @@ describe("mock 平台", () => {
       "接口地址",
     );
 
-    // 默认模型所在渠道停用后回退到其他模型，重新启用也不恢复旧默认值（回退结果已写回）
+    // 与薄壳一致：未被修改的内置渠道不能修改或删除，新建同名渠道得到 ioply-2
     const ioplyView = created.providers.find((p) => p.id === "ioply");
     if (!ioplyView) throw new Error("缺少 ioply");
-    const ioplyInput = {
-      id: "ioply",
-      name: ioplyView.name,
-      api: ioplyView.api,
-      baseUrl: ioplyView.baseUrl,
-      models: ioplyView.models,
-    };
-    const disabled = await platform.providerSave({ ...ioplyInput, enabled: false });
-    expect(disabled.models.defaultModel).toBe("provider/mock-coder");
-    const enabled = await platform.providerSave({ ...ioplyInput, enabled: true });
-    expect(enabled.models.defaultModel).toBe("provider/mock-coder");
+    await expect(
+      platform.providerSave({
+        id: "ioply",
+        name: ioplyView.name,
+        api: ioplyView.api,
+        baseUrl: ioplyView.baseUrl,
+        models: ioplyView.models,
+        enabled: false,
+      }),
+    ).rejects.toThrow("内置渠道");
+    await expect(platform.providerDelete("ioply")).rejects.toThrow("内置渠道");
+    const sameName = await platform.providerSave({ ...base, name: "ioply" });
+    expect(sameName.providers.find((p) => p.name === "ioply" && p.id !== "ioply")).toMatchObject({
+      id: "ioply-2",
+      hidden: false,
+    });
+    await platform.providerDelete("ioply-2");
 
-    await platform.providerDelete("ioply");
+    // 默认模型所在渠道停用后回退到其他模型，重新启用也不恢复旧默认值（回退结果已写回）
+    await platform.modelsSetDefault("provider/mock-coder");
+    const addedView = (await platform.providersList()).find((p) => p.id === "provider");
+    if (!addedView) throw new Error("缺少 provider");
+    const addedInput = {
+      id: "provider",
+      name: addedView.name,
+      api: addedView.api,
+      baseUrl: addedView.baseUrl,
+      models: addedView.models,
+    };
+    const disabled = await platform.providerSave({ ...addedInput, enabled: false });
+    expect(disabled.models.defaultModel).toBe("ioply/mock-large");
+    const enabled = await platform.providerSave({ ...addedInput, enabled: true });
+    expect(enabled.models.defaultModel).toBe("ioply/mock-large");
+
     const left = await platform.providerDelete("provider");
-    expect(left.providers).toEqual([]);
-    expect(left.models).toMatchObject({ models: [], defaultModel: null });
-    expect(left.models.error).toContain("还没有可用的模型");
-    expect(pushed.at(-1)).toEqual([]);
+    expect(left.providers.map((p) => [p.id, p.hidden])).toEqual([["ioply", true]]);
+    expect(left.models.models.map((m) => m.key)).not.toContain("provider/mock-coder");
+    expect(pushed.at(-1)).not.toContain("provider/mock-coder");
   });
 
   it("自动更新：默认开、稳定版；有新版本时检查后得到待装版本并推送", async () => {

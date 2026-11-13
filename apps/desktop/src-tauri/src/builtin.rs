@@ -5,6 +5,8 @@
 //! - 密钥只有下面一个常量：种子写入时存进 DPAPI 保险库（`provider:ioply`），`models.json` 里只放取密钥命令。
 //! - 模型清单起初为空；只要渠道仍是种子配置且清单为空，每次启动都会在后台重试获取（`lib.rs`）。
 //!   已停用的渠道改回种子配置并保存时也会立即后台获取，无需重启。
+//! - 更换内置地址后，旧安装里仍是旧内置地址的 ioply 在启动时迁移到新地址（清空模型清单后重新获取），
+//!   保险库里的旧内置密钥同步为当前常量；用户自己换过的密钥不覆盖。
 
 use crate::providers::{Api, Provider};
 
@@ -19,6 +21,14 @@ const SEED_BASE_URL: &str = "https://api.mecode.cc.cd/v1";
 
 /// 内置渠道密钥，用户要求直接写在源码中，后续会更换。
 pub(crate) const BUILTIN_API_KEY: &str = "sk-xFAj92kTXnK6WCz9nGiKznBgzfFpWKi6uqg1j6xNRl3HLvEj";
+
+/// 历史版本用过的内置接口地址：旧安装的 ioply 仍是这些地址时，启动时迁移到 [`SEED_BASE_URL`]。
+/// 更换地址时把旧值追加到这里。
+pub(crate) const LEGACY_BASE_URLS: &[&str] = &["http://218.93.48.244:3304/openai/v1"];
+
+/// 历史版本用过的内置密钥：保险库里是这些值（或没有密钥）时同步为 [`BUILTIN_API_KEY`]，
+/// 其他值视为用户自己换的密钥，不覆盖。更换密钥时把旧值追加到这里。
+pub(crate) const LEGACY_API_KEYS: &[&str] = &["sk-bb4055656ec644379b3571c8be0dc74e"];
 
 /// 旧版内置模型配置在保险库中的令牌 ID：启动时删除（迁移）。
 pub(crate) const LEGACY_TOKEN_ID: &str = "model-token";
