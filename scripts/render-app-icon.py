@@ -1,124 +1,73 @@
 #!/usr/bin/env python3
-"""由 assets/logo.png 生成桌面应用的全部图标：白色满版圆角底 + 黑色标志，图形铺满画布。
+"""由 assets/logo.png 生成桌面应用的全部图标。
 
-- 48 px 及以上：黑色线稿标志占画布约 94%（铺满整个图标），
-  48 / 64 px 先加粗线条再缩小，细线不至于糊掉。
-- 20–40 px：黑色实心轮廓 + 加粗的白色内部线条（线稿在这个尺寸只剩灰点）。
-- 16 px：按像素对齐画的简化立方体（六边形 + Y 形棱线），任务栏 / 标题栏小图标也清楚。
-白底满版（不留透明边），黑色标志放到最大，在浅色与深色桌面、任务栏上都清楚（以前的透明底黑线稿在深色桌面上看不见）。
+所有尺寸都使用源图的透明外轮廓与线稿：先按内容边界裁掉透明留白，再等比缩放到
+画布的 96%；标志内部的面填白，保证黑色线稿在深色任务栏和开始菜单上也清楚。
+不重绘小尺寸版本，exe、桌面 / 开始菜单快捷方式和托盘显示同一标志。
 
 输出：src-tauri/icons 下的 icon.ico（编进 Primus.exe：窗口 / 任务栏 / 桌面快捷方式 / 开始菜单 / 安装程序）、
 各尺寸 PNG、icon.icns、app-icon.png，以及 src/app/icon.png（浏览器预览的标签页图标）。
 用法（仓库根目录）：python3 scripts/render-app-icon.py
 """
-import math
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "apps/desktop/src-tauri/icons"
-BG = (255, 255, 255, 255)
-FG = (0, 0, 0, 255)
-RADIUS = 0.225  # 圆角半径占边长的比例（与 Windows 11 应用图标的圆角接近）
+SOURCE = ROOT / "assets/logo.png"
 ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+CONTENT_SCALE = 0.96
 
 
-def load_mark() -> tuple[Image.Image, Image.Image]:
-    """标志的线条蒙版（裁成正方形）与实心轮廓蒙版"""
-    alpha = Image.open(ROOT / "assets/logo.png").convert("RGBA").split()[3]
-    alpha = alpha.point(lambda v: 255 if v > 100 else 0)
-    x0, y0, x1, y1 = alpha.getbbox()
-    side = max(x1 - x0, y1 - y0) + 16
-    cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-    mark = alpha.crop((cx - side // 2, cy - side // 2, cx + side // 2, cy + side // 2))
-    # 实心轮廓：从外侧泛洪填充，剩下的都算标志内部
+def load_mark(source: Image.Image) -> tuple[Image.Image, Image.Image]:
+    """裁掉源图的透明留白，并生成需要填白面的内部蒙版。"""
+    bbox = source.getchannel("A").getbbox()
+    if bbox is None:
+        raise ValueError(f"图标源文件没有可见内容：{SOURCE}")
+
+    left, top, right, bottom = bbox
+    side = min(max(right - left, bottom - top), source.width, source.height)
+    center_x = (left + right) // 2
+    center_y = (top + bottom) // 2
+    crop_left = max(0, min(center_x - side // 2, source.width - side))
+    crop_top = max(0, min(center_y - side // 2, source.height - side))
+    mark = source.crop((crop_left, crop_top, crop_left + side, crop_top + side))
+
+    # 从外侧泛洪填充透明区域；未被填到的封闭区域就是立方体各面，填白后
+    # 黑色线稿无论落在浅色还是深色背景上都有足够对比度。
+    alpha = mark.getchannel("A").point(lambda value: 255 if value > 100 else 0)
     padded = Image.new("L", (mark.width + 2, mark.height + 2), 0)
-    padded.paste(mark, (1, 1))
+    padded.paste(alpha, (1, 1))
     ImageDraw.floodfill(padded, (0, 0), 128)
-    silhouette = padded.crop((1, 1, mark.width + 1, mark.height + 1)).point(
-        lambda v: 0 if v == 128 else 255
-    )
-    return mark, silhouette
+    faces = padded.crop((1, 1, mark.width + 1, mark.height + 1))
+    faces = faces.point(lambda value: 0 if value == 128 else 255)
+    return mark, faces
 
 
-def base(size: int) -> tuple[Image.Image, ImageDraw.ImageDraw]:
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle([0, 0, size - 1, size - 1], radius=int(size * RADIUS), fill=BG)
-    return img, d
-
-
-def paste_glyph(img: Image.Image, mask: Image.Image) -> None:
-    glyph = Image.new("RGBA", mask.size, FG)
-    glyph.putalpha(mask)
-    img.alpha_composite(glyph, ((img.width - mask.width) // 2, (img.height - mask.height) // 2))
-
-
-def odd(n: float) -> int:
-    k = max(1, int(n))
-    return k if k % 2 else k + 1
-
-
-def line_art(mark: Image.Image, n: int) -> Image.Image:
-    """48 px 及以上：黑色线稿"""
-    ss = 4
-    img, _ = base(n * ss)
-    m = int(n * ss * 0.94)
-    src = mark.filter(ImageFilter.MaxFilter(odd(330 / n))) if n < 128 else mark
-    paste_glyph(img, src.resize((m, m), Image.LANCZOS))
-    return img.resize((n, n), Image.LANCZOS)
-
-
-def solid(mark: Image.Image, silhouette: Image.Image, n: int) -> Image.Image:
-    """20–40 px：黑色实心轮廓，内部线条加粗后挖成白色"""
-    ss = 8
-    img, _ = base(n * ss)
-    m = int(n * 0.94) * ss
-    sil = silhouette.resize((m, m), Image.LANCZOS)
-    strokes = mark.filter(ImageFilter.MaxFilter(odd(740 / n))).resize((m, m), Image.LANCZOS)
-    inner = silhouette.filter(ImageFilter.MinFilter(odd(mark.width * 0.07)))
-    lines = ImageChops.multiply(strokes, inner.resize((m, m), Image.LANCZOS))
-    paste_glyph(img, ImageChops.subtract(sil, lines))
-    return img.resize((n, n), Image.LANCZOS)
-
-
-def cube(n: int) -> Image.Image:
-    """16 px：像素对齐的简化立方体（六边形 + Y 形棱线）"""
-    ss = 16
-    size = n * ss
-    img, d = base(size)
-    cx, cy, r = size / 2 - ss / 2, size / 2, size * 0.48
-    pts = [
-        (cx + r * math.cos(math.radians(a)), cy + r * math.sin(math.radians(a)))
-        for a in (-90, -30, 30, 90, 150, 210)
-    ]
-    # 上下两个顶点落在像素边界上，竖直棱线正好占一列像素
-    for i in (0, 3):
-        pts[i] = (round(pts[i][0] / ss) * ss, round(pts[i][1] / ss) * ss)
-    d.polygon(pts, fill=FG)
-    col = int(cx // ss) * ss
-    d.rectangle([col, cy, col + ss - 1, pts[3][1]], fill=BG)
-    for p in (pts[1], pts[5]):
-        d.line([(col + ss / 2, cy), p], fill=BG, width=int(ss * 1.1))
-    return img.resize((n, n), Image.LANCZOS)
-
-
-def render(mark: Image.Image, silhouette: Image.Image, n: int) -> Image.Image:
-    if n <= 16:
-        return cube(n)
-    if n <= 40:
-        return solid(mark, silhouette, n)
-    return line_art(mark, n)
+def render(mark: Image.Image, faces: Image.Image, size: int) -> Image.Image:
+    """把标志缩放到画布 96%；内部面填白，外轮廓之外保持透明。"""
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    content_size = max(1, round(size * CONTENT_SCALE))
+    content = mark.resize((content_size, content_size), Image.Resampling.LANCZOS)
+    white_faces = Image.new("RGBA", (content_size, content_size), (255, 255, 255, 255))
+    white_faces.putalpha(faces.resize((content_size, content_size), Image.Resampling.LANCZOS))
+    offset = (size - content_size) // 2
+    canvas.alpha_composite(white_faces, (offset, offset))
+    canvas.alpha_composite(content, (offset, offset))
+    return canvas
 
 
 def main() -> None:
-    mark, silhouette = load_mark()
+    source = Image.open(SOURCE).convert("RGBA")
+    if source.width != source.height:
+        raise ValueError(f"图标源文件必须是正方形：{SOURCE} ({source.width}×{source.height})")
+    mark, faces = load_mark(source)
     cache: dict[int, Image.Image] = {}
 
     def icon(n: int) -> Image.Image:
         if n not in cache:
-            cache[n] = render(mark, silhouette, n)
+            cache[n] = render(mark, faces, n)
         return cache[n]
 
     pngs = {

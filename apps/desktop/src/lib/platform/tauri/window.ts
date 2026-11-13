@@ -105,6 +105,8 @@ export function createTauriWindowControls(): WindowControls {
           // 薄壳按窗口所在显示器的工作区右边缘裁剪：靠近屏幕边时动画停在边缘。
           width: size.width + k,
           height: size.height,
+          // 窗口本来已越界时保持现状，不因展开侧栏反向缩小
+          minimumWidth: d > 0 ? size.width : 1,
         }).catch(() => undefined);
       // 每帧最多一次 IPC：上一帧还没落地就跳过，避免排队造成拖尾
       let pending: Promise<unknown> | null = null;

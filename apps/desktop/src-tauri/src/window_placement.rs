@@ -34,12 +34,19 @@ pub(crate) struct Bounds {
 }
 
 /// 侧栏展开只向右边缘加宽：保留窗口原点与高度，把宽度截到当前显示器工作区右边缘。
+/// `minimum_width` 为本次动画开始时的宽度：窗口本来已越界时保持现状，不因展开侧栏而反向缩窄。
 /// 多显示器坐标可能为负，统一用 i64 计算，避免屏幕右侧坐标相加时溢出。
-pub(crate) fn clip_width_to_work_area(bounds: Bounds, area: WorkArea) -> Bounds {
+pub(crate) fn clip_width_to_work_area(
+    bounds: Bounds,
+    area: WorkArea,
+    minimum_width: u32,
+) -> Bounds {
     let right = i64::from(area.x) + i64::from(area.width);
     let available = (right - i64::from(bounds.x)).max(1) as u64;
+    let minimum_width = u64::from(minimum_width.min(bounds.width));
     Bounds {
-        width: u32::try_from(u64::from(bounds.width).min(available)).unwrap_or(u32::MAX),
+        width: u32::try_from(u64::from(bounds.width).min(available).max(minimum_width))
+            .unwrap_or(u32::MAX),
         ..bounds
     }
 }
@@ -322,7 +329,7 @@ mod tests {
             height: 700,
         };
         assert_eq!(
-            clip_width_to_work_area(bounds, area),
+            clip_width_to_work_area(bounds, area, 1),
             Bounds {
                 width: 320,
                 ..bounds
@@ -336,7 +343,7 @@ mod tests {
             width: 1200,
             height: 700,
         };
-        assert_eq!(clip_width_to_work_area(inside, area), inside);
+        assert_eq!(clip_width_to_work_area(inside, area, 1), inside);
         let left = WorkArea {
             x: -2560,
             y: 0,
@@ -350,11 +357,23 @@ mod tests {
             height: 900,
         };
         assert_eq!(
-            clip_width_to_work_area(near_right, left),
+            clip_width_to_work_area(near_right, left, 1),
             Bounds {
                 width: 400,
                 ..near_right
             }
+        );
+
+        // 窗口本来已有一部分在屏幕外：展开侧栏不得把它反向缩窄
+        let already_overflowed = Bounds {
+            x: 1800,
+            y: 80,
+            width: 700,
+            height: 700,
+        };
+        assert_eq!(
+            clip_width_to_work_area(already_overflowed, area, 700),
+            already_overflowed
         );
     }
 

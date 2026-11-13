@@ -333,7 +333,12 @@ function useWindowChoreography(
       try {
         if (minAfter < minBefore) await c.setMinWidth(minAfter);
         await c.animateWidth(delta, snapDuration(), snapEase);
-        if (minAfter > minBefore) await c.setMinWidth(minAfter);
+        if (minAfter > minBefore) {
+          // SetWindowPos 后先等一帧让 WebView 收到新尺寸；屏幕边缘可能把目标宽度截短，
+          // 此时最小宽度必须跟随实际宽度，否则 Windows 会按旧目标再次把窗口撑出屏幕。
+          await frame();
+          await c.setMinWidth(Math.min(minAfter, Math.floor(window.innerWidth)));
+        }
       } catch {
         // 窗口操作失败也要走完清理，否则开关按钮会一直禁用、中央宽度被锁住
       }

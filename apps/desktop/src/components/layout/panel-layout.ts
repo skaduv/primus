@@ -118,8 +118,9 @@ export function resolvePanelLayout(
     };
   }
 
-  // 窗口不会小于最小尺寸（外壳也有同样的 min-width / min-height，小于时出现滚动而不是挤压）
-  const width = Math.max(viewport.width, minWindowWidth(prefs.leftOpen, prefs.rightOpen));
+  // 正常窗口受原生最小尺寸约束；靠近屏幕边时窗口会被宽度上限截短，
+  // 此时按真实视口压缩各栏，不能让布局继续按更大的最小窗口向外溢出。
+  const width = Math.max(viewport.width, SHELL_PADDING * 2);
   const height = Math.max(viewport.height, MIN_WINDOW.height);
 
   const innerWidth = width - 2 * SHELL_PADDING;

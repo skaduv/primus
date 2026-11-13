@@ -121,6 +121,7 @@ pub fn window_set_bounds(
     y: i32,
     width: u32,
     height: u32,
+    minimum_width: Option<u32>,
 ) -> Result<(), String> {
     if width == 0 || height == 0 {
         return Err("window size must be positive".into());
@@ -148,6 +149,7 @@ pub fn window_set_bounds(
                     width: area.size.width,
                     height: area.size.height,
                 },
+                minimum_width.unwrap_or(1),
             )
         });
     crate::platform::set_window_bounds(&window, bounds.x, bounds.y, bounds.width, bounds.height)
