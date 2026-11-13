@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // 版本基线检查（技术方案第 2.4 节）：
-// 1. 工具链版本（.node-version、scripts/node-runtime.json、packageManager、rust-toolchain.toml、CI 中的 WIX / cargo-nextest / tauri-driver 版本）与基线一致
+// 1. 工具链版本（.node-version、scripts/node-runtime.json、scripts/python-runtime.json、packageManager、rust-toolchain.toml、CI 中的 WIX / cargo-nextest / tauri-driver 版本）与基线一致
 // 2. 所有 package.json 依赖（含 peerDependencies）锁定精确版本（不允许 ^ ~ * latest 等范围；仅 workspace:* 除外）
 // 3. Cargo.toml 依赖一律 "=x.y.z" 精确锁定
 // 4. 出现在基线中的依赖，版本必须与基线一致（尚未引入的依赖跳过）
@@ -35,6 +35,39 @@ for (const [platform, target] of Object.entries(runtimePin.platforms ?? {})) {
   if (!Object.keys(target.files ?? {}).length || hashes.some((h) => !/^[0-9a-f]{64}$/.test(h)))
     fail(`scripts/node-runtime.json ${platform} 缺少或含有格式不正确的 SHA-256`);
 }
+
+// 内置 Python（scripts/python-runtime.json，ADR 0010）：版本与基线一致，每个平台的 embed 包与 pip 轮子都固化了哈希
+const pythonPin = JSON.parse(read("scripts/python-runtime.json"));
+if (pythonPin.version !== baseline.toolchain.python)
+  fail(
+    `scripts/python-runtime.json version 为 ${pythonPin.version}，基线为 ${baseline.toolchain.python}`,
+  );
+if (!EXACT.test(pythonPin.version ?? "") || PRERELEASE.test(pythonPin.version ?? ""))
+  fail(`scripts/python-runtime.json version（${pythonPin.version}）须为精确的稳定版`);
+const pythonArch = { "win-x64": "amd64", "win-arm64": "arm64" };
+for (const platform of Object.keys(runtimePin.platforms ?? {})) {
+  const target = pythonPin.platforms?.[platform];
+  if (!target) {
+    fail(`scripts/python-runtime.json 缺少平台 ${platform}（须覆盖 node-runtime.json 的全部平台）`);
+    continue;
+  }
+  if (target.archive !== `python-${pythonPin.version}-embed-${pythonArch[platform]}.zip`)
+    fail(`scripts/python-runtime.json ${platform} 的 archive（${target.archive}）与版本不符`);
+  if (!/^[0-9a-f]{64}$/.test(target.sha256 ?? ""))
+    fail(`scripts/python-runtime.json ${platform} 缺少或含有格式不正确的 SHA-256`);
+}
+const pip = pythonPin.pip ?? {};
+if (pip.version !== baseline.toolchain.pip)
+  fail(
+    `scripts/python-runtime.json pip.version 为 ${pip.version}，基线为 ${baseline.toolchain.pip}`,
+  );
+if (
+  pip.wheel !== `pip-${pip.version}-py3-none-any.whl` ||
+  !String(pip.url ?? "").endsWith(`/${pip.wheel}`)
+)
+  fail(`scripts/python-runtime.json pip 的 wheel / url 与版本不符`);
+if (!/^[0-9a-f]{64}$/.test(pip.sha256 ?? ""))
+  fail("scripts/python-runtime.json pip 缺少或含有格式不正确的 SHA-256");
 
 const rootPkg = JSON.parse(read("package.json"));
 const pm = rootPkg.packageManager ?? "";

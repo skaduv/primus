@@ -9,15 +9,20 @@ import {
   buildManifest,
   CORE_LICENSE_FILE,
   copyCoreLicense,
+  findPthFile,
   globToRegExp,
   isCompleteMitLicense,
   listFiles,
   listZipEntries,
   MIT_LICENSE_BODY,
+  PIP_CMD,
+  PYTHON_SITECUSTOMIZE,
   parseShasums,
+  patchPythonPth,
   pickFiles,
   readZipEntry,
   runtimePackageJson,
+  safeZipPath,
   selectRuntimeEntries,
   sha256,
   verifyManifest,
@@ -281,5 +286,49 @@ describe("Core 许可文件", () => {
     expect(() =>
       copyCoreLicense(fileURLToPath(new URL("../agent-core", import.meta.url)), dist),
     ).not.toThrow();
+  });
+});
+
+describe("内置 Python（ADR 0010）", () => {
+  const EMBED_PTH =
+    "python314.zip\r\n.\r\n\r\n# Uncomment to run site.main() automatically\r\n#import site\r\n";
+
+  it("patchPythonPth 加入 Lib\\site-packages 并启用 import site", () => {
+    expect(patchPythonPth(EMBED_PTH)).toBe(
+      "python314.zip\r\n.\r\nLib\\site-packages\r\nimport site\r\n",
+    );
+    // 幂等：再改一次结果不变
+    expect(patchPythonPth(patchPythonPth(EMBED_PTH))).toBe(patchPythonPth(EMBED_PTH));
+  });
+
+  it("patchPythonPth 缺少标准库 zip 时报错", () => {
+    expect(() => patchPythonPth(".\r\n#import site\r\n")).toThrow(/python3xx\.zip/);
+  });
+
+  it("findPthFile 只接受唯一的 python3xx._pth", () => {
+    expect(findPthFile(["python.exe", "python314._pth", "python314.zip"])).toBe("python314._pth");
+    expect(() => findPthFile(["python.exe"])).toThrow(/._pth/);
+    expect(() => findPthFile(["python313._pth", "python314._pth"])).toThrow(/._pth/);
+  });
+
+  it("safeZipPath 跳过目录、拒绝越界路径", () => {
+    expect(safeZipPath("pip/__init__.py")).toBe("pip/__init__.py");
+    expect(safeZipPath("pip\\_vendor\\x.py")).toBe("pip/_vendor/x.py");
+    expect(safeZipPath("pip/")).toBeNull();
+    for (const bad of ["../evil.py", "/abs.py", "C:/x.py", "a//b.py", "a/./b.py"])
+      expect(() => safeZipPath(bad)).toThrow(/不安全/);
+  });
+
+  it("sitecustomize 与 pip.cmd 内容", () => {
+    expect(PYTHON_SITECUSTOMIZE).toContain('os.environ.get("PRIMUS_PYTHON_PACKAGES")');
+    expect(PYTHON_SITECUSTOMIZE).toContain("site.addsitedir(");
+    expect(PIP_CMD).toBe('@"%~dp0python.exe" -m pip %*\r\n');
+  });
+
+  it("python-runtime.json 覆盖 node-runtime.json 的全部平台", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const node = JSON.parse(readFileSync(join(root, "scripts/node-runtime.json"), "utf8"));
+    const py = JSON.parse(readFileSync(join(root, "scripts/python-runtime.json"), "utf8"));
+    expect(Object.keys(py.platforms).sort()).toEqual(Object.keys(node.platforms).sort());
   });
 });

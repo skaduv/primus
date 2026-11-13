@@ -27,6 +27,9 @@
 // - dist/runtime/：从 nodejs.org 下载 scripts/node-runtime.json 锁定版本的发行包，校验固化在仓库中的
 //   SHA-256（并与官方 SHASUMS256.txt 交叉核对），只解出 node.exe 与 LICENSE；npm、文档、示例不打包。
 //   node.exe 保留 OpenJS 官方 Authenticode 签名，签名验证在 Windows CI 上做。
+// - dist/runtime/python/：内置 Python（ADR 0010）。下载 scripts/python-runtime.json 锁定的官方 embed 包整包解出，
+//   校验固化的 SHA-256；再把锁定的 pip 轮子（同样校验哈希）解到 Lib/site-packages，改写 ._pth 启用 site，
+//   写入 sitecustomize.py（加入数据目录中的用户包）与 pip.cmd / pip3.cmd。python.exe 保留 PSF 官方签名。
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -46,13 +49,18 @@ import {
   assertSha256,
   buildManifest,
   copyCoreLicense,
+  findPthFile,
   listFiles,
   listZipEntries,
   MANIFEST_FILE,
+  PIP_CMD,
+  PYTHON_SITECUSTOMIZE,
   parseShasums,
+  patchPythonPth,
   pickFiles,
   readZipEntry,
   runtimePackageJson,
+  safeZipPath,
   selectRuntimeEntries,
   sha256,
 } from "./core-dist.mjs";
@@ -62,6 +70,7 @@ const coreDir = join(root, "agent-core");
 const corePackageDir = join(coreDir, "packages/coding-agent");
 const distCore = join(root, "dist/agent-core");
 const distRuntime = join(root, "dist/runtime");
+const distPython = join(distRuntime, "python");
 const { values: args } = parseArgs({
   options: {
     "skip-install": { type: "boolean", default: false },
@@ -287,6 +296,69 @@ async function prepareRuntime(platform) {
   };
 }
 
+async function cachedDownload(url, file, expected) {
+  const cacheDir = join(root, "node_modules/.cache/primus-runtime");
+  const cached = join(cacheDir, file);
+  let bytes = existsSync(cached) ? readFileSync(cached) : null;
+  if (!bytes || sha256(bytes) !== expected) {
+    console.log(`\n> 下载 ${url}`);
+    bytes = await download(url);
+    assertSha256(bytes, expected, file);
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(cached, bytes);
+  }
+  return bytes;
+}
+
+function extractZip(zip, destDir, label) {
+  let count = 0;
+  for (const entry of listZipEntries(zip)) {
+    const rel = safeZipPath(entry.name);
+    if (!rel) continue;
+    const dest = join(destDir, ...rel.split("/"));
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, readZipEntry(zip, entry));
+    count++;
+  }
+  if (!count) throw new Error(`${label} 是空包`);
+  return count;
+}
+
+async function preparePython(platform) {
+  const config = JSON.parse(readFileSync(join(root, "scripts/python-runtime.json"), "utf8"));
+  const target = config.platforms?.[platform];
+  if (!target) throw new Error(`python-runtime.json 不支持平台 ${platform}`);
+  const { version, distUrl, pip } = config;
+  const source = `${distUrl}/${version}/${target.archive}`;
+  const zip = await cachedDownload(source, target.archive, target.sha256);
+  const wheel = await cachedDownload(pip.url, pip.wheel, pip.sha256);
+
+  mkdirSync(distPython, { recursive: true });
+  const names = listZipEntries(zip)
+    .map((e) => safeZipPath(e.name))
+    .filter(Boolean);
+  const pth = findPthFile(names);
+  if (!names.includes("python.exe")) throw new Error(`${target.archive} 中缺少 python.exe`);
+  const fileCount = extractZip(zip, distPython, target.archive);
+  writeFileSync(join(distPython, pth), patchPythonPth(readFileSync(join(distPython, pth), "utf8")));
+
+  const sitePackages = join(distPython, "Lib/site-packages");
+  extractZip(wheel, sitePackages, pip.wheel);
+  writeFileSync(join(sitePackages, "sitecustomize.py"), PYTHON_SITECUSTOMIZE);
+  for (const cmd of ["pip.cmd", "pip3.cmd"]) writeFileSync(join(distPython, cmd), PIP_CMD);
+
+  console.log(
+    `✓ 已校验并解出 Python ${version}（${platform}，${fileCount} 个文件）+ pip ${pip.version} → dist/runtime/python/`,
+  );
+  return {
+    version,
+    archive: target.archive,
+    archiveSha256: target.sha256,
+    source,
+    pip: { version: pip.version, wheel: pip.wheel, sha256: pip.sha256 },
+  };
+}
+
 function dirSize(dir) {
   let total = 0;
   for (const f of listFiles(dir)) total += statSync(join(dir, f)).size;
@@ -309,6 +381,7 @@ if (!args["skip-build"]) {
 
 const core = assembleCore();
 const runtime = await prepareRuntime(args.platform);
+if (runtime) runtime.python = await preparePython(args.platform);
 const manifest = buildManifest(
   distCore,
   {
@@ -323,4 +396,7 @@ writeFileSync(join(distCore, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2
 
 const mib = (n) => `${(n / 1024 / 1024).toFixed(1)} MiB`;
 console.log(`\n✓ dist/agent-core：${manifest.files.length} 个文件，${mib(dirSize(distCore))}`);
-if (runtime) console.log(`✓ dist/runtime：${mib(dirSize(distRuntime))}`);
+if (runtime)
+  console.log(
+    `✓ dist/runtime：${mib(dirSize(distRuntime))}（其中 python/ ${mib(dirSize(distPython))}）`,
+  );

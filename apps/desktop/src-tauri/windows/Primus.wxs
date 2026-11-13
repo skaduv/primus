@@ -19,6 +19,7 @@
     <INSTALLFOLDER>\Primus.exe
     <INSTALLFOLDER>\PrimusUpdate.exe       更新服务 PrimusUpdate（按需启动、LocalSystem，ADR 0007）
     <INSTALLFOLDER>\resources\runtime\      node.exe + LICENSE（保留 OpenJS 官方签名）
+    <INSTALLFOLDER>\resources\runtime\python\  CPython 官方 embed 包 + pip（保留 PSF 官方签名，ADR 0010；随 runtime 整目录收集）
     <INSTALLFOLDER>\resources\agent-core\   dist/agent-core 整目录（含 extensions\primus-bundle.js）
     <INSTALLFOLDER>\                        受保护的 DACL：SYSTEM、Administrators 完全控制，Users 只读和执行（装在其他盘也一样）
     <INSTALLFOLDER>\data\                   Users 组可修改，卸载与升级时保留

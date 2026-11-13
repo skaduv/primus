@@ -1,0 +1,21 @@
+{
+  "$comment": "内置 Python 运行时（ADR 0010、技术方案第 2.4、3.2 节）。版本必须与 version-baseline.json 的 toolchain.python / toolchain.pip 一致（check-versions.mjs 校验）。每个 Windows 架构一项，build-core.mjs --platform 选用，整包解到 dist/runtime/python/；哈希固化在仓库中：embed 包的 sha256 与 python.org 下载 API（release_file 的 sha256_sum）一致，pip 轮子的 sha256 与 PyPI 一致。升级时版本、文件名、哈希一并更新并分别核对。",
+  "version": "3.14.10",
+  "distUrl": "https://www.python.org/ftp/python",
+  "platforms": {
+    "win-x64": {
+      "archive": "python-3.14.10-embed-amd64.zip",
+      "sha256": "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
+    },
+    "win-arm64": {
+      "archive": "python-3.14.10-embed-arm64.zip",
+      "sha256": "bbe116bb1248820359cbf25127ac5c7794ea161869d83686cfbc9a45203ff836"
+    }
+  },
+  "pip": {
+    "version": "26.3",
+    "wheel": "pip-26.3-py3-none-any.whl",
+    "url": "https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl",
+    "sha256": "f3b60b20ffaadd4415ed7957212a38ac63fa4c5fa375bd0f4a797777940fad13"
+  }
+}

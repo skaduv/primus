@@ -122,6 +122,67 @@ export function selectRuntimeEntries(entries, topDir, wanted) {
   return picked;
 }
 
+// ---- 内置 Python（ADR 0010）----
+
+/**
+ * zip 条目的安全相对路径：统一为 /，去掉目录条目（以 / 结尾，返回 null）；
+ * 绝对路径、盘符、含 .. 或空段的路径一律抛错，防止解包写到目标目录之外。
+ */
+export function safeZipPath(name) {
+  const p = name.replaceAll("\\", "/");
+  if (p.endsWith("/")) return null;
+  const parts = p.split("/");
+  if (
+    p.startsWith("/") ||
+    /^[A-Za-z]:/.test(p) ||
+    parts.some((s) => s === "" || s === "." || s === "..")
+  )
+    throw new Error(`zip 条目路径不安全：${name}`);
+  return p;
+}
+
+/** embed 包里 `python<主><次>._pth` 的文件名（如 python314._pth）；找不到或不止一个都抛错 */
+export function findPthFile(names) {
+  const found = names.filter((n) => /^python3\d+\._pth$/.test(n));
+  if (found.length !== 1)
+    throw new Error(`embed 包中应有且只有一个 python3xx._pth，实际：${found.join(", ") || "无"}`);
+  return found[0];
+}
+
+/**
+ * 改写 embed 包的 `._pth`：加入 `Lib\site-packages`（内置 pip 与 sitecustomize 所在）并启用 `import site`。
+ * `._pth` 存在时 Python 处于隔离模式（忽略 PYTHON* 环境变量与注册表），sys.path 只由这里决定；
+ * 用户自己安装的包由 sitecustomize 按 PRIMUS_PYTHON_PACKAGES 加入（见 PYTHON_SITECUSTOMIZE）。
+ */
+export function patchPythonPth(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && !l.startsWith("#") && l !== "import site");
+  if (!lines.some((l) => /^python3\d+\.zip$/.test(l)))
+    throw new Error("._pth 中缺少标准库 python3xx.zip，embed 包布局可能有变");
+  if (!lines.some((l) => l.toLowerCase() === "lib\\site-packages"))
+    lines.push("Lib\\site-packages");
+  lines.push("import site");
+  return `${lines.join("\r\n")}\r\n`;
+}
+
+/**
+ * 写进 `Lib\site-packages\sitecustomize.py`：把薄壳通过 PRIMUS_PYTHON_PACKAGES 指定的、数据目录中的包目录
+ * 加入 sys.path（pip 经 PIP_TARGET 装到那里，约束 C2：安装目录只读、用户数据只进 data）。
+ */
+export const PYTHON_SITECUSTOMIZE = `# 乾元 Primus 内置 Python：加入数据目录中用户安装的包（ADR 0010）
+import os
+import site
+
+_packages = os.environ.get("PRIMUS_PYTHON_PACKAGES")
+if _packages:
+    site.addsitedir(_packages)
+`;
+
+/** `pip` / `pip3` 命令（PowerShell 与 cmd 按 PATHEXT 找到 .cmd）；bash 中用 `python -m pip` */
+export const PIP_CMD = '@"%~dp0python.exe" -m pip %*\r\n';
+
 // ---- 文件挑选与 manifest ----
 
 /** 把只含 * 与 ** 的简单模式（/ 分隔）转成正则；* 不跨目录，** 可匹配任意层级。 */

@@ -210,6 +210,27 @@ jobs:
           if ($sig.Status -ne 'Valid') { throw "node.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
           if ($sig.SignerCertificate.Subject -notmatch 'O="?OpenJS Foundation') { throw "node.exe 签名者不是 OpenJS Foundation：$($sig.SignerCertificate.Subject)" }
 
+      # 内置 Python（ADR 0010）：保留 PSF 官方签名；隔离模式下能启动、pip 可用，PIP_TARGET 装包后能导入
+      - name: 检查内置 Python 与 pip
+        shell: pwsh
+        run: |
+          $py = 'dist/runtime/python/python.exe'
+          $sig = Get-AuthenticodeSignature -FilePath $py
+          $sig | Format-List Status, StatusMessage
+          if ($sig.Status -ne 'Valid') { throw "python.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
+          if ($sig.SignerCertificate.Subject -notmatch 'O="?Python Software Foundation') { throw "python.exe 签名者不是 Python Software Foundation：$($sig.SignerCertificate.Subject)" }
+          & $py -c "import sys, ssl, sqlite3; print(sys.version); assert 'site' in sys.modules and any(p.lower().endswith('site-packages') for p in sys.path), sys.path"
+          if ($LASTEXITCODE -ne 0) { throw "内置 Python 无法运行" }
+          & $py -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "内置 pip 不可用" }
+          $pkgs = Join-Path $env:RUNNER_TEMP 'primus-py-pkgs'
+          $env:PRIMUS_PYTHON_PACKAGES = $pkgs
+          $whl = Get-ChildItem node_modules/.cache/primus-runtime -Filter 'pip-*.whl' | Select-Object -First 1
+          & $py -m pip install --no-index --target $pkgs --no-deps $whl.FullName
+          if ($LASTEXITCODE -ne 0) { throw "pip install --target 失败" }
+          & $py -c "import os, sys; p = os.environ['PRIMUS_PYTHON_PACKAGES']; assert any(os.path.samefile(x, p) for x in sys.path if os.path.isdir(x)), sys.path"
+          if ($LASTEXITCODE -ne 0) { throw "sitecustomize 未加入用户包目录" }
+
       - name: 上传 Core 与运行时产物（dist/，供干净 Windows 机器验收）
         uses: actions/upload-artifact@v7.0.2
         with:
@@ -387,6 +408,18 @@ jobs:
           $arch = & dist/runtime/node.exe -p process.arch
           if ($arch -ne 'arm64') { throw "dist/runtime/node.exe 的架构为 $arch，应为 arm64" }
           Write-Host "node.exe：$(& dist/runtime/node.exe --version)（$arch）"
+
+      - name: 检查内置 Python 的官方签名与架构（ADR 0010）
+        shell: pwsh
+        run: |
+          $py = 'dist/runtime/python/python.exe'
+          $sig = Get-AuthenticodeSignature -FilePath $py
+          if ($sig.Status -ne 'Valid') { throw "python.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
+          if ($sig.SignerCertificate.Subject -notmatch 'O="?Python Software Foundation') { throw "python.exe 签名者不是 Python Software Foundation：$($sig.SignerCertificate.Subject)" }
+          $machine = & $py -c "import platform; print(platform.machine())"
+          if ($machine -ne 'ARM64') { throw "内置 python.exe 的架构为 $machine，应为 ARM64" }
+          & $py -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "内置 pip 不可用" }
 
       - name: 构建第一方扩展（primus-bundle.js）
         run: pnpm build:extensions
