@@ -134,6 +134,8 @@ jobs:
     # 先过 Linux 检查再占用 Windows runner（README「CI 与依赖升级」）
     needs: checks
     runs-on: windows-2025
+    # 作业级上限：运行器失联时步骤级 timeout-minutes 与取消都不生效，只有作业级超时能结束（正常约 15 分钟）
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -209,6 +211,46 @@ jobs:
           $sig.SignerCertificate | Format-List Subject, Issuer, NotAfter
           if ($sig.Status -ne 'Valid') { throw "node.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
           if ($sig.SignerCertificate.Subject -notmatch 'O="?OpenJS Foundation') { throw "node.exe 签名者不是 OpenJS Foundation：$($sig.SignerCertificate.Subject)" }
+
+      # 内置 Python（ADR 0010）：保留 PSF 官方签名；隔离模式下能启动、pip 可用，PIP_TARGET 装包后能导入
+      - name: 检查内置 Python 与 pip
+        shell: pwsh
+        run: |
+          $py = 'dist/runtime/python/python.exe'
+          $sig = Get-AuthenticodeSignature -FilePath $py
+          $sig | Format-List Status, StatusMessage
+          if ($sig.Status -ne 'Valid') { throw "python.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
+          if ($sig.SignerCertificate.Subject -notmatch 'O="?Python Software Foundation') { throw "python.exe 签名者不是 Python Software Foundation：$($sig.SignerCertificate.Subject)" }
+          & $py -c "import sys, ssl, sqlite3; print(sys.version); assert 'site' in sys.modules and any(p.lower().endswith('site-packages') for p in sys.path), sys.path"
+          if ($LASTEXITCODE -ne 0) { throw "内置 Python 无法运行" }
+          & $py -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "内置 pip 不可用" }
+          $pkgs = Join-Path $env:RUNNER_TEMP 'primus-py-pkgs'
+          $env:PRIMUS_PYTHON_PACKAGES = $pkgs
+          $whl = Get-ChildItem node_modules/.cache/primus-runtime -Filter 'pip-*.whl' | Select-Object -First 1
+          & $py -m pip install --no-index --target $pkgs --no-deps $whl.FullName
+          if ($LASTEXITCODE -ne 0) { throw "pip install --target 失败" }
+          & $py -c "import os, sys; p = os.environ['PRIMUS_PYTHON_PACKAGES']; assert any(os.path.samefile(x, p) for x in sys.path if os.path.isdir(x)), sys.path"
+          if ($LASTEXITCODE -ne 0) { throw "sitecustomize 未加入用户包目录" }
+          # safe_path 下仍能导入脚本同目录的模块
+          $proj = Join-Path $env:RUNNER_TEMP 'primus-py-proj'
+          New-Item -ItemType Directory -Force -Path $proj | Out-Null
+          Set-Content -LiteralPath (Join-Path $proj 'helper.py') -Value 'X = 1'
+          Set-Content -LiteralPath (Join-Path $proj 'main.py') -Value 'import helper; print("main ok", helper.X)'
+          & $py (Join-Path $proj 'main.py')
+          if ($LASTEXITCODE -ne 0) { throw "python main.py 无法导入同目录模块" }
+          # 默认隔离构建安装源码包（构建后端 setuptools 装在 pip 的临时构建环境里，经 PYTHONPATH 注入）
+          $sdist = Join-Path $env:RUNNER_TEMP 'primus-py-sdist'
+          New-Item -ItemType Directory -Force -Path (Join-Path $sdist 'primus_demo') | Out-Null
+          Set-Content -LiteralPath (Join-Path $sdist 'pyproject.toml') -Value "[build-system]`nrequires = [`"setuptools==84.2.1`"]`nbuild-backend = `"setuptools.build_meta`"`n[project]`nname = `"primus-demo`"`nversion = `"0.1`""
+          Set-Content -LiteralPath (Join-Path $sdist 'primus_demo/__init__.py') -Value 'Y = 2'
+          & $py -B -m pip install --target $pkgs $sdist
+          if ($LASTEXITCODE -ne 0) { throw "源码包隔离构建安装失败" }
+          & $py -c "import primus_demo; assert primus_demo.Y == 2"
+          if ($LASTEXITCODE -ne 0) { throw "源码包安装后无法导入" }
+          # sitecustomize 自身在设置字节码策略前已被导入，目录可写（CI 为管理员）时会留下它自己的 .pyc，其余不应写入
+          $pyc = Get-ChildItem -LiteralPath dist/runtime/python -Recurse -File -Filter *.pyc | Where-Object { $_.Name -notlike 'sitecustomize.*.pyc' }
+          if ($pyc) { throw "安装目录中生成了字节码：$($pyc.FullName -join ', ')" }
 
       - name: 上传 Core 与运行时产物（dist/，供干净 Windows 机器验收）
         uses: actions/upload-artifact@v7.0.2
@@ -345,6 +387,9 @@ jobs:
     # 与 x64 作业并行；Linux 检查通过后才占用 ARM64 运行器
     needs: checks
     runs-on: windows-11-arm
+    # 作业级上限：windows-11-arm 运行器偶发失联，卡在某一步时步骤级 timeout-minutes 与取消都不生效，
+    # 不设上限会挂到默认 360 分钟；只有作业级超时能结束（正常约 25–28 分钟）
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -387,6 +432,21 @@ jobs:
           $arch = & dist/runtime/node.exe -p process.arch
           if ($arch -ne 'arm64') { throw "dist/runtime/node.exe 的架构为 $arch，应为 arm64" }
           Write-Host "node.exe：$(& dist/runtime/node.exe --version)（$arch）"
+
+      - name: 检查内置 Python 的官方签名与架构（ADR 0010）
+        shell: pwsh
+        run: |
+          $py = 'dist/runtime/python/python.exe'
+          $sig = Get-AuthenticodeSignature -FilePath $py
+          if ($sig.Status -ne 'Valid') { throw "python.exe 签名无效：$($sig.Status) $($sig.StatusMessage)" }
+          if ($sig.SignerCertificate.Subject -notmatch 'O="?Python Software Foundation') { throw "python.exe 签名者不是 Python Software Foundation：$($sig.SignerCertificate.Subject)" }
+          # 读 PE 头的 Machine 字段（0xAA64 = ARM64）；platform.machine() 报的是宿主 CPU，x64 包在 ARM64 上也会通过
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $py))
+          $pe = [BitConverter]::ToInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0xAA64) { throw ("内置 python.exe 的 PE Machine 为 0x{0:X4}，应为 0xAA64（ARM64）" -f $machine) }
+          & $py -m pip --version
+          if ($LASTEXITCODE -ne 0) { throw "内置 pip 不可用" }
 
       - name: 构建第一方扩展（primus-bundle.js）
         run: pnpm build:extensions

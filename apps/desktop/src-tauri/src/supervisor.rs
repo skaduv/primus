@@ -6,6 +6,8 @@
 //! - 环境变量（第 4.4 节）：`PRIMUS_CODING_AGENT_DIR`、`PRIMUS_CODING_AGENT_SESSION_DIR`、`TEMP`/`TMP` 指向
 //!   `data/users/<SID>`，`PRIMUS_SKIP_VERSION_CHECK=1`、`PRIMUS_TELEMETRY`、`PRIMUS_OFFLINE`，并清空 `NODE_OPTIONS`。
 //!   其余环境变量（如 `PATH`）照常继承，工具命令需要它们。
+//! - 内置 Python（ADR 0010）：`resources/runtime/python` 存在时把它与用户包的 `bin/` 放到 `PATH` 最前，
+//!   `PIP_TARGET` / `PRIMUS_PYTHON_PACKAGES` 指向 `data/users/<SID>/python/site-packages`，`PIP_CACHE_DIR` 也在数据目录（约束 C2）。
 //! - stderr 单独读取（第 5.4 节）：逐行写入 `data/shared/logs/core-<会话>-<日期>.log`，并保留最近 200 行用于崩溃展示。
 //! - 每个 Core 进程各放进一个 Job Object（`job` 模块，句柄全部由主进程持有）：主进程被强杀时系统回收全部 Core
 //!   及其子孙进程；结束单个 Core（淘汰、空闲回收、停止）时结束其整个作业，工具子进程不残留。
@@ -46,6 +48,10 @@ const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[cfg(windows)]
 const NODE_EXE: &str = "node.exe";
+#[cfg(windows)]
+const PYTHON_EXE: &str = "python.exe";
+#[cfg(not(windows))]
+const PYTHON_EXE: &str = "python";
 #[cfg(not(windows))]
 const NODE_EXE: &str = "node";
 /// Core 要求的最低 Node 版本（agent-core/package.json 的 engines）：低于它的系统 Node 不用，改用内置运行时。
@@ -60,6 +66,8 @@ pub(crate) struct CoreLayout {
     pub(crate) entry: PathBuf,
     /// 第一方扩展 `primus-bundle.js`
     pub(crate) extension: PathBuf,
+    /// 内置 Python 目录（运行时目录下的 `python/`，ADR 0010）；不存在时不注入 Python 环境
+    pub(crate) python: PathBuf,
 }
 
 impl CoreLayout {
@@ -69,7 +77,16 @@ impl CoreLayout {
             node: runtime_dir.join(NODE_EXE),
             entry: core_dir.join("rpc-entry.js"),
             extension: core_dir.join("extensions").join("primus-bundle.js"),
+            python: runtime_dir.join("python"),
         }
+    }
+
+    /// 内置 Python 可执行文件存在时返回其目录。
+    pub(crate) fn bundled_python(&self) -> Option<&Path> {
+        self.python
+            .join(PYTHON_EXE)
+            .is_file()
+            .then_some(self.python.as_path())
     }
 
     /// 安装目录布局（第 3.2 节）：`<exe 目录>/resources/{runtime,agent-core}`。
@@ -268,6 +285,9 @@ pub(crate) fn build_command(
     } else {
         cmd.env_remove("PRIMUS_OFFLINE");
     }
+    if let Some(python) = layout.bundled_python() {
+        apply_python_env(&mut cmd, python, paths, std::env::var_os("PATH").as_deref());
+    }
 
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -281,6 +301,33 @@ pub(crate) fn build_command(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
     cmd
+}
+
+/// 内置 Python 的环境（ADR 0010）：Python 目录与用户包脚本目录放在 `PATH` 最前（先于系统里的 Python 与
+/// Windows 应用商店的 `python.exe` 占位程序），`pip install` 装到数据目录（安装目录只读，约束 C2），
+/// `sitecustomize.py` 按 `PRIMUS_PYTHON_PACKAGES` 把该目录加入 `sys.path`。
+fn apply_python_env(
+    cmd: &mut Command,
+    python: &Path,
+    paths: &DataPaths,
+    inherited_path: Option<&std::ffi::OsStr>,
+) {
+    let packages = paths.python_packages_dir();
+    let mut dirs = vec![python.to_path_buf(), packages.join("bin")];
+    if let Some(path) = inherited_path {
+        dirs.extend(std::env::split_paths(path));
+    }
+    if let Ok(joined) = std::env::join_paths(dirs) {
+        cmd.env("PATH", joined);
+    }
+    cmd.env("PRIMUS_PYTHON_PACKAGES", &packages)
+        .env("PIP_TARGET", &packages)
+        .env("PIP_CACHE_DIR", paths.python_dir().join("cache"))
+        .env("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+        .env("PIP_NO_WARN_SCRIPT_LOCATION", "1")
+        // 用户环境里的 PYTHONPATH / PYTHONHOME 不进入内置 Python（ADR 0010）；pip 隔离构建会自行设置 PYTHONPATH
+        .env_remove("PYTHONPATH")
+        .env_remove("PYTHONHOME");
 }
 
 /// 最近若干行 stderr（线程安全，读取线程写入、界面读取）。
@@ -990,6 +1037,7 @@ pub(crate) mod tests {
             node: PathBuf::from("node"),
             entry: core.join("rpc-entry.js"),
             extension: core.join("extensions").join("primus-bundle.js"),
+            python: root.join("no-python"),
         }
     }
 
@@ -1030,7 +1078,13 @@ pub(crate) mod tests {
             Path::new("/opt/Primus/resources/agent-core/extensions/primus-bundle.js")
         );
 
+        assert_eq!(
+            installed.python,
+            Path::new("/opt/Primus/resources/runtime/python")
+        );
+
         let dev = CoreLayout::dev(Path::new("/repo"));
+        assert_eq!(dev.python, Path::new("/repo/dist/runtime/python"));
         assert_eq!(dev.entry, Path::new("/repo/dist/agent-core/rpc-entry.js"));
         if cfg!(windows) {
             assert_eq!(dev.node, Path::new("/repo/dist/runtime/node.exe"));
@@ -1118,6 +1172,8 @@ pub(crate) mod tests {
             Some(None),
             "NODE_OPTIONS 应被清除"
         );
+        assert_eq!(layout.bundled_python(), None);
+        assert_eq!(env_of(&cmd, "PIP_TARGET"), None, "没有内置 Python 时不注入");
 
         o.approve = false;
         o.offline = false;
@@ -1134,6 +1190,66 @@ pub(crate) mod tests {
         assert_eq!(args[1], "--session-id");
         assert_eq!(args[2], "primus-1");
         assert!(!has_arg(&cmd, "--session"));
+    }
+
+    #[test]
+    fn bundled_python_environment() {
+        let tmp = TempDir::new();
+        let paths = data_paths(&tmp.0);
+        let mut layout = fake_layout(&tmp.0, "");
+        layout.python = tmp.0.join("runtime").join("python");
+        std::fs::create_dir_all(&layout.python).unwrap();
+        std::fs::write(layout.python.join(PYTHON_EXE), "").unwrap();
+        assert_eq!(layout.bundled_python(), Some(layout.python.as_path()));
+
+        let mut cmd = Command::new("node");
+        let inherited = std::env::join_paths([tmp.0.join("sys-bin")]).unwrap();
+        apply_python_env(
+            &mut cmd,
+            &layout.python,
+            &paths,
+            Some(inherited.as_os_str()),
+        );
+
+        let packages = paths.python_packages_dir();
+        let path = env_of(&cmd, "PATH").flatten().expect("PATH 应被设置");
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        assert_eq!(
+            dirs,
+            vec![
+                layout.python.clone(),
+                packages.join("bin"),
+                tmp.0.join("sys-bin")
+            ]
+        );
+        let pkgs = packages.to_string_lossy().into_owned();
+        assert_eq!(env_of(&cmd, "PIP_TARGET"), Some(Some(pkgs.clone())));
+        assert_eq!(env_of(&cmd, "PRIMUS_PYTHON_PACKAGES"), Some(Some(pkgs)));
+        assert!(packages.starts_with(paths.user_dir()), "用户包只进数据目录");
+        assert_eq!(
+            env_of(&cmd, "PYTHONPATH"),
+            Some(None),
+            "清掉继承的 PYTHONPATH"
+        );
+        assert_eq!(
+            env_of(&cmd, "PYTHONHOME"),
+            Some(None),
+            "清掉继承的 PYTHONHOME"
+        );
+        assert_eq!(
+            env_of(&cmd, "PIP_CACHE_DIR"),
+            Some(Some(
+                paths
+                    .python_dir()
+                    .join("cache")
+                    .to_string_lossy()
+                    .into_owned()
+            ))
+        );
+
+        // build_command 检测到内置 Python 时同样注入
+        let cmd = build_command(&layout, &paths, &opts(&tmp.0));
+        assert!(env_of(&cmd, "PIP_TARGET").is_some());
     }
 
     /// 打印 Core 关心的环境变量与参数，向 stderr 写 3 行（含 CRLF 与非法 UTF-8 之外的普通文本），然后退出。

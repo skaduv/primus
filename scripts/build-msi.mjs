@@ -590,6 +590,11 @@ async function main() {
         `内置 node.exe 的签名不是有效的 OpenJS 官方签名：${nodeSignature.Status} ${nodeSignature.Subject}`,
       );
     console.log(`✓ 内置 node.exe 保留 OpenJS 官方签名（${nodeSignature.Subject}）`);
+    // 内置 Python（ADR 0010）随 dist/runtime 整目录打包，缺了说明 build:core 不完整
+    if (!existsSync(join(runtimeDir, "python/python.exe")) || !manifest?.runtime?.python)
+      fail(
+        `未找到内置 Python（dist/runtime/python），请先运行 pnpm build:core --platform ${nodePlatform}`,
+      );
     // 内置运行时须与目标架构一致：x64 的 node.exe 打进 arm64 包（或反之）会在仿真下运行甚至无法启动
     const problem = checkRuntimePlatform(manifest, arch);
     if (problem) fail(problem);

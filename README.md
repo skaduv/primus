@@ -67,7 +67,8 @@ primus/
 
 | 工具 | 版本 |
 |---|---|
-| Node.js | 24.22.1 LTS（见 `.node-version`） |
+| Node.js | 24.22.3 LTS（见 `.node-version`） |
+| Python（内置） | 3.14.10 + pip 26.3（见 `scripts/python-runtime.json`，ADR 0010） |
 | pnpm | 12.15.0 |
 | Rust | 1.99.1（见 `rust-toolchain.toml`） |
 | WiX Toolset | 7.0.0（仅 Windows，打包 MSI 时需要） |
@@ -114,10 +115,12 @@ dist/
 │  └─ extensions/              pnpm build:extensions 写入（不计入 manifest）
 └─ runtime/                    → <安装目录>\resources\runtime\
    ├─ node.exe                 Node.js LTS 官方 win-x64 / win-arm64 运行时（按 --platform，保留 OpenJS 签名）
-   └─ LICENSE
+   ├─ LICENSE
+   └─ python/                  CPython 官方 embed 包（amd64 / arm64）+ pip，保留 PSF 签名（ADR 0010）
 ```
 
 - 运行时版本与哈希锁定在 `scripts/node-runtime.json`（版本须与基线一致，`check-versions.mjs` 校验）：下载 nodejs.org 官方 zip，先与官方 `SHASUMS256.txt` 交叉核对、再校验仓库里固化的 zip 哈希，只解出 `node.exe` 与 `LICENSE` 并逐个校验哈希；npm、文档、示例不打包。下载缓存在 `node_modules/.cache/primus-runtime/`。
+- 内置 Python 锁定在 `scripts/python-runtime.json`：embed 包与 pip 轮子都校验固化的 SHA-256，`._pth` 启用 `site` 并加入 `Lib\site-packages`。Core 进程的 `PATH` 最前是内置 Python，`pip install` 装到 `data/users/<SID>/python/site-packages`（`PIP_TARGET`），不写安装目录；PowerShell 中可直接用 `pip`，bash 中用 `python -m pip`。
 - `--skip-build` 只用已有构建产物重新组装；`--platform current` 不下载运行时（非 Windows 本地调试用，冒烟改用当前 node）。例：`pnpm build:core --skip-build --platform current`。
 - `node.exe` 的 Authenticode 签名在 Windows CI 上用 `Get-AuthenticodeSignature` 检查；CI 会上传 `dist/` 产物（保留 7 天），可拿到干净的 Windows 上直接 `runtime\node.exe agent-core\rpc-entry.js` 验收。
 

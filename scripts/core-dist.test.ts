@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,15 +10,20 @@ import {
   buildManifest,
   CORE_LICENSE_FILE,
   copyCoreLicense,
+  findPthFile,
   globToRegExp,
   isCompleteMitLicense,
   listFiles,
   listZipEntries,
   MIT_LICENSE_BODY,
+  PIP_CMD,
+  PYTHON_SITECUSTOMIZE,
   parseShasums,
+  patchPythonPth,
   pickFiles,
   readZipEntry,
   runtimePackageJson,
+  safeZipPath,
   selectRuntimeEntries,
   sha256,
   verifyManifest,
@@ -84,7 +90,7 @@ function makeZip(files: { name: string; data: string; deflate?: boolean }[]): Bu
   return Buffer.concat([...locals, cen, eocd]);
 }
 
-const TOP = "node-v24.22.1-win-x64";
+const TOP = "node-v24.22.3-win-x64";
 const DIST_ZIP = () =>
   makeZip([
     { name: `${TOP}/`, data: "" },
@@ -112,9 +118,9 @@ describe("parseShasums", () => {
     const a = "a".repeat(64);
     const b = "B".repeat(64);
     const map = parseShasums(
-      `${a}  node-v24.22.1-win-x64.zip\r\n${b} *node.tar.xz\n\n-----BEGIN\n`,
+      `${a}  node-v24.22.3-win-x64.zip\r\n${b} *node.tar.xz\n\n-----BEGIN\n`,
     );
-    expect(map.get("node-v24.22.1-win-x64.zip")).toBe(a);
+    expect(map.get("node-v24.22.3-win-x64.zip")).toBe(a);
     expect(map.get("node.tar.xz")).toBe("b".repeat(64));
     expect(map.size).toBe(2);
   });
@@ -281,5 +287,122 @@ describe("Core 许可文件", () => {
     expect(() =>
       copyCoreLicense(fileURLToPath(new URL("../agent-core", import.meta.url)), dist),
     ).not.toThrow();
+  });
+});
+
+describe("内置 Python（ADR 0010）", () => {
+  const EMBED_PTH =
+    "python314.zip\r\n.\r\n\r\n# Uncomment to run site.main() automatically\r\n#import site\r\n";
+
+  it("patchPythonPth 加入 Lib\\site-packages 并启用 import site", () => {
+    expect(patchPythonPth(EMBED_PTH)).toBe(
+      "python314.zip\r\n.\r\nLib\\site-packages\r\nimport site\r\n",
+    );
+    // 幂等：再改一次结果不变
+    expect(patchPythonPth(patchPythonPth(EMBED_PTH))).toBe(patchPythonPth(EMBED_PTH));
+  });
+
+  it("patchPythonPth 缺少标准库 zip 时报错", () => {
+    expect(() => patchPythonPth(".\r\n#import site\r\n")).toThrow(/python3xx\.zip/);
+  });
+
+  it("findPthFile 只接受唯一的 python3xx._pth", () => {
+    expect(findPthFile(["python.exe", "python314._pth", "python314.zip"])).toBe("python314._pth");
+    expect(() => findPthFile(["python.exe"])).toThrow(/._pth/);
+    expect(() => findPthFile(["python313._pth", "python314._pth"])).toThrow(/._pth/);
+  });
+
+  it("safeZipPath 跳过目录、拒绝越界路径", () => {
+    expect(safeZipPath("pip/__init__.py")).toBe("pip/__init__.py");
+    expect(safeZipPath("pip\\_vendor\\x.py")).toBe("pip/_vendor/x.py");
+    expect(safeZipPath("pip/")).toBeNull();
+    for (const bad of ["../evil.py", "/abs.py", "C:/x.py", "a//b.py", "a/./b.py"])
+      expect(() => safeZipPath(bad)).toThrow(/不安全/);
+  });
+
+  it("sitecustomize 与 pip.cmd 内容", () => {
+    expect(PYTHON_SITECUSTOMIZE).toContain('os.environ.get("PRIMUS_PYTHON_PACKAGES")');
+    expect(PYTHON_SITECUSTOMIZE).toContain("site.addsitedir(packages)");
+    // ._pth 隔离模式下补回 PYTHONPATH（pip 隔离构建）、脚本目录（safe_path）并重定向字节码
+    expect(PYTHON_SITECUSTOMIZE).toContain('os.environ.get("PYTHONPATH", "")');
+    expect(PYTHON_SITECUSTOMIZE).toContain("build_site = entry");
+    expect(PYTHON_SITECUSTOMIZE).toContain("_restore_home(before)");
+    expect(PYTHON_SITECUSTOMIZE).toContain('if sys.flags.safe_path and not explicit & {"I", "P"}:');
+    expect(PYTHON_SITECUSTOMIZE).toContain('if not explicit & {"I", "E"}:');
+    expect(PYTHON_SITECUSTOMIZE).toContain('.startswith("pip-build-env-")');
+    expect(PYTHON_SITECUSTOMIZE).toContain("sys.pycache_prefix =");
+    expect(PYTHON_SITECUSTOMIZE).toContain("sys.dont_write_bytecode = True");
+    expect(PIP_CMD).toBe('@"%~dp0python.exe" -B -m pip %*\r\n');
+  });
+
+  const python3 = spawnSync("python3", ["--version"]).status === 0;
+  it.skipIf(!python3)("sitecustomize 按 sys.orig_argv 识别显式隔离选项", () => {
+    const cases: [string[], string[]][] = [
+      [["python", "--check-hash-based-pycs", "always", "-I", "s.py"], ["I"]],
+      [["python", "-Bc", "import_P"], ["B"]],
+      [
+        ["python", "-BI", "s.py"],
+        ["B", "I"],
+      ],
+      [["python", "-X", "dev", "-P", "s.py"], ["P"]],
+      [["python", "-Xdev", "-E", "s.py"], ["E"]],
+      [["python", "-W", "ignore", "-mpip"], []],
+      [["python", "s.py", "-I"], []],
+    ];
+    const head = PYTHON_SITECUSTOMIZE.split("def _primus_setup")[0];
+    const script = `import json, sys\nns = {}\nexec(sys.stdin.read(), ns)\nout = []\nfor argv in json.loads(sys.argv[1]):\n    sys.orig_argv = argv\n    out.append(sorted(ns["_explicit_flags"]()))\nprint(json.dumps(out))`;
+    const result = spawnSync(
+      "python3",
+      ["-S", "-c", script, JSON.stringify(cases.map((c) => c[0]))],
+      {
+        input: head,
+        encoding: "utf8",
+      },
+    );
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual(cases.map((c) => c[1]));
+  });
+
+  it.skipIf(!python3)(
+    "pip 构建环境删掉安装根目录后 sitecustomize 补回它，site-packages 仍排除",
+    () => {
+      const head = PYTHON_SITECUSTOMIZE.split("def _primus_setup")[0];
+      // 模拟 embed 包：sys.prefix 即安装根目录（_socket.pyd 所在），pip 构建环境的 sitecustomize 把
+      // getsitepackages() 里的根目录与 Lib/site-packages 都删掉，并追加构建环境自己的目录
+      const script = [
+        "import json, os, sys, tempfile",
+        "ns = {}",
+        "exec(sys.stdin.read(), ns)",
+        "home = tempfile.mkdtemp()",
+        "sys.prefix = home",
+        "zp = os.path.join(home, 'python314.zip')",
+        "sp = os.path.join(home, 'Lib', 'site-packages')",
+        "env = os.path.join(home, 'pip-build-env-x', 'overlay')",
+        "out = []",
+        "sys.path = [zp, home, sp]",
+        "before = list(sys.path)",
+        "sys.path = [zp, env]",
+        "ns['_restore_home'](before)",
+        "out.append(sys.path)",
+        "sys.path = [zp, home, env]",
+        "ns['_restore_home']([zp, home, sp])",
+        "out.append(sys.path)",
+        "print(json.dumps([[os.path.relpath(p, home) for p in o] for o in out]))",
+      ].join("\n");
+      const result = spawnSync("python3", ["-S", "-c", script], { input: head, encoding: "utf8" });
+      expect(result.stderr).toBe("");
+      const env = join("pip-build-env-x", "overlay");
+      expect(JSON.parse(result.stdout)).toEqual([
+        ["python314.zip", ".", env],
+        ["python314.zip", ".", env],
+      ]);
+    },
+  );
+
+  it("python-runtime.json 覆盖 node-runtime.json 的全部平台", () => {
+    const root = fileURLToPath(new URL("..", import.meta.url));
+    const node = JSON.parse(readFileSync(join(root, "scripts/node-runtime.json"), "utf8"));
+    const py = JSON.parse(readFileSync(join(root, "scripts/python-runtime.json"), "utf8"));
+    expect(Object.keys(py.platforms).sort()).toEqual(Object.keys(node.platforms).sort());
   });
 });

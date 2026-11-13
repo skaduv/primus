@@ -4,7 +4,7 @@
   "description": "乾元（Primus）桌面 Agent 应用 monorepo",
   "packageManager": "pnpm@12.15.0",
   "engines": {
-    "node": "24.22.1"
+    "node": "24.22.3"
   },
   "scripts": {
     "dev": "pnpm --filter @primus/desktop tauri dev",

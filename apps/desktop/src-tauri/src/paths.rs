@@ -262,6 +262,14 @@ impl DataPaths {
     pub(crate) fn tmp_dir(&self) -> PathBuf {
         self.user_dir().join("tmp")
     }
+    /// `users/<SID>/python`：内置 Python 的用户数据（ADR 0010），按需由 pip 创建
+    pub(crate) fn python_dir(&self) -> PathBuf {
+        self.user_dir().join("python")
+    }
+    /// `users/<SID>/python/site-packages`：`pip install` 的目标目录（`PIP_TARGET`），脚本在其 `bin/`
+    pub(crate) fn python_packages_dir(&self) -> PathBuf {
+        self.python_dir().join("site-packages")
+    }
     /// `users/<SID>/updates`：自动更新的待装包与 pending.json（ADR 0007）
     pub(crate) fn updates_dir(&self) -> PathBuf {
         self.user_dir().join("updates")

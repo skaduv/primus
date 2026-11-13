@@ -122,6 +122,165 @@ export function selectRuntimeEntries(entries, topDir, wanted) {
   return picked;
 }
 
+// ---- 内置 Python（ADR 0010）----
+
+/**
+ * zip 条目的安全相对路径：统一为 /，去掉目录条目（以 / 结尾，返回 null）；
+ * 绝对路径、盘符、含 .. 或空段的路径一律抛错，防止解包写到目标目录之外。
+ */
+export function safeZipPath(name) {
+  const p = name.replaceAll("\\", "/");
+  if (p.endsWith("/")) return null;
+  const parts = p.split("/");
+  if (
+    p.startsWith("/") ||
+    /^[A-Za-z]:/.test(p) ||
+    parts.some((s) => s === "" || s === "." || s === "..")
+  )
+    throw new Error(`zip 条目路径不安全：${name}`);
+  return p;
+}
+
+/** embed 包里 `python<主><次>._pth` 的文件名（如 python314._pth）；找不到或不止一个都抛错 */
+export function findPthFile(names) {
+  const found = names.filter((n) => /^python3\d+\._pth$/.test(n));
+  if (found.length !== 1)
+    throw new Error(`embed 包中应有且只有一个 python3xx._pth，实际：${found.join(", ") || "无"}`);
+  return found[0];
+}
+
+/**
+ * 改写 embed 包的 `._pth`：加入 `Lib\site-packages`（内置 pip 与 sitecustomize 所在）并启用 `import site`。
+ * `._pth` 存在时 Python 处于隔离模式（忽略 PYTHON* 环境变量与注册表），sys.path 只由这里决定；
+ * 用户自己安装的包由 sitecustomize 按 PRIMUS_PYTHON_PACKAGES 加入（见 PYTHON_SITECUSTOMIZE）。
+ */
+export function patchPythonPth(text) {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "" && !l.startsWith("#") && l !== "import site");
+  if (!lines.some((l) => /^python3\d+\.zip$/.test(l)))
+    throw new Error("._pth 中缺少标准库 python3xx.zip，embed 包布局可能有变");
+  if (!lines.some((l) => l.toLowerCase() === "lib\\site-packages"))
+    lines.push("Lib\\site-packages");
+  lines.push("import site");
+  return `${lines.join("\r\n")}\r\n`;
+}
+
+/**
+ * 写进 `Lib\site-packages\sitecustomize.py`。embed 包的 `._pth` 让解释器运行在隔离模式（忽略 PYTHON* 环境变量、
+ * `safe_path`），这里补回普通 Python 的三处行为：
+ * 1. `PYTHONPATH`：pip 默认的隔离构建（virtual）靠它注入构建环境自己的 sitecustomize。只恢复 pip 隔离构建目录
+ *    （临时目录下的 `pip-build-env-xxx\site`）：放进 sys.path 并执行其中的 sitecustomize，不加入用户包；
+ *    其他 `PYTHONPATH` 一律不生效（薄壳也会清掉继承的值）。
+ * 2. 脚本目录：`python main.py` 的同目录模块、`python -m pkg` 的当前目录、`-c` / 交互模式的 ''，按标准规则放到 sys.path[0]。
+ *    命令行显式给出 `-I` / `-E` 时不恢复 `PYTHONPATH`，`-I` / `-P` 时不恢复脚本目录（以 sys.orig_argv 判断）。
+ * 3. 用户包与字节码：加入薄壳经 PRIMUS_PYTHON_PACKAGES 指定、数据目录中的包目录（pip 经 PIP_TARGET 装到那里），
+ *    `.pyc` 缓存重定向到同级 `pycache`；没有该变量时不写字节码，避免在安装目录生成 `__pycache__`（约束 C2）。
+ */
+export const PYTHON_SITECUSTOMIZE = `# 乾元 Primus 内置 Python：补回 ._pth 隔离模式关掉的行为（ADR 0010）
+import os
+import site
+import sys
+
+
+def _explicit_flags():
+    # 命令行上显式给出的解释器选项（-I / -E / -P 等）：用户明确要求的隔离不能被下面的兼容逻辑放宽
+    flags = set()
+    args = list(getattr(sys, "orig_argv", [])[1:])
+    while args:
+        arg = args.pop(0)
+        if arg == "--" or arg == "-" or not arg.startswith("-"):
+            break
+        if arg.startswith("--"):
+            # 唯一带参数的长选项；其余长选项（--help、--version 等）不带参数，继续扫描后面的短选项
+            if arg == "--check-hash-based-pycs" and args:
+                args.pop(0)
+            continue
+        for index, ch in enumerate(arg[1:], 1):
+            if ch in "cm":
+                return flags
+            if ch in "WX":
+                if index == len(arg) - 1 and args:
+                    args.pop(0)
+                break
+            flags.add(ch)
+    return flags
+
+
+def _restore_home(before):
+    # embed 包里 site.getsitepackages() 含安装根目录（sys.prefix），pip 构建环境的 sitecustomize 会把它当作系统
+    # site 目录从 sys.path 删掉；而 _socket.pyd 等标准库扩展模块就在根目录，删掉后构建后端无法导入。
+    # 只补回根目录本身，Lib\\site-packages（内置 pip、用户包）仍按 pip 的意图排除在构建环境外
+    home = os.path.normcase(os.path.abspath(sys.prefix))
+    current = [os.path.normcase(os.path.abspath(p)) if p else p for p in sys.path]
+    if home in current:
+        return
+    for index, entry in enumerate(before):
+        if entry and os.path.normcase(os.path.abspath(entry)) == home:
+            # 放回原来的相对位置：紧跟在它之前、仍留在 sys.path 里的那一项后面
+            anchor = 0
+            for prev in reversed(before[:index]):
+                if prev in sys.path:
+                    anchor = sys.path.index(prev) + 1
+                    break
+            sys.path.insert(anchor, entry)
+            return
+
+
+def _primus_setup():
+    explicit = _explicit_flags()
+    packages = os.environ.get("PRIMUS_PYTHON_PACKAGES")
+    if packages:
+        sys.pycache_prefix = os.path.join(os.path.dirname(os.path.abspath(packages)), "pycache")
+    else:
+        sys.dont_write_bytecode = True
+
+    # 只恢复 pip 默认隔离构建（virtual）设置的 PYTHONPATH：<临时目录>/pip-build-env-*/site，其中的 sitecustomize
+    # 负责加载构建后端；用户环境里的 PYTHONPATH 不生效（薄壳也会清掉），构建环境中不放用户包
+    build_site = None
+    if not explicit & {"I", "E"}:
+        for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+            entry = os.path.abspath(entry) if entry else ""
+            if (
+                os.path.basename(entry) == "site"
+                and os.path.basename(os.path.dirname(entry)).startswith("pip-build-env-")
+                and os.path.isfile(os.path.join(entry, "sitecustomize.py"))
+            ):
+                build_site = entry
+                break
+
+    if sys.flags.safe_path and not explicit & {"I", "P"}:
+        argv0 = sys.argv[0] if sys.argv else ""
+        if argv0 in ("", "-c"):
+            path0 = ""
+        elif argv0 == "-m":
+            path0 = os.getcwd()
+        elif os.path.isdir(argv0) or argv0.lower().endswith((".zip", ".pyz")):
+            path0 = argv0
+        else:
+            path0 = os.path.dirname(os.path.realpath(argv0))
+        sys.path.insert(0, path0)
+
+    if build_site:
+        sys.path.insert(1 if sys.flags.safe_path and not explicit & {"I", "P"} else 0, build_site)
+        hook = os.path.join(build_site, "sitecustomize.py")
+        with open(hook, encoding="utf-8") as fp:
+            code = compile(fp.read(), hook, "exec")
+        before = list(sys.path)
+        exec(code, {"__name__": "sitecustomize", "__file__": hook})
+        _restore_home(before)
+    elif packages:
+        site.addsitedir(packages)
+
+
+_primus_setup()
+del _primus_setup
+`;
+
+/** `pip` / `pip3` 命令（PowerShell 与 cmd 按 PATHEXT 找到 .cmd）；`-B` 不在安装目录写字节码。bash 中用 `python -m pip` */
+export const PIP_CMD = '@"%~dp0python.exe" -B -m pip %*\r\n';
+
 // ---- 文件挑选与 manifest ----
 
 /** 把只含 * 与 ** 的简单模式（/ 分隔）转成正则；* 不跨目录，** 可匹配任意层级。 */
