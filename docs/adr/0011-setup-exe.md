@@ -18,7 +18,7 @@ ADR 0007 起只发 MSI。实际分发中，有些 Windows 10 电脑双击 `.msi`
   - x64 版在 ARM64 电脑上拒绝安装，提示改用 arm64 版（否则会装上经仿真运行的 x64 版）。
   - arm64 版只在 ARM64 电脑上安装，其余提示改用 x64 版。Windows 10 1709 之前没有该变量，这些版本也没有 ARM64：x64 版照常安装，arm64 版拒绝。
   - 32 位 Windows 由 `bal:Condition VersionNT64` 拦下并给出中文说明。
-- 安装界面就是 MSI 自己的界面（`bal:DisplayInternalUICondition="WixBundleAction = 6"`）：隐私政策、选择安装目录（约束 C2）与直接装 MSI 一致。引导程序自身只有一页“安装”和进度、结果页，文案为自带的中文 `bundle-zh-CN.wxl`（WiX 只自带英文）。
+- （已由 ADR 0012 取代：exe 改为自己画全部界面，MSI 不再显示内部界面）安装界面就是 MSI 自己的界面（`bal:DisplayInternalUICondition="WixBundleAction = 6"`）：隐私政策、选择安装目录（约束 C2）与直接装 MSI 一致。引导程序自身只有一页“安装”和进度、结果页，文案为自带的中文 `bundle-zh-CN.wxl`（WiX 只自带英文）。
 - `MsiPackage` 设为 `Permanent="yes"`、`Visible="yes"`、`Cache="remove"`：Burn 只在有可卸载的包时登记 bundle，所以 exe 不在“应用和功能”中留下自己的条目，也不在 Package Cache 中保留副本；装好的就是 MSI 本身。`DisableModify` / `DisableRemove` 兜底，重启待定等情况下即使留下登记也不显示。这样应用内自动更新（只认 `windows-<arch>-msi`）、`PrimusUpdate` 服务、卸载与 NSIS 迁移全部沿用 ADR 0007，`update-feed` 不变。
 - MSI 完成页的“立即启动”用 `WixShellExec` 在界面进程中启动 Primus；经 Burn 安装时界面进程是提权进程，会让 Primus 以管理员身份运行。为此 bundle 给 MSI 传 `PRIMUS_BUNDLE=1`，`Primus.wxs` 此时不显示该勾选框；用户从开始菜单或桌面打开。
 - `Bundle.wxs` 的 `UpgradeCode` 固定为 `FD216D87-9A80-4208-A28D-FA4B80241F96`，两个架构共用，与 MSI 的不同，永不改变。

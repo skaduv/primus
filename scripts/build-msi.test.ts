@@ -486,7 +486,15 @@ describe("build-msi", () => {
 
   it("Primus.wxs 的关键安装行为（第 3.3.2 节）", () => {
     const wxs = readFileSync(WXS, "utf8");
-    expect(wxs).toContain('<ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />');
+    // 自己的安装界面 PrimusUI（ADR 0012）：安装目录可选（约束 C2），已装过时沿用原目录
+    expect(wxs).toContain("<?include PrimusUI.wxi ?>");
+    expect(wxs).toContain('<UIRef Id="PrimusUI" />');
+    const ui = readFileSync(WXS.replace("Primus.wxs", "PrimusUI.wxi"), "utf8");
+    expect(ui).toContain('<Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />');
+    expect(ui).toContain('<Property Id="ARPNOMODIFY" Value="1" />');
+    expect(ui).toMatch(
+      /<Control Id="Folder" Type="PathEdit"[^>]*DisableCondition="PRIMUS_FOLDER_LOCKED"/,
+    );
     expect(wxs).toMatch(/<Component Id="DataDir" Permanent="yes"/);
     expect(wxs).toContain('User="[WIX_ACCOUNT_USERS]"');
     expect(wxs).toContain("<util:QueryWindowsWellKnownSIDs />");

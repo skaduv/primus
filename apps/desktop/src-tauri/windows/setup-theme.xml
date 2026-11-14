@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  exe 安装程序 PrimusSetup 的界面（WixStandardBootstrapperApplication 自定义主题，ADR 0011 / 0012）。
+  与 MSI 自己的界面（Primus.wxs 的 PrimusUI）是同一套设计，页面、文案、按钮位置一一对应：
+
+    准备安装（隐私政策 + 同意 + 安装位置） → 正在安装（进度条） → 安装完成（立即启动 / 完成） | 安装未完成
+
+  - 顶部白色页眉：左侧页标题与版本，右侧标志，下方分隔线；底部分隔线 + 右下角按钮。
+  - 进度页只有一条进度条与一行固定说明，不显示随时变化的“正在处理：<动作>”文字（频繁重绘是闪烁的主要来源）。
+  - 文字控件不叠在图片上：标志单独一块，标题在白底上，避免透明控件重绘时闪烁。
+  - 尺寸按 MSI 对话框 370×270 安装单位（约 555×405 像素）对齐，两种安装方式看起来是同一个程序。
+  控件名（EulaRichedit、EulaAcceptCheckbox、InstallFolder、InstallButton…）是 WixStdBA 认识的固定名字，不能改。
+-->
+<Theme xmlns="http://wixtoolset.org/schemas/v4/thmutil">
+    <Font Id="Normal" Height="-12" Weight="400" Foreground="windowtext" Background="window">Microsoft YaHei UI</Font>
+    <Font Id="Title" Height="-16" Weight="700" Foreground="windowtext" Background="window">Microsoft YaHei UI</Font>
+    <Font Id="Muted" Height="-12" Weight="400" Foreground="graytext" Background="window">Microsoft YaHei UI</Font>
+    <Font Id="Button" Height="-12" Weight="400" Foreground="btntext" Background="btnface">Microsoft YaHei UI</Font>
+
+    <Window Width="555" Height="405" HexStyle="100a0000" FontId="Normal" Caption="#(loc.Caption)">
+        <!-- 页眉：标志在右，下方一条分隔线（各页的标题在页里） -->
+        <ImageControl X="-20" Y="11" Width="44" Height="44" ImageFile="logo.png" Visible="yes" />
+        <Label X="0" Y="66" Width="555" Height="2" HexStyle="10" Visible="yes" />
+        <!-- 底部按钮区上方的分隔线 -->
+        <Label X="0" Y="-52" Width="555" Height="2" HexStyle="10" Visible="yes" />
+
+        <Page Name="Loading">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.InstallTitle)</Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label Name="CheckingForUpdatesLabel" X="30" Y="90" Width="-30" Height="20" FontId="Muted" DisablePrefix="yes" Visible="no" />
+        </Page>
+
+        <Page Name="Help">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.HelpHeader)</Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label X="30" Y="86" Width="-30" Height="-66" FontId="Normal" DisablePrefix="yes">#(loc.HelpText)</Label>
+            <Button Name="HelpCloseButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+                <Text>#(loc.HelpCloseButton)</Text>
+                <CloseWindowAction />
+            </Button>
+        </Page>
+
+        <!-- 准备安装：与 MSI 的 PrimusInstallDlg 相同 -->
+        <Page Name="Install">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.InstallTitle)</Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label X="30" Y="80" Width="-30" Height="20" FontId="Normal" DisablePrefix="yes">#(loc.InstallPrivacyLabel)</Label>
+            <!-- 带边框的隐私政策（Privacy.rtf，与 MSI 同一个文件） -->
+            <Label X="30" Y="102" Width="-30" Height="146" TabStop="no" FontId="Normal" HexStyle="800000" DisablePrefix="yes" />
+            <Richedit Name="EulaRichedit" X="31" Y="103" Width="-31" Height="144" TabStop="yes" FontId="Normal" />
+            <Checkbox Name="EulaAcceptCheckbox" X="30" Y="254" Width="-30" Height="22" TabStop="yes" FontId="Normal">#(loc.InstallAcceptCheckbox)</Checkbox>
+            <Label X="30" Y="286" Width="90" Height="20" FontId="Normal" DisablePrefix="yes">#(loc.InstallFolderLabel)</Label>
+            <Label X="120" Y="286" Width="-30" Height="20" FontId="Muted" DisablePrefix="yes" VisibleCondition="PrimusFolderLocked">#(loc.InstallFolderLockedText)</Label>
+            <Editbox Name="InstallFolder" X="30" Y="308" Width="-124" Height="26" TabStop="yes" FontId="Normal" FileSystemAutoComplete="yes" EnableCondition="NOT PrimusFolderLocked" />
+            <Button Name="BrowseButton" X="-30" Y="307" Width="88" Height="28" TabStop="yes" FontId="Button" EnableCondition="NOT PrimusFolderLocked">
+                <Text>#(loc.InstallBrowseButton)</Text>
+                <BrowseDirectoryAction VariableName="InstallFolder" />
+            </Button>
+            <Button Name="InstallButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.InstallInstallButton)</Button>
+            <Button Name="InstallCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+                <Text>#(loc.InstallCancelButton)</Text>
+                <CloseWindowAction />
+            </Button>
+        </Page>
+
+        <!-- 正在安装：与 MSI 的 PrimusProgressDlg 相同（只有进度条，不显示逐个动作的文字） -->
+        <Page Name="Progress">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ProgressHeader)</Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label X="30" Y="90" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes">#(loc.ProgressText)</Label>
+            <Progressbar Name="OverallCalculatedProgressbar" X="30" Y="138" Width="-30" Height="18" />
+            <Button Name="ProgressCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.ProgressCancelButton)</Button>
+        </Page>
+
+        <!-- 静默 / 被动安装（/passive）时的进度窗口 -->
+        <Page Name="ProgressPassive">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ProgressHeader)</Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Progressbar Name="OverallCalculatedProgressbar" X="30" Y="138" Width="-30" Height="18" />
+            <Button Name="ProgressCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.ProgressCancelButton)</Button>
+        </Page>
+
+        <!-- exe 不在“应用和功能”中登记自己（ADR 0011），正常不会出现修改页；保留以防万一 -->
+        <Page Name="Modify">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">#(loc.ModifyHeader)</Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Button Name="RepairButton" X="-210" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.ModifyRepairButton)</Button>
+            <Button Name="UninstallButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">#(loc.ModifyUninstallButton)</Button>
+            <Button Name="ModifyCancelButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+                <Text>#(loc.ModifyCancelButton)</Text>
+                <CloseWindowAction />
+            </Button>
+        </Page>
+
+        <!-- 安装完成：与 MSI 的 PrimusExitDlg 相同（立即启动 / 完成）。启动在 exe 自己的非提权进程中进行 -->
+        <Page Name="Success">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">
+                <Text>#(loc.SuccessHeader)</Text>
+                <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.SuccessUninstallHeader)</Text>
+                <Text Condition="WixBundleAction = 8">#(loc.SuccessRepairHeader)</Text>
+            </Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Label X="30" Y="90" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes">
+                <Text>#(loc.SuccessText)</Text>
+                <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.SuccessUninstallText)</Text>
+            </Label>
+            <Label X="30" Y="140" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">
+                <Text>#(loc.SuccessRestartText)</Text>
+                <Text Condition="WixBundleAction = 3">#(loc.SuccessUninstallRestartText)</Text>
+            </Label>
+            <Button Name="SuccessRestartButton" X="-210" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.SuccessRestartButton)</Button>
+            <Button Name="LaunchButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.SuccessLaunchButton)</Button>
+            <Button Name="SuccessCloseButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+                <Text>#(loc.SuccessCloseButton)</Text>
+                <CloseWindowAction />
+            </Button>
+        </Page>
+
+        <!-- 安装未完成：与 MSI 的 PrimusFatalDlg 相同，另带日志链接 -->
+        <Page Name="Failure">
+            <Label X="30" Y="14" Width="-80" Height="24" FontId="Title" DisablePrefix="yes">
+                <Text>#(loc.FailureHeader)</Text>
+                <Text Condition="WixBundleAction = 3 OR WixBundleAction = 4">#(loc.FailureUninstallHeader)</Text>
+                <Text Condition="WixBundleAction = 8">#(loc.FailureRepairHeader)</Text>
+            </Label>
+            <Label X="30" Y="40" Width="-80" Height="18" FontId="Muted" DisablePrefix="yes">#(loc.VersionText)</Label>
+            <Hypertext Name="FailureLogFileLink" X="30" Y="90" Width="-30" Height="44" FontId="Normal" TabStop="yes" HideWhenDisabled="yes">#(loc.FailureHyperlinkLogText)</Hypertext>
+            <Hypertext Name="FailureMessageText" X="30" Y="140" Width="-30" Height="100" FontId="Normal" TabStop="yes" HideWhenDisabled="yes" />
+            <Label X="30" Y="250" Width="-30" Height="40" FontId="Normal" DisablePrefix="yes" VisibleCondition="WixStdBARestartRequired">#(loc.FailureRestartText)</Label>
+            <Button Name="FailureRestartButton" X="-112" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button" HideWhenDisabled="yes">#(loc.FailureRestartButton)</Button>
+            <Button Name="FailureCloseButton" X="-14" Y="-13" Width="88" Height="28" TabStop="yes" FontId="Button">
+                <Text>#(loc.FailureCloseButton)</Text>
+                <CloseWindowAction />
+            </Button>
+        </Page>
+    </Window>
+</Theme>

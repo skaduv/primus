@@ -68,6 +68,12 @@ def main() -> None:
     img.alpha_composite(mark, ((493 - 14) * S - mark.width, (58 * S - mark.height) // 2))
     finish(img, 493, 58, "wix-banner.bmp")
 
+    # exe 安装程序页眉右侧的标志 44×44（PNG，setup-theme.xml 的 logo.png）：与 MSI 页眉同一个标志、同样白底
+    img = canvas(44, 44, WHITE)
+    mark = logo(38 * S)
+    img.alpha_composite(mark, ((44 * S - mark.width) // 2, (44 * S - mark.height) // 2))
+    img.resize((44, 44), Image.LANCZOS).convert("RGB").save(ART / "setup-logo.png", format="PNG")
+
 
 if __name__ == "__main__":
     main()
