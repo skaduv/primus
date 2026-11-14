@@ -355,6 +355,13 @@ jobs:
         timeout-minutes: 20
         run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2
 
+      # ADR 0011：同一套升级流程，但基准版本改由通用安装程序 PrimusSetup.exe 安装，验证 exe 装的副本也能被应用内更新
+      # 静默升级，且升级前后“应用和功能”里都只有一个 MSI 条目、没有 Burn bundle 的登记
+      - name: 通用安装程序安装后的静默升级冒烟
+        shell: pwsh
+        timeout-minutes: 20
+        run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -BaseExe (Get-Item out/setup/PrimusSetup_*_zh-CN.exe).FullName -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2 -LogDir (Join-Path $env:RUNNER_TEMP 'update-smoke-exe')
+
       # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
       - name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}
         run: cargo install tauri-driver --locked --version ${{ env.TAURI_DRIVER_VERSION }}

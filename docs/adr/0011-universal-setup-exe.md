@@ -18,7 +18,7 @@ ADR 0007 起只发 MSI。实际分发中，有些 Windows 10 电脑双击 `.msi`
 - 两个 `MsiPackage` 都设为 `Permanent="yes"`、`Visible="yes"`、`Cache="remove"`：Burn 只在有可卸载的包时登记 bundle，所以 exe 不在“应用和功能”中留下自己的条目，也不在 Package Cache 中保留副本；装好的就是 MSI 本身。`DisableModify` / `DisableRemove` 兜底，重启待定等情况下即使留下登记也不显示。这样应用内自动更新（只认 `windows-<arch>-msi`）、`PrimusUpdate` 服务、卸载与 NSIS 迁移全部沿用 ADR 0007，`update-feed` 不变。
 - MSI 完成页的“立即启动”用 `WixShellExec` 在界面进程中启动 Primus；经 Burn 安装时界面进程是提权进程，会让 Primus 以管理员身份运行。为此 bundle 给 MSI 传 `PRIMUS_BUNDLE=1`，`Primus.wxs` 此时不显示该勾选框；用户从开始菜单或桌面打开。
 - `Bundle.wxs` 的 `UpgradeCode` 固定为 `FD216D87-9A80-4208-A28D-FA4B80241F96`，与 MSI 的不同，永不改变。
-- 发布工作流：矩阵构建两个 MSI 后，`setup-exe` 作业（取工作流自身提交中的 `Bundle.wxs` 与脚本）构建 exe，`setup-exe-smoke` 在 x64 与 ARM64 运行器上各做一次静默安装 / 卸载冒烟（`scripts/setup-exe-smoke.ps1`：只有 MSI 的卸载条目、没有 bundle 登记、版本记录正确、`Primus.exe` 架构与本机一致），全部通过后才发布。CI 的 x64 作业用只含 x64 MSI 的 exe（`--allow-missing-arm64`，不能发布）做同样的冒烟。
+- 发布工作流：矩阵构建两个 MSI 后，`setup-exe` 作业（取工作流自身提交中的 `Bundle.wxs` 与脚本）构建 exe，`setup-exe-smoke` 在 x64 与 ARM64 运行器上各做一次静默安装 / 卸载冒烟（`scripts/setup-exe-smoke.ps1`：只有 MSI 的卸载条目、没有 bundle 登记、版本记录正确、`Primus.exe` 架构与本机一致），全部通过后才发布。CI 的 x64 作业用只含 x64 MSI 的 exe（`--allow-missing-arm64`，不能发布）做同样的冒烟。该作业还用这个 exe 安装基准版本，再跑一遍 `update-service-smoke.ps1 -BaseExe`：确认 exe 装的副本能被应用内更新静默升级，升级前后“应用和功能”里都只有一个 MSI 条目、没有 bundle 登记。
 - 与 MSI 一样不做 Authenticode 签名，首次运行同样有 SmartScreen 提示。
 
 ## 后果
