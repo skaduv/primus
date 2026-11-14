@@ -1,25 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  乾元 Primus 通用安装程序 PrimusSetup_<ver>_zh-CN.exe（WiX 7 Burn，ADR 0011）。由 scripts/build-setup-exe.mjs 构建：
+  乾元 Primus exe 安装程序 PrimusSetup_<ver>_<x64|arm64>_zh-CN.exe（WiX 7 Burn，ADR 0011）。每个架构一个，
+  各内嵌同架构的一个 MSI。由 scripts/build-setup-exe.mjs 构建：
 
     wix build Bundle.wxs -arch x86 -acceptEula wix7 -ext WixToolset.BootstrapperApplications.wixext
       -d ProductVersion=<与 MSI 相同的 主.次.修订.构建> -d ShellDir=<apps/desktop/src-tauri>
-      -d X64Msi=<Primus_<ver>_x64_zh-CN.msi> -d Arm64Msi=<Primus_<ver>_arm64_zh-CN.msi>
+      -d Arch=<x64|arm64> -d Msi=<Primus_<ver>_<arch>_zh-CN.msi>
 
   为什么要有它：部分电脑的 .msi 文件关联被改坏（双击提示“Windows 无法识别此类型的文件”或打不开）。exe 由 Burn 直接调用
-  Windows Installer API 安装内嵌的 MSI，不经文件关联；一个 exe 同时适用于 x64 与 ARM64。
+  Windows Installer API 安装内嵌的 MSI，不经文件关联。
 
-  - 引擎为 x86：x64 与 ARM64（经 x86 仿真）的 Windows 都能运行；32 位 Windows 由 bal:Condition 拦下并给出中文说明
-  - 按本机原生架构（NativeMachine：0xAA64 = 43620 为 ARM64）只安装一个 MSI；Windows 10 1709 之前没有 NativeMachine，
-    这些版本没有 ARM64，按 x64 处理
+  - 两个 exe 的引擎都是 x86：x64 与 ARM64（经 x86 仿真）的 Windows 都能运行它，下错架构时能用中文说明原因，
+    而不是 Windows 的“此应用无法在你的电脑上运行”。32 位 Windows 同样由 bal:Condition 拦下
+  - 架构判断用 Burn 的 NativeMachine（0xAA64 = 43620 为 ARM64）：x64 版在 ARM64 电脑上拒绝安装、提示改用 arm64 版
+    （否则会装上经仿真运行的 x64 版）；arm64 版只在 ARM64 电脑上安装。Windows 10 1709 之前没有 NativeMachine，
+    这些版本没有 ARM64：x64 版照常安装，arm64 版拒绝
   - 安装界面就是 MSI 自己的界面（bal:DisplayInternalUICondition）：隐私政策、选择安装目录（约束 C2）与原来一致
-  - 两个 MSI 都是 Permanent：Burn 只在有可卸载的包时才登记 bundle，因此 exe 不在“应用和功能”中留下自己的条目，
+  - MSI 是 Permanent：Burn 只在有可卸载的包时才登记 bundle，因此 exe 不在“应用和功能”中留下自己的条目，
     已装好的就是 MSI 本身（Visible="yes"）。之后的应用内自动更新、卸载、PrimusUpdate 服务都与直接装 MSI 完全相同；
     DisableModify / DisableRemove 再兜底：即使因重启待定等原因留下登记，也不在“应用和功能”中显示
   - Cache="remove"：装完不在 Package Cache 中保留 MSI 副本（与从下载目录直接装 MSI 一样）
   - 经 exe 安装时传 PRIMUS_BUNDLE=1：MSI 界面在 Burn 的提权进程中运行，完成页的“立即启动”会以管理员身份拉起 Primus，
     所以 Primus.wxs 在此时不显示该勾选框
-  UpgradeCode 与 MSI 的不同，一经发布永不改变。
+  UpgradeCode 与 MSI 的不同，两个架构共用，一经发布永不改变。
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
@@ -37,20 +40,21 @@
 
     <bal:Condition Condition="VersionNT64"
                    Message="乾元 Primus 只支持 64 位 Windows（x64 或 ARM64），这台电脑是 32 位系统，无法安装。" />
+<?if $(Arch) = "x64" ?>
+    <bal:Condition Condition="NOT (NativeMachine = 43620)"
+                   Message="这台电脑是 ARM64 架构，请改用 ARM64 版安装程序（文件名中带 arm64 的 PrimusSetup）。" />
+<?elseif $(Arch) = "arm64" ?>
+    <bal:Condition Condition="NativeMachine = 43620"
+                   Message="这台电脑不是 ARM64 架构，请改用 x64 版安装程序（文件名中带 x64 的 PrimusSetup）。" />
+<?else?>
+    <?error Arch 只能是 x64 或 arm64 ?>
+<?endif?>
 
     <Chain>
-      <MsiPackage Id="PrimusX64" SourceFile="$(X64Msi)" Compressed="yes" Permanent="yes" Visible="yes" Cache="remove"
-                  InstallCondition="NOT (NativeMachine = 43620)"
+      <MsiPackage Id="Primus" SourceFile="$(Msi)" Compressed="yes" Permanent="yes" Visible="yes" Cache="remove"
                   bal:DisplayInternalUICondition="WixBundleAction = 6">
         <MsiProperty Name="PRIMUS_BUNDLE" Value="1" />
       </MsiPackage>
-<?ifdef Arm64Msi?>
-      <MsiPackage Id="PrimusArm64" SourceFile="$(Arm64Msi)" Compressed="yes" Permanent="yes" Visible="yes" Cache="remove"
-                  InstallCondition="NativeMachine = 43620"
-                  bal:DisplayInternalUICondition="WixBundleAction = 6">
-        <MsiProperty Name="PRIMUS_BUNDLE" Value="1" />
-      </MsiPackage>
-<?endif?>
     </Chain>
   </Bundle>
 </Wix>

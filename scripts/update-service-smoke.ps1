@@ -19,7 +19,7 @@
   基准 MSI（版本即 tauri.conf.json 的版本）。
 
 .PARAMETER BaseExe
-  可选：通用安装程序 PrimusSetup_<ver>_zh-CN.exe（ADR 0011）。给出时基准版本改由它静默安装（内嵌的 MSI 须与 -Msi 同版本），
+  可选：exe 安装程序 PrimusSetup_<ver>_<arch>_zh-CN.exe（ADR 0011）。给出时基准版本改由它静默安装（内嵌的 MSI 须与 -Msi 相同），
   其余步骤不变，并额外验证：exe 安装后与每次升级后“应用和功能”里都只有一个 MSI 条目、没有 Burn bundle 的登记，
   即用 exe 装的副本也能被应用内更新正常升级。exe 不接受自定义安装目录，只能装到默认的 Program Files\Primus。
 
@@ -89,7 +89,7 @@ function Invoke-Msiexec([string[]] $Arguments, [string] $LogName) {
   }
 }
 
-# 通用安装程序（Burn）静默安装；与 setup-exe-smoke.ps1 相同的调用方式
+# exe 安装程序（Burn）静默安装；与 setup-exe-smoke.ps1 相同的调用方式
 function Invoke-SetupExe([string] $Path, [string] $LogName) {
   $log = Join-Path $LogDir $LogName
   Write-Host "  $(Split-Path -Leaf $Path) /quiet /norestart /log `"$log`""
@@ -97,14 +97,14 @@ function Invoke-SetupExe([string] $Path, [string] $LogName) {
   $null = $p.Handle
   if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-    throw "✗ 通用安装程序超过 $TimeoutSeconds 秒未结束（日志 $log）"
+    throw "✗ exe 安装程序超过 $TimeoutSeconds 秒未结束（日志 $log）"
   }
   if ($p.ExitCode -notin 0, 3010) {
     Get-ChildItem -Path $LogDir -Filter "$([IO.Path]::GetFileNameWithoutExtension($LogName))*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
       Write-Host "    ---- $($_.Name)"
       Get-Content -LiteralPath $_.FullName -Tail 60 | ForEach-Object { Write-Host "    $_" }
     }
-    throw "✗ 通用安装程序失败，退出码 $($p.ExitCode)（日志 $log）"
+    throw "✗ exe 安装程序失败，退出码 $($p.ExitCode)（日志 $log）"
   }
 }
 
@@ -174,7 +174,7 @@ function Start-Holder([int] $Seconds) {
 
 try {
   if ($BaseExe) {
-    Write-Step "用通用安装程序安装基准版本 $BaseVersion → $InstallDir"
+    Write-Step "用 exe 安装程序安装基准版本 $BaseVersion → $InstallDir"
     Invoke-SetupExe $BaseExe 'base-setup.log'
     Assert-SingleMsiEntry 'exe 安装后'
   } else {
@@ -239,5 +239,5 @@ try {
   }
 }
 
-$how = if ($BaseExe) { '，基准版本由通用安装程序安装' } else { '' }
+$how = if ($BaseExe) { '，基准版本由 exe 安装程序安装' } else { '' }
 Write-Host "`n✓ 更新服务静默升级冒烟通过（$BaseVersion → $Version1 → $Version2$how）" -ForegroundColor Green

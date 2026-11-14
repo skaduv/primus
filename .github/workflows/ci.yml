@@ -326,14 +326,14 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
-      # ADR 0011：通用安装程序 PrimusSetup.exe（Burn）。本作业只有 x64 MSI，exe 只含它（--allow-missing-arm64，不能发布），
-      # 用来验证 Bundle.wxs 能构建、exe 静默安装后“应用和功能”里只有 MSI 本身、没有 bundle 登记，再按产品代码卸载
-      - name: 构建通用安装程序（仅含 x64 MSI，验证用）
-        run: node scripts/build-setup-exe.mjs --x64 "${{ env.PRIMUS_MSI }}" --allow-missing-arm64 --out-dir out/setup
-      - name: 通用安装程序静默安装 / 卸载冒烟
+      # ADR 0011：exe 安装程序 PrimusSetup_<ver>_x64_zh-CN.exe（Burn，内嵌本作业的 x64 MSI）。静默安装后“应用和功能”里
+      # 只有 MSI 本身、没有 bundle 登记，Primus.exe 的架构与本机一致，再按产品代码卸载
+      - name: 构建 exe 安装程序（x64）
+        run: node scripts/build-setup-exe.mjs --arch x64 --msi "${{ env.PRIMUS_MSI }}" --out-dir out/setup
+      - name: exe 安装程序静默安装 / 卸载冒烟
         shell: pwsh
         timeout-minutes: 15
-        run: ./scripts/setup-exe-smoke.ps1 -Exe (Get-Item out/setup/PrimusSetup_*_zh-CN.exe).FullName
+        run: ./scripts/setup-exe-smoke.ps1 -Exe (Get-Item out/setup/PrimusSetup_*_x64_zh-CN.exe).FullName
 
       # ADR 0007：同一批二进制换更高的版本号再出两个 MSI（同一把 updater 密钥签 .sig），以中完整性级别经命名管道请求
       # 更新服务：拒绝错签与降级、程序仍在运行时放弃、等程序退出后静默升级、未运行时直接升级，最后卸载清理
@@ -355,12 +355,12 @@ jobs:
         timeout-minutes: 20
         run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2
 
-      # ADR 0011：同一套升级流程，但基准版本改由通用安装程序 PrimusSetup.exe 安装，验证 exe 装的副本也能被应用内更新
-      # 静默升级，且升级前后“应用和功能”里都只有一个 MSI 条目、没有 Burn bundle 的登记
-      - name: 通用安装程序安装后的静默升级冒烟
+      # ADR 0011：同一套升级流程，但基准版本改由 exe 安装程序安装，验证 exe 装的副本也能被应用内更新静默升级，
+      # 且升级前后“应用和功能”里都只有一个 MSI 条目、没有 Burn bundle 的登记
+      - name: exe 安装程序安装后的静默升级冒烟
         shell: pwsh
         timeout-minutes: 20
-        run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -BaseExe (Get-Item out/setup/PrimusSetup_*_zh-CN.exe).FullName -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2 -LogDir (Join-Path $env:RUNNER_TEMP 'update-smoke-exe')
+        run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -BaseExe (Get-Item out/setup/PrimusSetup_*_x64_zh-CN.exe).FullName -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2 -LogDir (Join-Path $env:RUNNER_TEMP 'update-smoke-exe')
 
       # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
       - name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}
@@ -511,6 +511,14 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
+      # ADR 0011：exe 安装程序 PrimusSetup_<ver>_arm64_zh-CN.exe（x86 Burn 引擎经仿真运行，内嵌本作业的 ARM64 MSI）
+      - name: 构建 exe 安装程序（arm64）
+        run: node scripts/build-setup-exe.mjs --arch arm64 --msi "${{ env.PRIMUS_MSI }}" --out-dir out/setup
+      - name: exe 安装程序静默安装 / 卸载冒烟
+        shell: pwsh
+        timeout-minutes: 15
+        run: ./scripts/setup-exe-smoke.ps1 -Exe (Get-Item out/setup/PrimusSetup_*_arm64_zh-CN.exe).FullName
+
       - name: 构建升级测试 MSI
         shell: pwsh
         run: |
@@ -528,6 +536,11 @@ jobs:
         shell: pwsh
         timeout-minutes: 20
         run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2
+
+      - name: exe 安装程序安装后的静默升级冒烟
+        shell: pwsh
+        timeout-minutes: 20
+        run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -BaseExe (Get-Item out/setup/PrimusSetup_*_arm64_zh-CN.exe).FullName -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2 -LogDir (Join-Path $env:RUNNER_TEMP 'update-smoke-exe')
 
   # 安装矩阵（开发计划第 4 周 P0 安装测试）：两个架构 × 两个位置（Program Files、隔离非系统卷，优先 D），
   # 用上面两个作业刚构建的 MSI。每格：静默安装与布局检查（msi-smoke.ps1）→ 附加检查（install-matrix/matrix-checks.ps1：

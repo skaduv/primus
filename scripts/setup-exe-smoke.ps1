@@ -1,20 +1,21 @@
 ﻿#requires -Version 7.2
 <#
 .SYNOPSIS
-  通用安装程序 PrimusSetup_<ver>_zh-CN.exe 的静默安装 / 卸载冒烟（ADR 0011）。CI 的 x64 作业与发布工作流共用。
+  exe 安装程序 PrimusSetup_<ver>_<arch>_zh-CN.exe 的静默安装 / 卸载冒烟（ADR 0011）。CI 的两个 Windows 作业与发布工作流共用；
+  exe 的架构须与本机原生架构一致（x64 运行器装 x64 版，ARM64 运行器装 arm64 版）。
 
 .DESCRIPTION
   1. 运行 exe /quiet /norestart /log 静默安装，失败时输出 Burn 日志与 MSI 日志末尾
   2. 只有一个名为“乾元 Primus”的卸载条目，且是 MSI（WindowsInstaller = 1），没有 Burn bundle 的登记（BundleUpgradeCode）：
      exe 只是载体，装好的就是 MSI 本身
   3. HKLM\Software\Primus 的 Version 为本版本；安装目录里的 Primus.exe 的 PE 架构与本机原生架构一致
-     （x64 = 0x8664，ARM64 = 0xAA64），确认 exe 选对了内嵌的 MSI
+     （x64 = 0x8664，ARM64 = 0xAA64），确认 exe 内嵌的是同架构的 MSI
   4. msiexec /x 按产品代码静默卸载：卸载条目消失；清理卸载时保留下来的 data，便于重复运行
 
   需要管理员权限（按机器安装）。任何一步不符合预期即抛错，退出码非 0。
 
 .PARAMETER Exe
-  PrimusSetup_<ver>_zh-CN.exe 路径。
+  PrimusSetup_<ver>_<arch>_zh-CN.exe 路径。
 
 .PARAMETER Version
   期望的版本（SemVer），默认取 apps/desktop/src-tauri/tauri.conf.json 的 version。
@@ -89,6 +90,9 @@ $expectedMachine = switch ($osArch) {
   'Arm64' { 0xAA64 }
   default { throw "不支持的系统架构 $osArch" }
 }
+$exeArch = [regex]::Match((Split-Path -Leaf $Exe), '^PrimusSetup_.+_(x64|arm64)_zh-CN\.exe$').Groups[1].Value
+$nativeArch = if ($osArch -eq 'Arm64') { 'arm64' } else { 'x64' }
+Assert-True ($exeArch -ceq $nativeArch) "安装程序架构 $exeArch 与本机 $nativeArch 一致"
 
 Write-Step "静默安装 $(Split-Path -Leaf $Exe)（系统架构 $osArch）"
 $log = Join-Path $LogDir 'setup.log'
@@ -144,4 +148,4 @@ if ((Test-Path -LiteralPath $installDir) -and -not (Get-ChildItem -LiteralPath $
   Remove-Item -LiteralPath $installDir -Force
 }
 
-Write-Host "`n✓ 通用安装程序冒烟通过" -ForegroundColor Green
+Write-Host "`n✓ exe 安装程序冒烟通过（$exeArch）" -ForegroundColor Green

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  通用安装程序（Bundle.wxs）的界面文案：WixStandardBootstrapperApplication hyperlinkLicense 主题的简体中文版。
+  exe 安装程序（Bundle.wxs）的界面文案：WixStandardBootstrapperApplication hyperlinkLicense 主题的简体中文版。
   WiX 只自带英文主题文案，这里逐条翻译；字符串 Id 与 WiX 7 的 HyperlinkTheme.wxl 一一对应，升级 WiX 时对照补齐。
 -->
 <WixLocalization Culture="zh-CN" Language="2052" xmlns="http://wixtoolset.org/schemas/v4/wxl">
