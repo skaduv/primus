@@ -67,6 +67,13 @@ import { VoiceButton } from "./voice/voice-button";
 
 const t = strings.chat;
 
+/** 用户消息里的图片块 */
+function imagesOf(content: unknown): ImageContent[] {
+  return Array.isArray(content)
+    ? content.filter((c): c is ImageContent => (c as { type?: string })?.type === "image")
+    : [];
+}
+
 function textOf(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -447,7 +454,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   }, []);
 
   // 刚发出、Core 还没回显的用户消息：先按它将来的位置显示，回显后同一个 key 原地替换，不闪烁
-  const [pendingUser, setPendingUser] = useState<{ text: string; index: number } | null>(null);
+  const [pendingUser, setPendingUser] = useState<{
+    text: string;
+    index: number;
+    images?: ImageContent[];
+  } | null>(null);
   // 回显后清除；发送失败在 submit 里清除。发送成功后 Core 的确认可能早于 agent_start 和回显，
   // 中间那一下既不在发送也不在运行：不能据此清除，否则欢迎页和气泡会消失再出现（闪一下）。
   // 只在发送成功、一段时间后仍没开始运行也没回显（如由扩展处理、不产生消息的命令）时兜底清除。
@@ -504,7 +515,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     // 能看图的模型：读取好的图片随 prompt 发送；其余文件（及不看图时的图片）按路径引用
     const { images, paths } = attachments.build();
     const message = withAttachments(text, paths);
-    setPendingUser({ text: message, index: state.messages.length });
+    setPendingUser({ text: message, index: state.messages.length, images });
     // 发送成功后才清空输入，失败时保留草稿和附件以便重试
     void send(message, images)
       .then((sent) => {
@@ -533,13 +544,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
       body,
       files.map((f) => f.path),
     );
-    const images = Array.isArray(lastUser.content)
-      ? lastUser.content.filter((c): c is ImageContent => c.type === "image")
-      : [];
+    const images = imagesOf(lastUser.content);
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
-    setPendingUser({ text: message, index: state.messages.length });
+    setPendingUser({ text: message, index: state.messages.length, images });
     void send(message, images.length > 0 ? images : undefined)
       .then((sent) => {
         if (!sent) setPendingUser(null);
@@ -694,6 +703,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       key={`${turn.user.index}-user`}
                       index={turn.user.index}
                       text={textOf(turn.user.message.content)}
+                      images={imagesOf(turn.user.message.content)}
                     />
                   )}
                   {turn.replies.length > 0 && (
@@ -727,6 +737,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   key={`${pendingUser.index}-user`}
                   index={pendingUser.index}
                   text={pendingUser.text}
+                  images={pendingUser.images}
                 />
               </Fragment>
             )}

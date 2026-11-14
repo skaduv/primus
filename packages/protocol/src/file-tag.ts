@@ -77,10 +77,24 @@ function parseBlock(text: string, at: number, failed = new Set<number>()): FileT
 }
 
 /**
- * 拆出消息末尾的附件标签（`appendFileTags` 的逆操作）。只认正文之后、一直到结尾都是标签的那一段：
- * 正文中间提到的 `<file …>` 不算附件
+ * Core 收到图片后可能缩放或转码，并在用户消息末尾追加说明行（agent-session.ts `_normalizePromptImages`：
+ * `[Image: original …]`、`[Image converted from …]`、`[Image omitted: …]`），附件标签因此不再位于结尾。
+ * 这些行只给模型看，解析与显示时先去掉
  */
-export function splitFileTags(text: string): { message: string; files: FileTag[] } {
+const HINT_LINE = String.raw`\[Image(?:: original | converted from |\s+omitted: )[^\n]*\]`;
+const IMAGE_HINTS = new RegExp(String.raw`(?:^|(?:\r?\n)+)(?:${HINT_LINE}(?:\r?\n)*)+$`);
+
+/** 去掉 Core 追加在消息末尾的图片说明行 */
+export function stripImageHints(text: string): string {
+  return text.replace(IMAGE_HINTS, "");
+}
+
+/**
+ * 拆出消息末尾的附件标签（`appendFileTags` 的逆操作）。只认正文之后、一直到结尾都是标签的那一段：
+ * 正文中间提到的 `<file …>` 不算附件。Core 追加的图片说明行先去掉
+ */
+export function splitFileTags(raw: string): { message: string; files: FileTag[] } {
+  const text = stripImageHints(raw);
   const candidates: number[] = [];
   if (text.startsWith(OPEN)) candidates.push(0);
   for (let i = text.indexOf(`\n\n${OPEN}`); i >= 0; i = text.indexOf(`\n\n${OPEN}`, i + 1))
