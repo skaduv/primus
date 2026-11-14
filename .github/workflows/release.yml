@@ -128,11 +128,14 @@ jobs:
           if ($missing.Count -gt 0) {
             throw "标签 $env:RELEASE_TAG 中缺少 $($missing -join '、')：该标签早于只发 MSI 与更新服务（ADR 0007），不能用本工作流构建"
           }
-          # ADR 0011：标签里的 Primus.wxs 必须认识 PRIMUS_BUNDLE（经 exe 安装时完成页不在 Burn 的提权进程里启动 Primus）。
+          # ADR 0011：标签里的 MSI 界面必须认识 PRIMUS_BUNDLE（经 exe 安装时完成页不在 Burn 的提权进程里启动 Primus）。
           # 更早的标签打进 exe 会以管理员身份启动 Primus，不能用本工作流构建（在编译前就失败）
-          $hits = @(Select-String -LiteralPath apps/desktop/src-tauri/windows/Primus.wxs -Pattern 'NOT PRIMUS_BUNDLE' -SimpleMatch).Count
-          if ($hits -lt 2) {
-            throw "标签 $env:RELEASE_TAG 的 Primus.wxs 不处理 PRIMUS_BUNDLE：该标签早于 exe 安装程序（ADR 0011），不能用本工作流构建"
+          # ADR 0012：完成页条件移到 PrimusUI.wxi（至少 1 处）；更早的标签在 Primus.wxs 里（至少 2 处）
+          $ui = 'apps/desktop/src-tauri/windows/PrimusUI.wxi'
+          if (Test-Path -LiteralPath $ui) { $file = $ui; $need = 1 } else { $file = 'apps/desktop/src-tauri/windows/Primus.wxs'; $need = 2 }
+          $hits = @(Select-String -LiteralPath $file -Pattern 'NOT PRIMUS_BUNDLE' -SimpleMatch).Count
+          if ($hits -lt $need) {
+            throw "标签 $env:RELEASE_TAG 的 MSI 界面不处理 PRIMUS_BUNDLE：该标签早于 exe 安装程序（ADR 0011），不能用本工作流构建"
           }
 
       # 自动更新（ADR 0007）：每次发布都必须有 updater 密钥。公钥编译进 Primus.exe 与 PrimusUpdate.exe（没有公钥的构建禁用自动更新），

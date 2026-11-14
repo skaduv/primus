@@ -42,6 +42,7 @@ import {
   REMINDER_FULL,
   REMINDER_REENTRY,
   REMINDER_SPARSE,
+  reminderExecuting,
   TEXT,
 } from "./prompts.ts";
 
@@ -340,9 +341,22 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
   let turnsWithoutTodo = 0;
   let todoThisRun = false;
   let settleNudged = false;
+  /** 上次调用 todo 之后又做过事（有非 todo 的工具调用）：准备结束时据此判断待办是否落后 */
+  let workSinceTodo = false;
+  /**
+   * 执行计划时，下一次提醒要带上完整的已批准计划：压缩会把计划所在的工具结果总结掉，
+   * 恢复会话后模型也只剩历史，此时把计划与进度重新放进上下文（Claude Code 压缩后同样重新附上计划文件与待办）
+   */
+  let execFull = false;
   const todoOpen = () =>
     state.phase === "executing" &&
     state.todos.some((i) => i.status === "pending" || i.status === "in_progress");
+  const executingEntry = () => ({
+    type: "custom_message" as const,
+    customType: CONTEXT_TYPE,
+    content: executingReminder(),
+    display: false,
+  });
   const todoReminder = (final: boolean) => ({
     type: "custom_message" as const,
     customType: CONTEXT_TYPE,
@@ -438,7 +452,15 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       state.exitNotice = false;
       return REMINDER_EXIT;
     }
+    if (todoOpen()) return executingReminder();
     return undefined;
+  }
+
+  /** 执行计划期间的提醒：当前待办；压缩、恢复后第一次附上完整计划 */
+  function executingReminder(): string {
+    const full = execFull && state.plan ? planToMarkdown(state.plan) : undefined;
+    execFull = false;
+    return reminderExecuting(state.todos, full);
   }
 
   function restore(ctx: PlanContext): void {
@@ -470,6 +492,7 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       }
       if (readOnlyPhase(state.phase)) state.forceFull = true;
     }
+    execFull = state.phase === "executing";
   }
 
   function writePlanFile(ctx: PlanContext, id: string, plan: PlanDoc): string | undefined {
@@ -549,6 +572,8 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       state.phase = "executing";
       state.exitedOnce = true;
       seedTodos(final);
+      // 工具结果本身就带完整计划
+      execFull = false;
       commit(ctx);
       const details: PlanSubmitDetails = {
         id,
@@ -865,6 +890,7 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       turnsWithoutTodo = 0;
       todoThisRun = false;
       settleNudged = false;
+      workSinceTodo = false;
     });
     // 执行计划时模型常常埋头做事、忘了更新待办（唇条一直停在第一步）：
     // 连续几个回合没调用 todo 就在下一次请求前插一条隐藏提醒（与 Claude Code 的待办提醒同理）
@@ -873,9 +899,18 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
       if ((e.toolResults ?? []).some((r) => r.toolName === TODO_TOOL)) {
         turnsWithoutTodo = 0;
         todoThisRun = true;
+        workSinceTodo = false;
+        if (todoOpen() && execFull) return { entries: [executingEntry()] };
         return undefined;
       }
-      if (!todoOpen() || !(e.toolResults ?? []).length) return undefined;
+      if (!todoOpen()) return undefined;
+      // 这一轮中途发生了压缩：计划所在的工具结果已被总结掉，下一次请求前重新放进完整计划与进度
+      if (execFull) {
+        turnsWithoutTodo = 0;
+        return { entries: [executingEntry()] };
+      }
+      if (!(e.toolResults ?? []).length) return undefined;
+      workSinceTodo = true;
       turnsWithoutTodo++;
       if (turnsWithoutTodo < TURNS_BETWEEN_TODO_REMINDERS) return undefined;
       turnsWithoutTodo = 0;
@@ -884,13 +919,15 @@ export function createPlan(env: Partial<PlanEnv> = {}) {
     // 准备结束这一轮、待办还没收尾且这一轮没更新过：提醒一次并多给一次请求，让模型把做完的步骤标完成
     pi.on("agent_before_settle", (event: never) => {
       const e = event as { outcome?: string; context?: { canContinue?: boolean } };
-      if (settleNudged || todoThisRun || !todoOpen()) return undefined;
+      // 这一轮没更新过待办，或最后一次更新之后又做了事：待办可能落后于实际进度
+      if (settleNudged || !todoOpen() || (todoThisRun && !workSinceTodo)) return undefined;
       if (e.outcome !== "completed" || e.context?.canContinue === false) return undefined;
       settleNudged = true;
       return { entries: [todoReminder(true)], continue: true };
     });
     pi.on("session_compact", () => {
       if (readOnlyPhase(state.phase)) state.forceFull = true;
+      if (state.phase === "executing") execFull = true;
     });
     pi.on("before_agent_start", (event: never, ctx) => {
       lastCtx = ctx;

@@ -4,10 +4,12 @@ import { describe, expect, it } from "vitest";
 import {
   BUNDLE_ARCH,
   BUNDLE_EXTENSION,
+  BUNDLE_THEME,
   BUNDLE_WXL,
   BUNDLE_WXS,
   checkMsiInput,
   setupExeFileName,
+  UTIL_EXTENSION,
   wixBundleArgs,
 } from "./build-setup-exe.mjs";
 
@@ -30,6 +32,7 @@ describe("setupExeFileName", () => {
 describe("wixBundleArgs", () => {
   const base = {
     productVersion: "0.1.299.0",
+    primusVersion: "0.1.2",
     arch: "arm64",
     msi: "a/arm64.msi",
     out: "out/s.exe",
@@ -40,6 +43,8 @@ describe("wixBundleArgs", () => {
     const args = wixBundleArgs(base);
     expect(args.slice(0, 2)).toEqual(["build", BUNDLE_WXS]);
     expect(args).toContain(BUNDLE_EXTENSION);
+    expect(args).toContain(UTIL_EXTENSION);
+    expect(args).toContain("PrimusVersion=0.1.2");
     expect(args[args.indexOf("-arch") + 1]).toBe(BUNDLE_ARCH);
     expect(BUNDLE_ARCH).toBe("x86");
     expect(args).toContain("ProductVersion=0.1.299.0");
@@ -50,6 +55,7 @@ describe("wixBundleArgs", () => {
 
   it("缺少必需参数或架构不对时抛错", () => {
     expect(() => wixBundleArgs({ ...base, msi: undefined })).toThrow();
+    expect(() => wixBundleArgs({ ...base, primusVersion: undefined })).toThrow();
     expect(() => wixBundleArgs({ ...base, arch: "x86" })).toThrow();
   });
 });
@@ -81,7 +87,18 @@ describe("Bundle.wxs", () => {
     expect(p).toContain('Permanent="yes"');
     expect(p).toContain('Visible="yes"');
     expect(p).toContain('Cache="remove"');
-    expect(p).toContain('bal:DisplayInternalUICondition="WixBundleAction = 6"');
+  });
+
+  it("只有 exe 自己的界面：不显示 MSI 的内部界面，安装位置经 INSTALLFOLDER 传给 MSI（ADR 0012）", () => {
+    expect(wxs.replace(/<!--[\s\S]*?-->/g, "")).not.toContain("DisplayInternalUICondition");
+    expect(wxs).toContain('ThemeFile="$(ShellDir)\\windows\\setup-theme.xml"');
+    expect(wxs).toContain('LicenseFile="$(ShellDir)\\windows\\Privacy.rtf"');
+    expect(wxs).toContain('<MsiProperty Name="INSTALLFOLDER" Value="[InstallFolder]" />');
+    // 与 Primus.wxs 一样沿用已安装的目录 / 旧 NSIS 版的目录，并锁定不可改
+    expect(wxs).toContain('Key="Software\\Primus" Value="InstallDir" Bitness="always64"');
+    expect(wxs).toMatch(/<SetVariable Id="LockFolder" Variable="PrimusFolderLocked"/);
+    // 完成页的“立即启动”在 exe 的非提权界面进程里启动
+    expect(wxs).toContain('LaunchTarget="[InstallFolder]\\Primus.exe"');
   });
 
   it("下错架构时拒绝安装（0xAA64 = 43620 为 ARM64），并拦下 32 位系统", () => {
@@ -98,9 +115,10 @@ describe("Bundle.wxs", () => {
 
   it("经 exe 安装时告诉 MSI 不要在提权进程中启动 Primus", () => {
     expect(wxs.match(/<MsiProperty Name="PRIMUS_BUNDLE" Value="1" \/>/g)).toHaveLength(1);
+    const ui = readFileSync(BUNDLE_WXS.replace("Bundle.wxs", "PrimusUI.wxi"), "utf8");
+    expect(ui).toContain('ShowCondition="NOT Installed AND NOT PRIMUS_MODE AND NOT PRIMUS_BUNDLE"');
     const msi = readFileSync(BUNDLE_WXS.replace("Bundle.wxs", "Primus.wxs"), "utf8");
-    expect(msi).toContain('Condition="NOT Installed AND NOT PRIMUS_BUNDLE"');
-    expect(msi).toContain("AND NOT Installed AND NOT PRIMUS_BUNDLE");
+    expect(msi).toContain("NOT Installed AND NOT PRIMUS_BUNDLE");
   });
 
   it("UpgradeCode 与 MSI 不同", () => {
@@ -118,6 +136,12 @@ describe("bundle-zh-CN.wxl", () => {
     expect(wxl).toContain('Culture="zh-CN" Language="2052"');
     for (const id of [
       "Caption",
+      "InstallTitle",
+      "VersionText",
+      "InstallPrivacyLabel",
+      "InstallFolderLabel",
+      "ProgressText",
+      "SuccessText",
       "InstallMessage",
       "InstallInstallButton",
       "ProgressHeader",
@@ -127,5 +151,64 @@ describe("bundle-zh-CN.wxl", () => {
     ])
       expect(ids).toContain(id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("setup-theme.xml 与 MSI 界面（ADR 0012）", () => {
+  const theme = readFileSync(BUNDLE_THEME, "utf8");
+  const wxl = readFileSync(BUNDLE_WXL, "utf8");
+  const ui = readFileSync(BUNDLE_WXS.replace("Bundle.wxs", "PrimusUI.wxi"), "utf8");
+  const loc = (id: string) => new RegExp(`<String Id="${id}" Value="([^"]*)"`).exec(wxl)?.[1];
+
+  it("主题用到的文案都在 bundle-zh-CN.wxl 里", () => {
+    const used = [...theme.matchAll(/#\(loc\.(\w+)\)/g)].map((m) => m[1] as string);
+    expect(used.length).toBeGreaterThan(10);
+    for (const id of used) expect(loc(id), id).toBeDefined();
+  });
+
+  it("WixStdBA 认识的控件名都在：隐私政策、同意、安装位置、安装、进度、启动", () => {
+    for (const name of [
+      "EulaRichedit",
+      "EulaAcceptCheckbox",
+      "InstallFolder",
+      "BrowseButton",
+      "InstallButton",
+      "OverallCalculatedProgressbar",
+      "LaunchButton",
+      "FailureLogFileLink",
+    ])
+      expect(theme).toContain(`Name="${name}"`);
+    // 进度页不显示随时变化的动作文字（闪烁来源）
+    expect(theme).not.toContain("OverallProgressPackageText");
+    expect(theme).not.toContain("ExecuteProgressActionDataText");
+  });
+
+  it("exe 与 MSI 的页面文案一致", () => {
+    for (const id of [
+      "InstallPrivacyLabel",
+      "InstallFolderLabel",
+      "InstallFolderLockedText",
+      "InstallAcceptCheckbox",
+      "InstallBrowseButton",
+      "SuccessText",
+      "SuccessUninstallText",
+      "SuccessLaunchButton",
+      "FailureHeader",
+    ]) {
+      const text = loc(id) as string;
+      expect(text, id).toBeDefined();
+      expect(ui, id).toContain(text);
+    }
+  });
+
+  it("MSI 的进度页不订阅 ActionText / ActionData，页面只有准备、进度、完成三步", () => {
+    const progress = /<Dialog Id="PrimusProgressDlg"[\s\S]*?<\/Dialog>/.exec(ui)?.[0] ?? "";
+    expect(progress).toContain('Event="SetProgress"');
+    expect(progress).not.toContain("ActionText");
+    expect(progress).not.toContain("ActionData");
+    const code = ui.replace(/<!--[\s\S]*?-->/g, "");
+    expect(code).not.toContain("WelcomeDlg");
+    expect(code).not.toContain("VerifyReadyDlg");
+    expect(code).not.toContain("PrepareDlg");
   });
 });

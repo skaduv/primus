@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { appendFileTags, FILE_INLINE_MAX_BYTES, formatFileTag, splitFileTags } from "./index.ts";
+import {
+  appendFileTags,
+  FILE_INLINE_MAX_BYTES,
+  formatFileTag,
+  splitFileTags,
+  stripImageHints,
+} from "./index.ts";
 
 const CORE = new URL("../../../agent-core/packages/coding-agent/src/", import.meta.url);
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, CORE)), "utf8");
@@ -73,5 +79,30 @@ describe("附件标签（Core @file 格式）", () => {
       message: "问",
       files: [{ path: "/a" }, { path: "/b" }],
     });
+  });
+
+  it("Core 在消息末尾追加的图片说明行不影响附件解析", () => {
+    // 说明行的写法与 Core 一致（agent-session.ts、image-resize.ts、image-process.ts）
+    expect(read("core/agent-session.ts")).toContain(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: 比对 Core 源码里的模板字符串原文
+      '`${trigger.prompt}\\n\\n${normalized.hints.join("\\n")}`',
+    );
+    expect(read("utils/image-resize.ts")).toContain("`[Image: original ${");
+    expect(read("utils/image-process.ts")).toContain("`[Image converted from ${");
+    expect(read("utils/image-process.ts")).toContain('"[Image omitted: ');
+    const hints = [
+      "[Image: original 3000x2000, displayed at 1500x1000. Multiply coordinates by 2.00 to map to original image.]",
+      "[Image converted from image/bmp to image/png.]",
+    ].join("\n");
+    const text = appendFileTags("看看这张图", [{ path: "C:\\a.png" }, { path: "C:\\b.md" }]);
+    expect(splitFileTags(`${text}\n\n${hints}`)).toEqual({
+      message: "看看这张图",
+      files: [{ path: "C:\\a.png" }, { path: "C:\\b.md" }],
+    });
+    // 粘贴的图片没有标签：只去掉说明行；只有图片时正文为空
+    expect(splitFileTags(`问\n\n${hints}`)).toEqual({ message: "问", files: [] });
+    expect(stripImageHints(`\n\n${hints}`)).toBe("");
+    // 用户自己写的方括号文字保留
+    expect(stripImageHints("[Image] 这是标题")).toBe("[Image] 这是标题");
   });
 });

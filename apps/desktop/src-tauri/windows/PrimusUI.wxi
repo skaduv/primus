@@ -1,0 +1,190 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSI 直接安装时的界面 PrimusUI（ADR 0012），由 Primus.wxs 以 <?include PrimusUI.wxi ?> 收入。
+  与 exe 安装程序的界面（setup-theme.xml + bundle-zh-CN.wxl）是同一套设计，页面、文案、按钮位置一一对应：
+
+    准备安装（隐私政策 + 同意 + 安装位置）→ 正在安装（进度条）→ 安装完成（立即启动 / 完成）| 安装未完成 | 已取消
+    已安装时再次运行：乾元 Primus 已安装（修复 / 卸载）→ 进度 → 完成
+
+  取代原来的 WixUI_InstallDir（欢迎 → 许可 → 目录 → 确认 → 进度 → 完成，共 6 个窗口来回切换）。减少闪烁的做法：
+  - 页面从 6 个减到 3 个，安装前只有一个对话框，少了 5 次“销毁旧窗口、创建新窗口”；不显示 PrepareDlg。
+  - 进度页不订阅 ActionText / ActionData（安装中每个动作都会改这行字，透明文字反复重绘就是闪烁），只有进度条与一行固定说明；
+    进度条用平滑样式（不用 ProgressBlocks）。
+  - 所有对话框标题栏文字相同（“乾元 Primus 安装程序”），切换页面时任务栏与标题不跳。
+  - 页眉文字只放不会变化的静态文字；按模式变化的标题用互斥的 ShowCondition，在对话框创建时一次定好。
+  - 字体统一为 Microsoft YaHei UI（原来的 Tahoma 没有中文字形，中文靠系统回退，字号与基线都不稳）。
+  经 exe 安装时（Bundle.wxs）MSI 不显示这些界面，由 exe 自己画同样的页面。
+-->
+<Include xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!-- 安装位置控件编辑的目录属性（BrowseDlg 等 WixUI 公共对话框沿用这个名字） -->
+  <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+  <!-- 安装目录装好后不能“更改”；修复、卸载照常（原来由 WixUI_InstallDir 提供） -->
+  <Property Id="ARPNOMODIFY" Value="1" />
+  <!-- 已装过 MSI 版、或要从旧 NSIS 版迁移：沿用原目录，界面上不能改（与 exe 的 PrimusFolderLocked 一致） -->
+  <SetProperty Id="PRIMUS_FOLDER_LOCKED" Value="1" After="AppSearch" Sequence="ui"
+               Condition="PREVIOUS_INSTALLFOLDER OR (NSIS_UNINSTALLER AND NSIS_INSTALLDIR)" />
+
+  <UI Id="PrimusUI">
+    <TextStyle Id="Primus_Font_Normal" FaceName="Microsoft YaHei UI" Size="9" />
+    <TextStyle Id="Primus_Font_Title" FaceName="Microsoft YaHei UI" Size="12" Bold="yes" />
+    <TextStyle Id="Primus_Font_Muted" FaceName="Microsoft YaHei UI" Size="9" Red="110" Green="110" Blue="115" />
+    <!-- WixUI 公共对话框（浏览、取消确认、磁盘空间、文件占用、错误）引用的字体名 -->
+    <TextStyle Id="WixUI_Font_Normal" FaceName="Microsoft YaHei UI" Size="9" />
+    <TextStyle Id="WixUI_Font_Bigger" FaceName="Microsoft YaHei UI" Size="12" />
+    <TextStyle Id="WixUI_Font_Title" FaceName="Microsoft YaHei UI" Size="9" Bold="yes" />
+    <Property Id="DefaultUIFont" Value="Primus_Font_Normal" />
+
+    <DialogRef Id="BrowseDlg" />
+    <DialogRef Id="CancelDlg" />
+    <DialogRef Id="DiskCostDlg" />
+    <DialogRef Id="ErrorDlg" />
+    <DialogRef Id="FilesInUse" />
+    <DialogRef Id="MsiRMFilesInUse" />
+    <DialogRef Id="OutOfDiskDlg" />
+    <DialogRef Id="OutOfRbDiskDlg" />
+    <DialogRef Id="WaitForCostingDlg" />
+
+    <!-- 浏览安装目录（WixUI 的 BrowseDlg） -->
+    <Publish Dialog="BrowseDlg" Control="OK" Event="CheckTargetPath" Value="[_BrowseProperty]" Order="1" />
+    <Publish Dialog="BrowseDlg" Control="OK" Event="SetTargetPath" Value="[_BrowseProperty]" Order="3" />
+    <Publish Dialog="BrowseDlg" Control="OK" Event="EndDialog" Value="Return" Order="4" />
+
+    <!-- 准备安装：与 exe 的 Install 页相同 -->
+    <Dialog Id="PrimusInstallDlg" Width="370" Height="270" Title="乾元 Primus 安装程序" TrackDiskSpace="yes">
+      <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="Title" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}安装 乾元 Primus" />
+      <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
+      <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+      <Control Id="PrivacyLabel" Type="Text" X="20" Y="52" Width="330" Height="12" NoPrefix="yes" Text="安装前请阅读隐私政策：" />
+      <Control Id="Privacy" Type="ScrollableText" X="20" Y="66" Width="330" Height="96" Sunken="yes" TabSkip="no">
+        <Text SourceFile="$(ShellDir)\windows\Privacy.rtf" />
+      </Control>
+      <Control Id="Agree" Type="CheckBox" X="20" Y="166" Width="330" Height="14" Property="PRIMUS_AGREE" CheckBoxValue="1" Text="我已阅读并同意隐私政策(&amp;A)" />
+      <Control Id="FolderLabel" Type="Text" X="20" Y="186" Width="60" Height="12" NoPrefix="yes" Text="安装位置：" />
+      <Control Id="FolderLocked" Type="Text" X="80" Y="186" Width="270" Height="12" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Muted}已安装过：将升级到此版本，沿用原安装位置与数据" ShowCondition="PRIMUS_FOLDER_LOCKED" />
+      <Control Id="Folder" Type="PathEdit" X="20" Y="200" Width="262" Height="17" Property="WIXUI_INSTALLDIR" Indirect="yes" DisableCondition="PRIMUS_FOLDER_LOCKED" />
+      <Control Id="ChangeFolder" Type="PushButton" X="288" Y="199" Width="62" Height="19" Text="更改(&amp;C)..." DisableCondition="PRIMUS_FOLDER_LOCKED">
+        <Publish Property="_BrowseProperty" Value="[WIXUI_INSTALLDIR]" Order="1" />
+        <Publish Event="SpawnDialog" Value="BrowseDlg" Order="2" />
+      </Control>
+      <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Install" Type="PushButton" ElevationShield="yes" X="236" Y="243" Width="56" Height="17" Default="yes" Disabled="yes" Text="安装(&amp;I)" EnableCondition="PRIMUS_AGREE = &quot;1&quot;" DisableCondition="PRIMUS_AGREE &lt;&gt; &quot;1&quot;">
+        <Publish Event="CheckTargetPath" Value="[WIXUI_INSTALLDIR]" Order="1" />
+        <Publish Event="SetTargetPath" Value="[WIXUI_INSTALLDIR]" Order="2" />
+        <Publish Event="SpawnWaitDialog" Value="WaitForCostingDlg" Order="3" Condition="!(wix.WixUICostingPopupOptOut) OR CostingComplete = 1" />
+        <Publish Event="EndDialog" Value="Return" Order="4" Condition="OutOfDiskSpace &lt;&gt; 1" />
+        <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="5" Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST=&quot;P&quot; OR NOT PROMPTROLLBACKCOST)" />
+        <Publish Event="EndDialog" Value="Return" Order="6" Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST=&quot;D&quot;" />
+        <Publish Event="EnableRollback" Value="False" Order="7" Condition="OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST=&quot;D&quot;" />
+        <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="8" Condition="(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST=&quot;F&quot;)" />
+      </Control>
+      <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="取消(&amp;C)">
+        <Publish Event="SpawnDialog" Value="CancelDlg" />
+      </Control>
+    </Dialog>
+
+    <!-- 已安装时再次运行这个 MSI：修复或卸载（从“应用和功能”卸载走 Windows 自己的简易界面，不经这里） -->
+    <Dialog Id="PrimusMaintenanceDlg" Width="370" Height="270" Title="乾元 Primus 安装程序">
+      <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="Title" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}乾元 Primus 已安装" />
+      <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
+      <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="40" NoPrefix="yes" Text="这台电脑上已经安装了这个版本。可以修复（重新写入程序文件），或从这台电脑卸载；卸载会保留安装目录下的 data。" />
+      <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Repair" Type="PushButton" ElevationShield="yes" X="168" Y="243" Width="56" Height="17" Text="修复(&amp;R)">
+        <Publish Property="PRIMUS_MODE" Value="Repair" Order="1" />
+        <Publish Event="ReinstallMode" Value="ecmus" Order="2" />
+        <Publish Event="Reinstall" Value="ALL" Order="3" />
+        <Publish Event="EndDialog" Value="Return" Order="4" />
+      </Control>
+      <Control Id="Remove" Type="PushButton" ElevationShield="yes" X="236" Y="243" Width="56" Height="17" Text="卸载(&amp;U)">
+        <Publish Property="PRIMUS_MODE" Value="Remove" Order="1" />
+        <Publish Event="Remove" Value="ALL" Order="2" />
+        <Publish Event="EndDialog" Value="Return" Order="3" />
+      </Control>
+      <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="取消(&amp;C)">
+        <Publish Event="SpawnDialog" Value="CancelDlg" />
+      </Control>
+    </Dialog>
+
+    <!-- 正在安装：与 exe 的 Progress 页相同。不订阅 ActionText / ActionData，避免安装中整行文字反复重绘 -->
+    <Dialog Id="PrimusProgressDlg" Width="370" Height="270" Title="乾元 Primus 安装程序" Modeless="yes">
+      <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="TitleInstalling" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}正在安装 乾元 Primus" ShowCondition="NOT PRIMUS_MODE" />
+      <Control Id="TitleRepairing" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}正在修复 乾元 Primus" ShowCondition="PRIMUS_MODE = &quot;Repair&quot;" />
+      <Control Id="TitleRemoving" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}正在卸载 乾元 Primus" ShowCondition="PRIMUS_MODE = &quot;Remove&quot;" />
+      <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
+      <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="26" NoPrefix="yes" Text="请稍候，这通常不到一分钟。" />
+      <Control Id="ProgressBar" Type="ProgressBar" X="20" Y="92" Width="330" Height="12" Text="进度">
+        <Subscribe Event="SetProgress" Attribute="Progress" />
+      </Control>
+      <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="取消(&amp;C)">
+        <Publish Event="SpawnDialog" Value="CancelDlg" />
+      </Control>
+    </Dialog>
+
+    <!-- 安装完成：与 exe 的 Success 页相同（立即启动 / 完成）。立即启动用 WixShellExec 在界面进程（安装者本人、未提权）中运行 -->
+    <Dialog Id="PrimusExitDlg" Width="370" Height="270" Title="乾元 Primus 安装程序">
+      <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="TitleInstalled" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}安装完成" ShowCondition="NOT PRIMUS_MODE" />
+      <Control Id="TitleRepaired" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}修复完成" ShowCondition="PRIMUS_MODE = &quot;Repair&quot;" />
+      <Control Id="TitleRemoved" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\Primus_Font_Title}卸载完成" ShowCondition="PRIMUS_MODE = &quot;Remove&quot;" />
+      <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
+      <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+      <Control Id="TextInstalled" Type="Text" X="20" Y="60" Width="330" Height="26" NoPrefix="yes" Hidden="yes" Text="乾元 Primus 已安装完成，可以从开始菜单或桌面打开。" ShowCondition="PRIMUS_MODE &lt;&gt; &quot;Remove&quot;" />
+      <Control Id="TextRemoved" Type="Text" X="20" Y="60" Width="330" Height="26" NoPrefix="yes" Hidden="yes" Text="乾元 Primus 已从这台电脑卸载，原有数据保留在安装目录的 data 中。" ShowCondition="PRIMUS_MODE = &quot;Remove&quot;" />
+      <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Launch" Type="PushButton" X="236" Y="243" Width="56" Height="17" Hidden="yes" Text="立即启动(&amp;L)" ShowCondition="NOT Installed AND NOT PRIMUS_MODE AND NOT PRIMUS_BUNDLE">
+        <Publish Event="DoAction" Value="LaunchPrimus" Order="1" />
+        <Publish Event="EndDialog" Value="Return" Order="2" />
+      </Control>
+      <Control Id="Finish" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="完成(&amp;F)">
+        <Publish Event="EndDialog" Value="Return" />
+      </Control>
+    </Dialog>
+
+    <!-- 用户取消 -->
+    <Dialog Id="PrimusUserExitDlg" Width="370" Height="270" Title="乾元 Primus 安装程序">
+      <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="Title" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}已取消" />
+      <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
+      <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="26" NoPrefix="yes" Text="没有对这台电脑做任何更改。需要时可以再次运行安装程序。" />
+      <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Finish" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="完成(&amp;F)">
+        <Publish Event="EndDialog" Value="Exit" />
+      </Control>
+    </Dialog>
+
+    <!-- 安装未完成：与 exe 的 Failure 页相同 -->
+    <Dialog Id="PrimusFatalDlg" Width="370" Height="270" Title="乾元 Primus 安装程序">
+      <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="WixUI_Bmp_Banner" />
+      <Control Id="Title" Type="Text" X="20" Y="8" Width="280" Height="17" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Title}安装未完成" />
+      <Control Id="Version" Type="Text" X="20" Y="26" Width="280" Height="12" Transparent="yes" NoPrefix="yes" Text="{\Primus_Font_Muted}版本 $(PrimusVersion)" />
+      <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+      <Control Id="Text" Type="Text" X="20" Y="60" Width="330" Height="52" NoPrefix="yes" Text="安装过程中出现错误，已撤销所有更改。可以重新运行安装程序；仍然失败时，请用命令 msiexec /i 安装包 /l*v install.log 生成安装日志后发给我们。" />
+      <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+      <Control Id="Finish" Type="PushButton" X="304" Y="243" Width="56" Height="17" Default="yes" Cancel="yes" Text="完成(&amp;F)">
+        <Publish Event="EndDialog" Value="Exit" />
+      </Control>
+    </Dialog>
+
+    <InstallUISequence>
+      <Show Dialog="PrimusInstallDlg" Before="PrimusProgressDlg" Condition="NOT Installed" />
+      <Show Dialog="PrimusMaintenanceDlg" Before="PrimusProgressDlg" Condition="Installed AND NOT RESUME AND NOT PATCH" />
+      <Show Dialog="PrimusProgressDlg" Before="ExecuteAction" />
+      <Show Dialog="PrimusExitDlg" OnExit="success" />
+      <Show Dialog="PrimusUserExitDlg" OnExit="cancel" />
+      <Show Dialog="PrimusFatalDlg" OnExit="error" />
+    </InstallUISequence>
+    <AdminUISequence>
+      <Show Dialog="PrimusProgressDlg" Before="ExecuteAction" />
+      <Show Dialog="PrimusExitDlg" OnExit="success" />
+      <Show Dialog="PrimusUserExitDlg" OnExit="cancel" />
+      <Show Dialog="PrimusFatalDlg" OnExit="error" />
+    </AdminUISequence>
+  </UI>
+  <UIRef Id="WixUI_Common" />
+</Include>

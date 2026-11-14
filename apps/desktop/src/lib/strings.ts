@@ -349,6 +349,8 @@ export const strings = {
       imageUnsupported: "当前环境不支持读取图片",
       dropHint: "松开以添加附件",
       sent: "随消息发送的文件",
+      sentImages: "随消息发送的图片",
+      sentImage: "图片",
       inlined: "已附上文件内容",
     },
     lip: {

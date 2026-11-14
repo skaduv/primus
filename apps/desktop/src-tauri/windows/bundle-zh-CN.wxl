@@ -1,14 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  exe 安装程序（Bundle.wxs）的界面文案：WixStandardBootstrapperApplication hyperlinkLicense 主题的简体中文版。
-  WiX 只自带英文主题文案，这里逐条翻译；字符串 Id 与 WiX 7 的 HyperlinkTheme.wxl 一一对应，升级 WiX 时对照补齐。
+  exe 安装程序（Bundle.wxs + setup-theme.xml）的界面文案。页面文案与 MSI 界面（Primus.wxs 的 PrimusUI）逐字一致，
+  两种安装方式看到的是同一套界面。WixStdBA 代码里还会用到的字符串（取消确认、文件占用、帮助等）沿用
+  WiX 7 HyperlinkTheme.wxl 的 Id，升级 WiX 时对照补齐。
 -->
 <WixLocalization Culture="zh-CN" Language="2052" xmlns="http://wixtoolset.org/schemas/v4/wxl">
-  <String Id="Caption" Value="[WixBundleName] 安装" />
+  <String Id="Caption" Value="乾元 Primus 安装程序" />
   <String Id="Title" Value="[WixBundleName]" />
   <String Id="CheckingForUpdatesLabel" Value="正在检查更新" />
   <String Id="UpdateButton" Value="更新到版本 [WixStdBAUpdateAvailable](&amp;U)" />
-  <String Id="InstallHeader" Value="欢迎" />
+  <String Id="InstallHeader" Value="安装 乾元 Primus" />
+  <String Id="InstallTitle" Value="安装 乾元 Primus" />
+  <String Id="VersionText" Value="版本 [PrimusVersion]" />
+  <String Id="InstallPrivacyLabel" Value="安装前请阅读隐私政策：" />
+  <String Id="InstallFolderLabel" Value="安装位置：" />
+  <String Id="InstallFolderLockedText" Value="已安装过：将升级到此版本，沿用原安装位置与数据" />
+  <String Id="InstallBrowseButton" Value="更改(&amp;C)..." />
+  <String Id="ProgressText" Value="正在安装 乾元 Primus，请稍候。这通常不到一分钟。" />
+  <String Id="SuccessText" Value="乾元 Primus 已安装完成，可以从开始菜单或桌面打开。" />
+  <String Id="SuccessUninstallText" Value="乾元 Primus 已从这台电脑卸载，原有数据保留在安装目录的 data 中。" />
   <String Id="InstallMessage" Value="安装程序将在这台电脑上安装 [WixBundleName]。单击“安装”继续，或单击“取消”退出。" />
   <String Id="InstallMessageOptions" Value="安装程序将在这台电脑上安装 [WixBundleName]。单击“安装”继续，单击“选项”设置安装选项，或单击“取消”退出。" />
   <String Id="InstallVersion" Value="版本 [WixBundleVersion]" />
@@ -18,7 +28,7 @@
   <String Id="HelpText" Value="/install | /repair | /uninstall | /layout [目录] - 安装、修复、卸载，或在指定目录中&#xA;   创建完整的本地副本。默认为安装。&#xA;&#xA;/passive | /quiet - 只显示最少的界面且不提示，或完全不显示界面且不提示。&#xA;   默认显示全部界面与提示。&#xA;&#xA;/norestart   - 不尝试重新启动。默认在需要重启前提示。&#xA;/log log.txt - 把日志写到指定文件。默认在 %TEMP% 中创建日志文件。" />
   <String Id="HelpCloseButton" Value="关闭(&amp;C)" />
   <String Id="InstallLicenseLinkText" Value="[WixBundleName] &lt;a href=&quot;#&quot;&gt;许可条款&lt;/a&gt;。" />
-  <String Id="InstallAcceptCheckbox" Value="我同意许可条款(&amp;A)" />
+  <String Id="InstallAcceptCheckbox" Value="我已阅读并同意隐私政策(&amp;A)" />
   <String Id="InstallOptionsButton" Value="选项(&amp;O)" />
   <String Id="InstallInstallButton" Value="安装(&amp;I)" />
   <String Id="InstallCancelButton" Value="取消(&amp;C)" />
@@ -29,15 +39,15 @@
   <String Id="OptionsBrowseButton" Value="浏览(&amp;B)" />
   <String Id="OptionsOkButton" Value="确定(&amp;O)" />
   <String Id="OptionsCancelButton" Value="取消(&amp;C)" />
-  <String Id="ProgressHeader" Value="安装进度" />
+  <String Id="ProgressHeader" Value="正在安装 乾元 Primus" />
   <String Id="ProgressLabel" Value="正在处理：" />
   <String Id="OverallProgressPackageText" Value="正在初始化..." />
   <String Id="ProgressCancelButton" Value="取消(&amp;C)" />
-  <String Id="ModifyHeader" Value="修改安装" />
+  <String Id="ModifyHeader" Value="乾元 Primus 已安装" />
   <String Id="ModifyRepairButton" Value="修复(&amp;R)" />
   <String Id="ModifyUninstallButton" Value="卸载(&amp;U)" />
   <String Id="ModifyCancelButton" Value="取消(&amp;C)" />
-  <String Id="SuccessHeader" Value="安装成功" />
+  <String Id="SuccessHeader" Value="安装完成" />
   <String Id="SuccessCacheHeader" Value="缓存已完成" />
   <String Id="SuccessInstallHeader" Value="安装已完成" />
   <String Id="SuccessLayoutHeader" Value="本地副本已创建" />
@@ -45,12 +55,12 @@
   <String Id="SuccessRepairHeader" Value="修复已完成" />
   <String Id="SuccessUninstallHeader" Value="卸载已完成" />
   <String Id="SuccessUnsafeUninstallHeader" Value="卸载已完成" />
-  <String Id="SuccessLaunchButton" Value="启动(&amp;L)" />
+  <String Id="SuccessLaunchButton" Value="立即启动(&amp;L)" />
   <String Id="SuccessRestartText" Value="必须重新启动电脑才能使用该软件。" />
   <String Id="SuccessUninstallRestartText" Value="必须重新启动电脑才能完成卸载。" />
   <String Id="SuccessRestartButton" Value="重新启动(&amp;R)" />
-  <String Id="SuccessCloseButton" Value="关闭(&amp;C)" />
-  <String Id="FailureHeader" Value="安装失败" />
+  <String Id="SuccessCloseButton" Value="完成(&amp;F)" />
+  <String Id="FailureHeader" Value="安装未完成" />
   <String Id="FailureCacheHeader" Value="缓存失败" />
   <String Id="FailureInstallHeader" Value="安装失败" />
   <String Id="FailureLayoutHeader" Value="创建本地副本失败" />
@@ -58,7 +68,7 @@
   <String Id="FailureRepairHeader" Value="修复失败" />
   <String Id="FailureUninstallHeader" Value="卸载失败" />
   <String Id="FailureUnsafeUninstallHeader" Value="卸载失败" />
-  <String Id="FailureHyperlinkLogText" Value="安装遇到问题，未能完成。请解决问题后重新运行安装程序。详细信息见&lt;a href=&quot;#&quot;&gt;日志文件&lt;/a&gt;。" />
+  <String Id="FailureHyperlinkLogText" Value="安装过程中出现错误，已撤销所有更改。可以重新运行安装程序；仍然失败时，请把&lt;a href=&quot;#&quot;&gt;安装日志&lt;/a&gt;发给我们。" />
   <String Id="FailureRestartText" Value="必须重新启动电脑才能完成回滚。" />
   <String Id="FailureRestartButton" Value="重新启动(&amp;R)" />
   <String Id="FailureCloseButton" Value="关闭(&amp;C)" />

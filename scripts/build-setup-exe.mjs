@@ -5,7 +5,11 @@
 // 装好的仍是 MSI 本身，自动更新清单与应用内更新照旧只认 MSI（update-feed 不变）。
 //
 //   wix build Bundle.wxs -arch x86 -acceptEula wix7 -ext WixToolset.BootstrapperApplications.wixext
-//     -d ProductVersion=<与 MSI 相同> -d ShellDir=<src-tauri> -d Arch=<x64|arm64> -d Msi=<msi> -o <exe>
+//     -ext WixToolset.Util.wixext -d ProductVersion=<与 MSI 相同> -d PrimusVersion=<SemVer> -d ShellDir=<src-tauri>
+//     -d Arch=<x64|arm64> -d Msi=<msi> -o <exe>
+//
+// 界面是 exe 自己的自定义主题（windows/setup-theme.xml、bundle-zh-CN.wxl，ADR 0012），与 MSI 的 PrimusUI 一一对应；
+// MSI 在 exe 下不显示内部界面。
 //
 // 前提：MSI 已由 scripts/build-msi.mjs 构建；已安装 WiX 7 .NET 工具与 BootstrapperApplications 扩展
 // （版本见 scripts/version-baseline.json，CI 中 `wix extension add -g`）。WiX 只能在 Windows 上运行；
@@ -32,6 +36,9 @@ const tauriDir = join(root, "apps/desktop/src-tauri");
 export const BUNDLE_WXS = join(tauriDir, "windows/Bundle.wxs");
 export const BUNDLE_WXL = join(tauriDir, "windows/bundle-zh-CN.wxl");
 export const BUNDLE_EXTENSION = "WixToolset.BootstrapperApplications.wixext";
+/** 读取已安装的目录（util:RegistrySearch）用 */
+export const UTIL_EXTENSION = "WixToolset.Util.wixext";
+export const BUNDLE_THEME = join(tauriDir, "windows/setup-theme.xml");
 /**
  * Burn 引擎架构：两个 exe 都用 x86 引擎，x64 与 ARM64（x86 仿真）上都能运行，
  * 下错架构时由 Bundle.wxs 的 bal:Condition 给出中文说明
@@ -54,11 +61,13 @@ export function wixBundleArgs({
   wxs = BUNDLE_WXS,
   shellDir = tauriDir,
   productVersion,
+  primusVersion,
   arch,
   msi,
   out,
 }) {
-  if (!productVersion || !msi || !out) throw new Error("缺少 productVersion、msi 或 out");
+  if (!productVersion || !primusVersion || !msi || !out)
+    throw new Error("缺少 productVersion、primusVersion、msi 或 out");
   checkArch(arch);
   return [
     "build",
@@ -69,8 +78,12 @@ export function wixBundleArgs({
     "wix7",
     "-ext",
     BUNDLE_EXTENSION,
+    "-ext",
+    UTIL_EXTENSION,
     "-d",
     `ProductVersion=${productVersion}`,
+    "-d",
+    `PrimusVersion=${primusVersion}`,
     "-d",
     `ShellDir=${shellDir}`,
     "-d",
@@ -126,7 +139,7 @@ function main() {
   if (msiProblem) fail(msiProblem);
 
   const exe = join(outDir, setupExeFileName(version, arch));
-  const wixArgs = wixBundleArgs({ productVersion, arch, msi, out: exe });
+  const wixArgs = wixBundleArgs({ productVersion, primusVersion: version, arch, msi, out: exe });
 
   const run = (command, commandArgs, { capture = false } = {}) => {
     console.log(`\n> ${[command, ...commandArgs].join(" ")}`);

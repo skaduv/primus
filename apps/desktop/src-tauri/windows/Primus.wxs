@@ -27,7 +27,6 @@
     HKLM\Software\Primus                  InstallDir（下次升级沿用的安装目录）、Version（已安装的 SemVer，服务据此拒绝降级）
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
-     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <!-- 嵌入的 PowerShell 脚本（InstallAclScript、RemoveNsisScript）：build-msi.mjs 生成，经 -includepath 找到；
        两段 Base64 加起来超过命令行长度上限，不能用 -d 传 -->
@@ -41,8 +40,7 @@
     <!-- 开始菜单、控制面板“程序和功能”中的图标与信息（第 3.3.2 节） -->
     <Icon Id="PrimusIcon.ico" SourceFile="$(ShellDir)\icons\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="PrimusIcon.ico" />
-    <!-- 安装目录在安装时选定，之后不能“更改”；修复与卸载照常可用。ARPNOMODIFY=1 由下方 WixUI_InstallDir
-         自带（WixUI_InstallDir.wxs 已定义该属性），这里不能重复定义，否则 WIX0091 -->
+    <!-- 安装目录在安装时选定，之后不能“更改”；修复与卸载照常可用。ARPNOMODIFY=1 定义在 PrimusUI.wxi -->
 
     <!-- 查询本地化的内置账户名（WIX_ACCOUNT_USERS 等）：中文系统上 Users 组名不是 “Users”，
          data 目录授权按查询结果写入，而不是硬编码英文名 -->
@@ -250,26 +248,19 @@
       <Custom Action="InstallWebView2" Before="InstallFinalize" Condition="WEBVIEW2_MISSING AND NOT REMOVE" />
     </InstallExecuteSequence>
 
-    <!-- 允许选择安装目录（约束 C2：可把整个应用连同数据装到其他盘），中文界面由 -culture zh-CN 提供。
-         隐私政策 windows/Privacy.rtf，横幅与侧栏图 windows/art（由应用图标生成），完成页带“立即启动”勾选框（默认勾选）。 -->
-    <WixVariable Id="WixUILicenseRtf" Value="$(ShellDir)\windows\Privacy.rtf" />
+    <!-- 安装界面 PrimusUI（windows/PrimusUI.wxi，ADR 0012）：与 exe 安装程序同一套页面——准备安装（隐私政策、同意、
+         选择安装目录，约束 C2）→ 正在安装 → 完成（立即启动 / 完成）。中文公共对话框（浏览、取消确认、磁盘空间、文件占用）
+         沿用 WixUI，由 -culture zh-CN 提供文案。页眉图 windows/art/wix-banner.bmp（由应用图标生成）。 -->
     <WixVariable Id="WixUIBannerBmp" Value="$(ShellDir)\windows\art\wix-banner.bmp" />
     <WixVariable Id="WixUIDialogBmp" Value="$(ShellDir)\windows\art\wix-dialog.bmp" />
-    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <?include PrimusUI.wxi ?>
+    <UIRef Id="PrimusUI" />
 
-    <!-- 安装完成后立即启动：完成页勾选框只在全新安装 / 升级时显示（修复、卸载时 Installed 已设置，不显示）。
-         WixShellExec 在界面进程（安装者本人、非提权）中运行 Primus.exe；静默安装没有完成页，不会启动。
-         经 exe 安装程序 PrimusSetup 安装时（Bundle.wxs 传 PRIMUS_BUNDLE=1，ADR 0011）界面进程是 Burn 的提权进程，
-         在那里启动会让 Primus 以管理员身份运行，所以不显示勾选框、也不启动。 -->
-    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 乾元 Primus" Before="CostInitialize"
-                 Sequence="ui" Condition="NOT Installed AND NOT PRIMUS_BUNDLE" />
-    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <!-- 完成页的“立即启动”：WixShellExec 在界面进程（安装者本人、非提权）中运行 Primus.exe；只在全新安装 / 升级时显示，
+         静默安装没有完成页，不会启动。经 exe 安装程序时 MSI 不显示界面（ADR 0012），由 exe 自己的完成页启动；
+         PRIMUS_BUNDLE（Bundle.wxs 传入）时这里同样不显示该按钮，NOT Installed AND NOT PRIMUS_BUNDLE 为兜底。 -->
     <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
     <CustomAction Id="LaunchPrimus" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec"
                   Impersonate="yes" Return="ignore" />
-    <UI>
-      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchPrimus"
-               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT PRIMUS_BUNDLE" />
-    </UI>
   </Package>
 </Wix>

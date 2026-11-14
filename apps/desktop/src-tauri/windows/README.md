@@ -15,7 +15,7 @@
 
 | 内容 | 做法 |
 |---|---|
-| 安装目录可选 | `WixUI_InstallDir`，默认 `C:\Program Files\Primus`；静默安装可传 `INSTALLFOLDER="D:\某目录"` |
+| 安装目录可选 | 自己的界面 `PrimusUI.wxi`（ADR 0012，与 exe 的 `setup-theme.xml` 同一套页面），默认 `C:\Program Files\Primus`；静默安装可传 `INSTALLFOLDER="D:\某目录"` |
 | 主程序与资源 | `Primus.exe`、`PrimusUpdate.exe` 在安装目录根；`resources\runtime`、`resources\agent-core` 用 `<Files>` 整目录收集 |
 | 安装目录 ACL | MSI 的 `CheckInstallDir` / `ResetProgramAcl` 运行 `windows/install-acl.ps1`：检查祖先路径，用 `SetKernelObjectSecurity` 只锁定目录自身（不传播权限），保持句柄并冻结、检查程序树，拒绝重解析点和多重硬链接，全部检查通过后才修复程序文件 ACL。MSI 的 `InstallDirAcl` 组件另用 `PermissionEx Sddl`（MsiLockPermissionsEx）设置同一受保护 DACL：SYSTEM、Administrators 完全控制，Users 与应用包读取和执行；`data` 不参与程序文件修复 |
 | `data` 目录 | `CreateFolder` + `util:PermissionEx` 给本地化的 Users 组（`util:QueryWindowsWellKnownSIDs` 查出的 `[WIX_ACCOUNT_USERS]`）授予“修改”(M)，继承到子项；组件 `Permanent`，卸载与升级保留 |
@@ -25,7 +25,7 @@
 | 从 NSIS 版迁移 | `AppSearch` 读到 NSIS 版的卸载信息与安装目录、且没有 MSI 记下的安装目录时，装回 NSIS 版的目录，并在 `CheckInstallDir` 之前以 `remove-nsis.ps1` 静默卸载 NSIS 版（`data` 保留） |
 | 完成页 | “立即启动 乾元 Primus”勾选框（默认勾选，仅全新安装 / 升级显示），`WixShellExec` 以安装者身份启动 |
 | 快捷方式 | 公共开始菜单与公共桌面“乾元 Primus”，`System.AppUserModel.ID = com.primus.desktop`（通知归属） |
-| 卸载信息 | `ARPPRODUCTICON`；`ARPNOMODIFY`（由 WixUI_InstallDir 提供；安装目录装后不可改，修复 / 卸载可用） |
+| 卸载信息 | `ARPPRODUCTICON`；`ARPNOMODIFY`（定义在 PrimusUI.wxi；安装目录装后不可改，修复 / 卸载可用） |
 
 CI（`.github/workflows/ci.yml` Windows 作业）构建 MSI 后用 `scripts/msi-smoke.ps1` 静默安装，检查布局、`data` 的 ACL（`BUILTIN\Users` 显式 Modify 且继承，显式与继承的 Users 授权都没有更改权限 / 取得所有权）、以中完整性级别（去掉管理员权限）实际写入 `data` 且写不进安装目录根、开始菜单快捷方式与 WebView2 处理、更新服务的安装与暂存目录 ACL，再卸载并确认 `data` 与其中文件仍在、服务与 `%ProgramData%\Primus` 已删除；随后 `scripts/update-service-smoke.ps1` 用 `scripts/build-upgrade-test-msi.mjs` 生成的两个更高版本的 MSI，以中完整性级别经命名管道验证静默升级、拒绝错签与降级、程序运行中时放弃安装。两个作业还会构建本架构的 exe 安装程序并做安装 / 卸载冒烟，再用它安装基准版本，把同一套升级流程跑一遍（`-BaseExe`，ADR 0011）。
 
