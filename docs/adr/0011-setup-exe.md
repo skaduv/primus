@@ -32,5 +32,5 @@ ADR 0007 起只发 MSI。实际分发中，有些 Windows 10 电脑双击 `.msi`
 - 用户仍要分辨 x64 与 ARM64，下错时 exe 会提示改用哪一个；Release 正文说明“大多数电脑用 x64，骁龙等 ARM 笔记本用 arm64”。
 - Release 多两个附件；构建作业多两步。
 - 回填早于本 ADR 的版本时没有 exe，`publish-release.sh` 只上传目录里有的 exe（发布工作流设 `REQUIRE_SETUP_EXE=1`，两个都必须有）。
-- 用早于本 ADR 的标签重建时，exe 会用工作流提交中的 `Bundle.wxs` 打包旧 MSI；旧 MSI 不认识 `PRIMUS_BUNDLE`，其完成页仍会显示“立即启动”。只影响手动重建旧标签。
+- 早于本 ADR 的标签不能再用发布工作流重建：旧 MSI 不认识 `PRIMUS_BUNDLE`，打进 exe 后完成页的“立即启动”会以管理员身份运行 Primus，所以构建作业在编译前检查标签里的 `Primus.wxs`，不处理 `PRIMUS_BUNDLE` 就失败。只发到公开仓的旧版本仍可用 `backfill_source` 回填到源码仓。
 - 经 exe 安装没有“立即启动”，这是为不以管理员身份运行 Primus 所做的取舍。

@@ -82,7 +82,7 @@ $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
   throw '需要以管理员身份运行（按机器安装）'
 }
-Assert-True ((Get-UninstallEntries).Count -eq 0) "安装前没有已装的 $ProductName"
+Assert-True (@(Get-UninstallEntries).Count -eq 0) "安装前没有已装的 $ProductName"
 
 $osArch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
 $expectedMachine = switch ($osArch) {
@@ -110,11 +110,11 @@ if ($process.ExitCode -notin 0, 3010) {
 Write-Host "  ✓ 安装完成（退出码 $($process.ExitCode)）"
 
 Write-Step '检查安装结果'
-$entries = Get-UninstallEntries
+$entries = @(Get-UninstallEntries)
 Assert-True ($entries.Count -eq 1) "“应用和功能”中恰有一个 $ProductName（实际 $($entries.Count) 个）"
 $entry = $entries[0]
 Assert-True ($entry.PSObject.Properties['WindowsInstaller'] -and $entry.WindowsInstaller -eq 1) '该条目是 MSI，不是 exe 的 bundle'
-Assert-True ((Get-BundleEntries).Count -eq 0) '没有留下 Burn bundle 的登记'
+Assert-True (@(Get-BundleEntries).Count -eq 0) '没有留下 Burn bundle 的登记'
 $productCode = $entry.PSChildName
 Assert-True ($productCode -match '^\{[0-9A-F-]{36}\}$') "产品代码 $productCode"
 
@@ -138,7 +138,7 @@ if ($process.ExitCode -notin 0, 3010) {
   Show-LogTail 'uninstall.log'
   throw "✗ 卸载失败，退出码 $($process.ExitCode)"
 }
-Assert-True ((Get-UninstallEntries).Count -eq 0) '卸载条目已移除'
+Assert-True (@(Get-UninstallEntries).Count -eq 0) '卸载条目已移除'
 Assert-True (-not (Test-Path -LiteralPath $mainExe)) 'Primus.exe 已删除'
 
 # data 在卸载时保留（Permanent 组件）；冒烟结束清掉，便于后续步骤与重复运行
