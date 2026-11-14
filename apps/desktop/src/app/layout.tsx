@@ -1,6 +1,7 @@
 import "./globals.css";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { CleanCopy } from "@/components/clean-copy";
 import { KeepAliveShell } from "@/components/layout/keep-alive-shell";
 import { AppearanceController } from "@/components/theme/appearance-controller";
 import { UpdatePrompt } from "@/features/update/update-prompt";
@@ -19,6 +20,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body>
         <AppearanceController />
+        {/* 选中复制：只复制语义结构与文字，不带界面样式（lib/clean-copy.ts） */}
+        <CleanCopy />
         {/* 主界面常驻在布局里，切换页面时不卸载（见 KeepAliveShell）；主页本身不再渲染内容 */}
         <KeepAliveShell />
         {children}
