@@ -284,6 +284,47 @@ describe("primus-plan", () => {
     expect(settle()).toBeUndefined();
   });
 
+  it("执行计划：用户回合注入当前进度；压缩、恢复后重新附上完整计划；更新待办后又做了事，结束前也提醒", async () => {
+    const entries: { type: string; customType?: string; data?: unknown }[] = [];
+    const { tools, ctx, cmd, handlers, userTurn } = setup(entries);
+    await cmd("on");
+    userTurn();
+    const submit = (tools[PLAN_SUBMIT_TOOL] as Tool).execute("t", PLAN, undefined, undefined, ctx);
+    await Promise.resolve();
+    await cmd(`approve ${JSON.stringify({ id: "p1" })}`);
+    await submit;
+    // 批准后的下一个用户回合：只带进度，不重复计划正文（工具结果里已有）
+    const next = userTurn()?.message.content ?? "";
+    expect(next).toContain("<primus-plan-executing>");
+    expect(next).toContain("[in_progress] 1. 协议类型");
+    expect(next).not.toContain("## 已批准的计划");
+    // 运行中压缩：下一次回合结束时插入带完整计划的提醒，只插一次
+    handlers.agent_start?.({}, ctx);
+    handlers.session_compact?.({}, ctx);
+    const turn = (toolName?: string) =>
+      handlers.turn_end?.({ toolResults: toolName ? [{ toolName }] : [] }, ctx) as
+        | { entries: { content: string }[] }
+        | undefined;
+    const after = turn("edit")?.entries[0]?.content ?? "";
+    expect(after).toContain("## 已批准的计划");
+    expect(after).toContain("# 加计划模式");
+    expect(turn("edit")).toBeUndefined();
+    // 这一轮更新过待办，之后又改了文件：准备结束时仍提醒一次
+    turn(TODO_TOOL);
+    turn("edit");
+    const settle = handlers.agent_before_settle?.(
+      { outcome: "completed", context: { canContinue: true } },
+      ctx,
+    ) as { continue: boolean } | undefined;
+    expect(settle?.continue).toBe(true);
+    // 恢复会话：第一次用户回合附上完整计划
+    const b = setup(entries);
+    b.handlers.session_start?.({}, b.ctx);
+    expect(b.plan.state.phase).toBe("executing");
+    expect(b.userTurn()?.message.content).toContain("## 已批准的计划");
+    expect(b.userTurn()?.message.content).not.toContain("## 已批准的计划");
+  });
+
   it("ask_user：推 primus:ask 等回答，选项或自己写的想法都能回；关闭提问时停下", async () => {
     const { tools, ctx, cmd, lastWidget } = setup();
     const ask = tools[ASK_USER_TOOL] as Tool;
