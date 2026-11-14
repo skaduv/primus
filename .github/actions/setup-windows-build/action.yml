@@ -49,6 +49,8 @@ runs:
         wix --version
         wix extension add -g WixToolset.UI.wixext/$env:WIX_VERSION
         wix extension add -g WixToolset.Util.wixext/$env:WIX_VERSION
+        # exe 安装程序 PrimusSetup（Burn 引导程序，ADR 0011）
+        wix extension add -g WixToolset.BootstrapperApplications.wixext/$env:WIX_VERSION
 
     - name: 安装依赖（按锁文件）
       shell: pwsh

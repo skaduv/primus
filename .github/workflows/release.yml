@@ -2,14 +2,17 @@
 # `skaduv/primus` 的 Release（github.token），再同步到公开的 `skaduv/primus-releases`（ADR 0009）。源码仓保持私有；
 # 写公开仓使用只授权该公开仓 Contents 写权限的 PRIMUS_RELEASES_TOKEN。两边附件与正文由 scripts/publish-release.sh 生成，
 # 内容一致；自动更新清单 update-feed 只在公开仓维护（客户端只能匿名读取公开仓）
-# （只发 MSI，ADR 0007：按机器安装在 Program Files，附带按需启动的更新服务 PrimusUpdate，应用内静默升级）
+# （安装包是 MSI，ADR 0007：按机器安装在 Program Files，附带按需启动的更新服务 PrimusUpdate，应用内静默升级）
+# - 每个架构另发一个 exe 安装程序 PrimusSetup_<ver>_<x64|arm64>_zh-CN.exe（ADR 0011）：WiX Burn 引导程序，内嵌同架构的 MSI，
+#   不经 .msi 文件关联（给双击 MSI 打不开的电脑用），下错架构时用中文提示；装好的就是 MSI 本身，update-feed 仍只引用 MSI。
+#   构建作业在 MSI 冒烟之后，用工作流自身提交中的 Bundle.wxs 与构建脚本打包本架构的 MSI，并在同一运行器上做静默安装 / 卸载冒烟
 # - 推送 v* 标签时自动运行；Release 不存在则创建。版本含预发布标识（含 '-'，如 1.2.0-beta.1）时标为 prerelease，
 #   否则为正式版并设为 Latest
 # - workflow_dispatch 输入已有标签（例如 v0.0.9），重新构建该标签并更新对应 Release：同名附件覆盖上传
 #   （失败时回滚到旧附件），不在本次清单中的旧附件（例如早期的 NSIS 安装程序、SBOM、.sha256）删除，prerelease / Latest 按上一条规则更正
-# - workflow_dispatch 勾选 backfill_source：不构建，只把公开仓已有的该版本 2 个 MSI 回填到源码仓的 Release
+# - workflow_dispatch 勾选 backfill_source：不构建，只把公开仓已有的该版本 2 个 MSI（有 exe 安装程序时连同它们）回填到源码仓的 Release
 #   （用于只发到公开仓、源码仓缺 Release 的版本），不改公开仓与 update-feed
-# - Release 附件只有 2 个安装包：Primus_<ver>_<x64|arm64>_zh-CN.msi。updater 签名 .sig 照常生成，但只经 workflow
+# - Release 附件为 2 个 MSI：Primus_<ver>_<x64|arm64>_zh-CN.msi，加 2 个 exe 安装程序 PrimusSetup_<ver>_<x64|arm64>_zh-CN.exe。updater 签名 .sig 照常生成，但只经 workflow
 #   artifact 在作业之间传递（.sig 内容内联进 update-feed 清单的 signature 字段），不上传到 Release；SBOM 与被禁 SDK
 #   检查、安装包检查、静默安装 / 卸载冒烟照常在构建作业中运行，但不作为附件，SHA-256 写在 Release 正文
 # - 自动更新（技术方案第 3.6 节、ADR 0007）：每次发布都必须配置仓库 Secret TAURI_SIGNING_PRIVATE_KEY /
@@ -18,10 +21,11 @@
 #   scripts/gen-update-manifest.mjs 生成 Tauri 静态清单（只有 windows-<arch>-msi），上传到固定的 Release `update-feed`
 #   （prerelease、不设 Latest）：正式版更新 stable.json 与 beta.json（beta 只在本版本更高时覆盖），预发布只更新
 #   beta.json；现有清单版本更高时不覆盖（重建旧标签不会让通道回退）
-# - 两个架构都构建并冒烟成功后才发布（发布作业 needs 整个矩阵）
+# - 两个架构的 MSI 与 exe 安装程序都构建并冒烟成功后才发布（发布作业 needs 整个矩阵）
 # - 工作流本身来自触发它的提交（手动触发时为 main），构建的源码一律 checkout 该标签；
 #   共用的 composite action 从工作流自身的提交另行取出。标签中须已有更新服务（apps/desktop/src-tauri/update-service），
-#   更早的标签（MSI + NSIS 双安装包时期）无法用本工作流构建；早于 RPC 契约测试的标签可以构建，但跳过契约测试一步
+#   更早的标签（MSI + NSIS 双安装包时期）无法用本工作流构建；标签的 Primus.wxs 还须处理 PRIMUS_BUNDLE（ADR 0011），
+#   更早的标签同样不能构建（只能用 backfill_source 回填）；早于 RPC 契约测试的标签可以构建，但跳过契约测试一步
 # - 不做 Authenticode 代码签名（项目不购买证书）：安装包与程序不带签名，正文说明 SmartScreen 的提示
 name: Release
 
@@ -83,12 +87,19 @@ jobs:
           ref: refs/tags/${{ env.RELEASE_TAG }}
           persist-credentials: false
 
-      - name: 取出工作流提交中的共用 action
+      # 共用 action，以及 exe 安装程序的定义与脚本（ADR 0011：与发布脚本一样取工作流自身的提交）
+      - name: 取出工作流提交中的共用 action 与安装程序定义
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: .release-ci
-          sparse-checkout: .github/actions
+          sparse-checkout: |
+            .github/actions
+            scripts
+            apps/desktop/src-tauri/windows
+            apps/desktop/src-tauri/icons
+            apps/desktop/src-tauri/tauri.conf.json
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: 校验标签版本与 tauri.conf.json 一致
@@ -109,13 +120,19 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
 
-      - name: 检查标签中含更新服务与自动更新脚本
+      - name: 检查标签中含更新服务、自动更新脚本与 PRIMUS_BUNDLE 处理
         shell: pwsh
         run: |
           $required = 'apps/desktop/src-tauri/update-service/Cargo.toml', 'scripts/check-installers.ps1', 'scripts/gen-update-manifest.mjs'
           $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })
           if ($missing.Count -gt 0) {
             throw "标签 $env:RELEASE_TAG 中缺少 $($missing -join '、')：该标签早于只发 MSI 与更新服务（ADR 0007），不能用本工作流构建"
+          }
+          # ADR 0011：标签里的 Primus.wxs 必须认识 PRIMUS_BUNDLE（经 exe 安装时完成页不在 Burn 的提权进程里启动 Primus）。
+          # 更早的标签打进 exe 会以管理员身份启动 Primus，不能用本工作流构建（在编译前就失败）
+          $hits = @(Select-String -LiteralPath apps/desktop/src-tauri/windows/Primus.wxs -Pattern 'NOT PRIMUS_BUNDLE' -SimpleMatch).Count
+          if ($hits -lt 2) {
+            throw "标签 $env:RELEASE_TAG 的 Primus.wxs 不处理 PRIMUS_BUNDLE：该标签早于 exe 安装程序（ADR 0011），不能用本工作流构建"
           }
 
       # 自动更新（ADR 0007）：每次发布都必须有 updater 密钥。公钥编译进 Primus.exe 与 PrimusUpdate.exe（没有公钥的构建禁用自动更新），
@@ -184,6 +201,25 @@ jobs:
         shell: pwsh
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
+      # ADR 0011：exe 安装程序，内嵌刚冒烟过的本架构 MSI（Bundle.wxs、界面文案与构建脚本取自工作流自身的提交）
+      - name: 构建 exe 安装程序 PrimusSetup_${{ steps.version.outputs.version }}_${{ matrix.arch }}_zh-CN.exe
+        shell: pwsh
+        env:
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'setup-out'
+          node .release-ci/scripts/build-setup-exe.mjs --arch $env:ARCH --msi $env:PRIMUS_MSI --version $env:VERSION --out-dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PRIMUS_SETUP_EXE=$(Join-Path $dir "PrimusSetup_${env:VERSION}_${env:ARCH}_zh-CN.exe")" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # 静默安装 → “应用和功能”中只有 MSI 本身、没有 bundle 登记 → 版本记录与 Primus.exe 的架构与本机一致 → 卸载
+      - name: exe 安装程序静默安装 / 卸载冒烟
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./.release-ci/scripts/setup-exe-smoke.ps1 -Exe $env:PRIMUS_SETUP_EXE -Version $env:VERSION
+
       - name: 汇集发布附件
         shell: pwsh
         env:
@@ -192,7 +228,7 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP "release-assets-$env:ARCH"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           # 安装包及其 updater 签名（发布作业把 .sig 内容内联进自动更新清单）；.sig 只在作业间传递，不上传到 Release
-          $files = @($env:PRIMUS_MSI, "$env:PRIMUS_MSI.sig")
+          $files = @($env:PRIMUS_MSI, "$env:PRIMUS_MSI.sig", $env:PRIMUS_SETUP_EXE)
           if (-not (Test-Path -LiteralPath "$env:PRIMUS_MSI.sig")) { throw "缺少 updater 签名 $env:PRIMUS_MSI.sig" }
           $lines = foreach ($file in $files) {
             Copy-Item -LiteralPath $file -Destination $dir
@@ -268,6 +304,8 @@ jobs:
             "Primus_${VERSION}_arm64_zh-CN.msi.sig"
             "Primus_${VERSION}_x64_zh-CN.msi"
             "Primus_${VERSION}_x64_zh-CN.msi.sig"
+            "PrimusSetup_${VERSION}_arm64_zh-CN.exe"
+            "PrimusSetup_${VERSION}_x64_zh-CN.exe"
           )
           expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
           actual="$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*.txt' -printf '%f\n' | LC_ALL=C sort)"
@@ -314,6 +352,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          REQUIRE_SETUP_EXE: "1"
         run: bash .release-ci/scripts/publish-release.sh
 
       - name: 同步到公开发布仓 skaduv/primus-releases
@@ -322,6 +361,7 @@ jobs:
           GH_REPO: skaduv/primus-releases
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          REQUIRE_SETUP_EXE: "1"
         run: bash .release-ci/scripts/publish-release.sh
 
       # 自动更新清单（技术方案第 3.6 节、ADR 0007）：固定的 Release `update-feed`（prerelease、不设 Latest）存放
@@ -423,7 +463,18 @@ jobs:
           for arch in x64 arm64; do
             gh release download "$RELEASE_TAG" --pattern "Primus_${version}_${arch}_zh-CN.msi" --dir assets
           done
-          (cd assets && sha256sum Primus_*.msi) > SHA256SUMS.txt
+          # exe 安装程序（ADR 0011）只有之后的版本才有：公开仓有就一并回填
+          # 附件列表查询失败就停止回填，不能当成“没有 exe”继续（否则发布脚本会删掉源码仓已有的 exe）
+          names="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')" \
+            || { echo "::error::读取公开仓 ${RELEASE_TAG} 的附件列表失败"; exit 1; }
+          for arch in x64 arm64; do
+            setup="PrimusSetup_${version}_${arch}_zh-CN.exe"
+            if grep -Fxq -- "$setup" <<<"$names"; then
+              gh release download "$RELEASE_TAG" --pattern "$setup" --dir assets
+            fi
+          done
+          (cd assets && sha256sum Primus_*.msi PrimusSetup_*.exe 2>/dev/null || true) > SHA256SUMS.txt
+          [[ "$(grep -c 'Primus_.*\.msi$' SHA256SUMS.txt)" -eq 2 ]] || { echo "::error::校验清单缺少 MSI"; exit 1; }
           cat SHA256SUMS.txt
           prerelease=false
           [[ "$version" == *-* ]] && prerelease=true

@@ -18,6 +18,11 @@
 .PARAMETER Msi
   基准 MSI（版本即 tauri.conf.json 的版本）。
 
+.PARAMETER BaseExe
+  可选：exe 安装程序 PrimusSetup_<ver>_<arch>_zh-CN.exe（ADR 0011）。给出时基准版本改由它静默安装（内嵌的 MSI 须与 -Msi 相同），
+  其余步骤不变，并额外验证：exe 安装后与每次升级后“应用和功能”里都只有一个 MSI 条目、没有 Burn bundle 的登记，
+  即用 exe 装的副本也能被应用内更新正常升级。exe 不接受自定义安装目录，只能装到默认的 Program Files\Primus。
+
 .PARAMETER Upgrade1 / Upgrade2
   两个升级 MSI（同目录下有同名 .sig），版本依次更高。
 
@@ -29,6 +34,7 @@ param(
   [Parameter(Mandatory)] [string] $Msi,
   [Parameter(Mandatory)] [string] $Upgrade1,
   [Parameter(Mandatory)] [string] $Upgrade2,
+  [string] $BaseExe,
   [string] $InstallDir = (Join-Path $env:ProgramFiles 'Primus'),
   [string] $Gsudo,
   [string] $LogDir = (Join-Path ([IO.Path]::GetTempPath()) 'primus-update-service-smoke'),
@@ -53,6 +59,9 @@ if (-not $Gsudo) { $Gsudo = (Get-Command gsudo -ErrorAction SilentlyContinue)?.S
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw '✗ 需要以管理员身份运行' }
 if (Test-Path -LiteralPath $InstallDir) { throw "✗ 安装目录已存在：$InstallDir（请在干净环境中运行）" }
+if ($BaseExe -and $InstallDir -ne [IO.Path]::GetFullPath((Join-Path $env:ProgramFiles 'Primus'))) {
+  throw '✗ -BaseExe 只能装到默认目录 Program Files\Primus，不能同时指定 -InstallDir'
+}
 
 # MSI 文件名 Primus_<ver>_<arch>_zh-CN.msi 中的版本
 function Get-MsiVersion([string] $Path) {
@@ -78,6 +87,39 @@ function Invoke-Msiexec([string[]] $Arguments, [string] $LogName) {
     if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 | ForEach-Object { Write-Host "    $_" } }
     throw "✗ msiexec 失败，退出码 $($p.ExitCode)（日志 $log）"
   }
+}
+
+# exe 安装程序（Burn）静默安装；与 setup-exe-smoke.ps1 相同的调用方式
+function Invoke-SetupExe([string] $Path, [string] $LogName) {
+  $log = Join-Path $LogDir $LogName
+  Write-Host "  $(Split-Path -Leaf $Path) /quiet /norestart /log `"$log`""
+  $p = Start-Process -FilePath (Resolve-Path -LiteralPath $Path).Path -ArgumentList @('/quiet', '/norestart', '/log', "`"$log`"") -PassThru
+  $null = $p.Handle
+  if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    throw "✗ exe 安装程序超过 $TimeoutSeconds 秒未结束（日志 $log）"
+  }
+  if ($p.ExitCode -notin 0, 3010) {
+    Get-ChildItem -Path $LogDir -Filter "$([IO.Path]::GetFileNameWithoutExtension($LogName))*.log" -File -ErrorAction SilentlyContinue | ForEach-Object {
+      Write-Host "    ---- $($_.Name)"
+      Get-Content -LiteralPath $_.FullName -Tail 60 | ForEach-Object { Write-Host "    $_" }
+    }
+    throw "✗ exe 安装程序失败，退出码 $($p.ExitCode)（日志 $log）"
+  }
+}
+
+# exe 安装的副本：“应用和功能”里只有 MSI 本身，没有 Burn bundle 的登记（ADR 0011）
+$BundleUpgradeCode = '{FD216D87-9A80-4208-A28D-FA4B80241F96}'
+function Assert-SingleMsiEntry([string] $When) {
+  $keys = @(
+    'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+    'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+  )
+  $all = @(Get-ItemProperty -Path $keys -ErrorAction SilentlyContinue)
+  $entries = @($all | Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -eq '乾元 Primus' })
+  Assert-True ($entries.Count -eq 1 -and $entries[0].PSObject.Properties['WindowsInstaller'] -and $entries[0].WindowsInstaller -eq 1) "$When：“应用和功能”中恰有一个 MSI 条目（实际 $($entries.Count) 个）"
+  $bundles = @($all | Where-Object { $_.PSObject.Properties['BundleUpgradeCode'] -and (@($_.BundleUpgradeCode) -contains $BundleUpgradeCode) })
+  Assert-True ($bundles.Count -eq 0) "$When：没有 Burn bundle 的登记"
 }
 
 # 升级包复制到当前用户的临时目录（请求者自己能读、普通用户可写的位置，与薄壳的 users\<SID>\updates 同类）
@@ -131,8 +173,14 @@ function Start-Holder([int] $Seconds) {
 }
 
 try {
-  Write-Step "安装基准版本 $BaseVersion → $InstallDir"
-  Invoke-Msiexec @('/i', "`"$((Resolve-Path -LiteralPath $Msi).Path)`"", "INSTALLFOLDER=`"$InstallDir`"") 'base-install.log'
+  if ($BaseExe) {
+    Write-Step "用 exe 安装程序安装基准版本 $BaseVersion → $InstallDir"
+    Invoke-SetupExe $BaseExe 'base-setup.log'
+    Assert-SingleMsiEntry 'exe 安装后'
+  } else {
+    Write-Step "安装基准版本 $BaseVersion → $InstallDir"
+    Invoke-Msiexec @('/i', "`"$((Resolve-Path -LiteralPath $Msi).Path)`"", "INSTALLFOLDER=`"$InstallDir`"") 'base-install.log'
+  }
   Assert-UpdateServiceInstalled $InstallDir $BaseVersion
   Assert-True ((Get-Service $UpdateServiceName).Status -eq 'Stopped') '更新服务安装后未运行（按需启动）'
 
@@ -163,12 +211,14 @@ try {
   Assert-True ($r.Code -eq 0) '服务接受请求'
   Wait-Installed $Version1
   Assert-True $holder.HasExited '安装开始前程序已退出'
+  if ($BaseExe) { Assert-SingleMsiEntry "升级到 $Version1 后" }
 
   Write-Step "程序未运行：静默升级到 $Version2"
   $r = Invoke-Request $Pkg2 "$Pkg2.sig" $Version2
   Assert-True ($r.Code -eq 0) '服务接受请求'
   Wait-Installed $Version2
   Assert-True ((Get-ServiceLogText) -match 'msiexec 结束：Success') '服务日志记录 msiexec 成功'
+  if ($BaseExe) { Assert-SingleMsiEntry "升级到 $Version2 后" }
 
   Write-Step '降级：拒绝'
   $r = Invoke-Request $Pkg1 "$Pkg1.sig" $Version1
@@ -189,4 +239,5 @@ try {
   }
 }
 
-Write-Host "`n✓ 更新服务静默升级冒烟通过（$BaseVersion → $Version1 → $Version2）" -ForegroundColor Green
+$how = if ($BaseExe) { '，基准版本由 exe 安装程序安装' } else { '' }
+Write-Host "`n✓ 更新服务静默升级冒烟通过（$BaseVersion → $Version1 → $Version2$how）" -ForegroundColor Green
