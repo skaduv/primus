@@ -2,14 +2,17 @@
 # `skaduv/primus` 的 Release（github.token），再同步到公开的 `skaduv/primus-releases`（ADR 0009）。源码仓保持私有；
 # 写公开仓使用只授权该公开仓 Contents 写权限的 PRIMUS_RELEASES_TOKEN。两边附件与正文由 scripts/publish-release.sh 生成，
 # 内容一致；自动更新清单 update-feed 只在公开仓维护（客户端只能匿名读取公开仓）
-# （只发 MSI，ADR 0007：按机器安装在 Program Files，附带按需启动的更新服务 PrimusUpdate，应用内静默升级）
+# （安装包是 MSI，ADR 0007：按机器安装在 Program Files，附带按需启动的更新服务 PrimusUpdate，应用内静默升级）
+# - 另发一个通用安装程序 PrimusSetup_<ver>_zh-CN.exe（ADR 0011）：WiX Burn 引导程序，内嵌两个 MSI，按本机原生架构装其中一个，
+#   不经 .msi 文件关联（给双击 MSI 打不开的电脑用）；装好的就是 MSI 本身，update-feed 仍只引用 MSI。
+#   setup-exe 作业从工作流自身的提交取 Bundle.wxs 与构建脚本，用矩阵产出的两个 MSI 构建；x64 与 ARM64 运行器各做一次静默安装 / 卸载冒烟
 # - 推送 v* 标签时自动运行；Release 不存在则创建。版本含预发布标识（含 '-'，如 1.2.0-beta.1）时标为 prerelease，
 #   否则为正式版并设为 Latest
 # - workflow_dispatch 输入已有标签（例如 v0.0.9），重新构建该标签并更新对应 Release：同名附件覆盖上传
 #   （失败时回滚到旧附件），不在本次清单中的旧附件（例如早期的 NSIS 安装程序、SBOM、.sha256）删除，prerelease / Latest 按上一条规则更正
-# - workflow_dispatch 勾选 backfill_source：不构建，只把公开仓已有的该版本 2 个 MSI 回填到源码仓的 Release
+# - workflow_dispatch 勾选 backfill_source：不构建，只把公开仓已有的该版本 2 个 MSI（有通用安装程序时连同它）回填到源码仓的 Release
 #   （用于只发到公开仓、源码仓缺 Release 的版本），不改公开仓与 update-feed
-# - Release 附件只有 2 个安装包：Primus_<ver>_<x64|arm64>_zh-CN.msi。updater 签名 .sig 照常生成，但只经 workflow
+# - Release 附件为 2 个 MSI：Primus_<ver>_<x64|arm64>_zh-CN.msi，加 1 个通用安装程序 PrimusSetup_<ver>_zh-CN.exe。updater 签名 .sig 照常生成，但只经 workflow
 #   artifact 在作业之间传递（.sig 内容内联进 update-feed 清单的 signature 字段），不上传到 Release；SBOM 与被禁 SDK
 #   检查、安装包检查、静默安装 / 卸载冒烟照常在构建作业中运行，但不作为附件，SHA-256 写在 Release 正文
 # - 自动更新（技术方案第 3.6 节、ADR 0007）：每次发布都必须配置仓库 Secret TAURI_SIGNING_PRIVATE_KEY /
@@ -18,7 +21,7 @@
 #   scripts/gen-update-manifest.mjs 生成 Tauri 静态清单（只有 windows-<arch>-msi），上传到固定的 Release `update-feed`
 #   （prerelease、不设 Latest）：正式版更新 stable.json 与 beta.json（beta 只在本版本更高时覆盖），预发布只更新
 #   beta.json；现有清单版本更高时不覆盖（重建旧标签不会让通道回退）
-# - 两个架构都构建并冒烟成功后才发布（发布作业 needs 整个矩阵）
+# - 两个架构都构建并冒烟成功、通用安装程序在两个架构上冒烟成功后才发布（发布作业 needs 整个矩阵与 setup-exe-smoke）
 # - 工作流本身来自触发它的提交（手动触发时为 main），构建的源码一律 checkout 该标签；
 #   共用的 composite action 从工作流自身的提交另行取出。标签中须已有更新服务（apps/desktop/src-tauri/update-service），
 #   更早的标签（MSI + NSIS 双安装包时期）无法用本工作流构建；早于 RPC 契约测试的标签可以构建，但跳过契约测试一步
@@ -212,9 +215,104 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # ADR 0011：通用安装程序。Bundle.wxs、界面文案与构建脚本取自工作流自身的提交（与发布脚本同一做法），
+  # 两个 MSI 来自上面矩阵的构建产物；只需要 WiX，不装 Node/Rust 依赖（构建脚本只用 Node 内置模块，用运行器自带的 Node）
+  setup-exe:
+    name: 构建通用安装程序（PrimusSetup.exe）
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - name: 取出工作流提交中的安装程序定义与脚本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            scripts
+            apps/desktop/src-tauri/windows
+            apps/desktop/src-tauri/icons
+            apps/desktop/src-tauri/tauri.conf.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: 安装 WiX 与 BootstrapperApplications 扩展
+        shell: pwsh
+        run: |
+          $wix = (Get-Content -Raw scripts/version-baseline.json | ConvertFrom-Json).toolchain.wix
+          if ($wix -notmatch '^\d+\.\d+\.\d+$') { throw "version-baseline.json 的 WiX 版本不是 x.y.z：$wix" }
+          dotnet tool install --global wix --version $wix
+          wix eula accept wix7
+          wix extension add -g "WixToolset.BootstrapperApplications.wixext/$wix"
+          wix --version
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+          path: msi
+
+      - name: 构建 PrimusSetup_${{ needs.build.outputs.version }}_zh-CN.exe
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          node scripts/build-setup-exe.mjs --version $env:VERSION `
+            --x64 "msi/Primus_${env:VERSION}_x64_zh-CN.msi" --arm64 "msi/Primus_${env:VERSION}_arm64_zh-CN.msi" `
+            --out-dir setup-out
+          $dir = Join-Path $env:RUNNER_TEMP 'release-assets-setup'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $name = "PrimusSetup_${env:VERSION}_zh-CN.exe"
+          Copy-Item -LiteralPath (Join-Path setup-out $name) -Destination $dir
+          $hash = (Get-FileHash -LiteralPath (Join-Path $dir $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          # 与 MSI 一样：校验清单只在作业之间传递，LF 行尾供 sha256sum 读取
+          [IO.File]::WriteAllText((Join-Path $dir 'SHA256SUMS-setup.txt'), "$hash  $name`n")
+          Get-ChildItem $dir | Select-Object Name, Length
+          "RELEASE_ASSETS=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 上传通用安装程序（供冒烟与发布作业使用）
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets-setup
+          path: ${{ env.RELEASE_ASSETS }}
+          retention-days: 7
+          if-no-files-found: error
+
+  setup-exe-smoke:
+    name: 通用安装程序冒烟（Windows ${{ matrix.arch }}）
+    needs: [build, setup-exe]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-2025
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: 取出工作流提交中的冒烟脚本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets-setup
+          path: setup
+
+      # 静默安装 → “应用和功能”中只有 MSI 本身、没有 bundle 登记 → 版本记录与 Primus.exe 的架构与本机一致 → 卸载
+      - name: 静默安装 / 卸载冒烟
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: ./scripts/setup-exe-smoke.ps1 -Exe "setup/PrimusSetup_${env:VERSION}_zh-CN.exe" -Version $env:VERSION
+
   publish:
     name: 发布到 GitHub Releases
-    needs: build
+    needs: [build, setup-exe-smoke]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # 共享的 update-feed 清单“读取 → 比较 → 上传”必须串行：不同标签的发布作业若并发，较旧版本可能读到旧清单后
@@ -268,13 +366,14 @@ jobs:
             "Primus_${VERSION}_arm64_zh-CN.msi.sig"
             "Primus_${VERSION}_x64_zh-CN.msi"
             "Primus_${VERSION}_x64_zh-CN.msi.sig"
+            "PrimusSetup_${VERSION}_zh-CN.exe"
           )
           expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
           actual="$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*.txt' -printf '%f\n' | LC_ALL=C sort)"
           if [[ "$actual" != "$expected" ]]; then
             echo "::error::附件清单不符。期望："; echo "$expected"; echo "实际："; echo "$actual"; exit 1
           fi
-          cat SHA256SUMS-x64.txt SHA256SUMS-arm64.txt > ../SHA256SUMS.txt
+          cat SHA256SUMS-x64.txt SHA256SUMS-arm64.txt SHA256SUMS-setup.txt > ../SHA256SUMS.txt
           [[ "$(wc -l < ../SHA256SUMS.txt)" -eq "${#want[@]}" ]] || { echo "::error::校验清单应有 ${#want[@]} 行"; exit 1; }
           sha256sum --check --strict ../SHA256SUMS.txt
 
@@ -314,6 +413,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          REQUIRE_SETUP_EXE: "1"
         run: bash .release-ci/scripts/publish-release.sh
 
       - name: 同步到公开发布仓 skaduv/primus-releases
@@ -322,6 +422,7 @@ jobs:
           GH_REPO: skaduv/primus-releases
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          REQUIRE_SETUP_EXE: "1"
         run: bash .release-ci/scripts/publish-release.sh
 
       # 自动更新清单（技术方案第 3.6 节、ADR 0007）：固定的 Release `update-feed`（prerelease、不设 Latest）存放
@@ -423,7 +524,13 @@ jobs:
           for arch in x64 arm64; do
             gh release download "$RELEASE_TAG" --pattern "Primus_${version}_${arch}_zh-CN.msi" --dir assets
           done
-          (cd assets && sha256sum Primus_*.msi) > SHA256SUMS.txt
+          # 通用安装程序（ADR 0011）只有之后的版本才有：公开仓有就一并回填
+          setup="PrimusSetup_${version}_zh-CN.exe"
+          if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fxq -- "$setup"; then
+            gh release download "$RELEASE_TAG" --pattern "$setup" --dir assets
+          fi
+          (cd assets && sha256sum Primus_*.msi PrimusSetup_*.exe 2>/dev/null || true) > SHA256SUMS.txt
+          [[ "$(grep -c 'Primus_.*\.msi$' SHA256SUMS.txt)" -eq 2 ]] || { echo "::error::校验清单缺少 MSI"; exit 1; }
           cat SHA256SUMS.txt
           prerelease=false
           [[ "$version" == *-* ]] && prerelease=true

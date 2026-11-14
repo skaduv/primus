@@ -1,6 +1,7 @@
 # windows
 
 - `Primus.wxs`：WiX 7 安装包定义（第 3.3 节；只发 MSI，ADR 0007）。`UpgradeCode` 固定为 `5B4199DD-C352-459A-AEB0-7119A884608F`，**永不改变**（MajorUpgrade 靠它识别旧版本）；`data` 目录组件的 GUID 同样固定。
+- `Bundle.wxs`、`bundle-zh-CN.wxl`：通用安装程序 `PrimusSetup_<ver>_zh-CN.exe`（WiX 7 Burn，ADR 0011）。x86 引擎，内嵌 x64 与 ARM64 两个 MSI，按 `NativeMachine` 只装一个，界面就是 MSI 自己的界面；两个包都是 `Permanent`，exe 不在“应用和功能”中登记自己，装好的就是 MSI。经 exe 安装时传 `PRIMUS_BUNDLE=1`，MSI 完成页不显示“立即启动”（界面在 Burn 的提权进程里，不能从那里启动 Primus）。`UpgradeCode` 固定为 `FD216D87-9A80-4208-A28D-FA4B80241F96`，**永不改变**。`bundle-zh-CN.wxl` 是 WixStdBA hyperlinkLicense 主题的中文文案（WiX 只自带英文），升级 WiX 时对照上游 `HyperlinkTheme.wxl` 补齐。构建：先构建两个 MSI，再 `node scripts/build-setup-exe.mjs --x64 out/Primus_<ver>_x64_zh-CN.msi --arm64 out/Primus_<ver>_arm64_zh-CN.msi`，输出 `out/PrimusSetup_<ver>_zh-CN.exe`；冒烟 `scripts/setup-exe-smoke.ps1`。
 - `remove-nsis.ps1`：从旧 NSIS 版迁移时由 `Primus.wxs` 的 `RemoveNsis`（SYSTEM、`CheckInstallDir` 之前）运行：确认 NSIS 卸载程序与其目录可信后 `/S _?=<目录>` 静默卸载，`data` 保留，再删除 `uninstall.exe` 与 NSIS 记录安装目录的注册表项；MSI 沿用 NSIS 版的安装目录。与 `install-acl.ps1` 一样去掉注释后以 Base64 嵌入（`build-msi.mjs` 生成的 `primus-scripts.wxi`，两段脚本超过命令行长度上限，不能用 `-d`）。
 - `webview2/`：WebView2 Evergreen 引导程序 `MicrosoftEdgeWebview2Setup.exe`（约 1.8MB）。不入库：`build-msi.mjs` 缺失时从微软官方地址下载，校验 Authenticode 签名有效且签名者为 Microsoft Corporation 后作为 `Binary` 打进 MSI；安装时注册表中查不到按机器安装的 WebView2（HKLM 32 位视图的 `pv` 为空或 `0.0.0.0`；MSI 面向所有用户，安装者 HKCU 下的按用户运行时不算）才以 SYSTEM 身份静默运行，失败则回滚安装。
 - `Privacy.rtf`：安装界面的隐私政策页（MSI 的 `WixUILicenseRtf`），中文以 RTF `\uN\'3f` 转义（Unicode 码点 + `?` 回退字符的十六进制形式，各解析器一致）；改文案时保持 RTF 有效（可用写字板打开另存）。

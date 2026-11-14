@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# 把一个版本的 2 个 MSI 发布到指定仓库的 GitHub Release（release.yml 的发布作业调用，ADR 0009）。
+# 把一个版本的 2 个 MSI 与通用安装程序 PrimusSetup_<ver>_zh-CN.exe（ADR 0011）发布到指定仓库的 GitHub Release（release.yml 的发布作业调用，ADR 0009）。
 # 先发到源码仓 skaduv/primus，再用同一脚本同步到公开发布仓 skaduv/primus-releases，两边附件与正文一致。
 #
 # 环境变量：
 #   GH_REPO       目标仓库（owner/name）        GH_TOKEN    对该仓库有 Contents 写权限的令牌
 #   RELEASE_TAG   标签（v0.1.0）                VERSION     版本（0.1.0）
-#   PRERELEASE    true / false                  ASSETS_DIR  含 2 个 MSI 的目录（默认 assets）
-#   SUMS_FILE     sha256sum 格式的校验清单（默认 SHA256SUMS.txt，需含 2 个 MSI 的行）
+#   PRERELEASE    true / false                  ASSETS_DIR  含 2 个 MSI（与通用安装程序）的目录（默认 assets）
+#   SUMS_FILE     sha256sum 格式的校验清单（默认 SHA256SUMS.txt，需含每个附件的行）
+#   REQUIRE_SETUP_EXE  1 = 必须有通用安装程序（发布工作流）；否则目录里有才发（回填早于它的版本时没有）
 #
 # Release 不存在则创建；已存在则覆盖同名附件（上传失败回滚）、替换正文的「已知限制」「安装包」「校验」三段、
 # 更正 prerelease / Latest，最后删除不在清单中的旧附件。结束前核对状态与附件清单。
@@ -27,7 +28,11 @@ names=(
   "Primus_${VERSION}_x64_zh-CN.msi"
   "Primus_${VERSION}_arm64_zh-CN.msi"
 )
-# 只上传 2 个安装包；.sig 内联进 update-feed 清单
+setup="PrimusSetup_${VERSION}_zh-CN.exe"
+if [[ "${REQUIRE_SETUP_EXE:-0}" == "1" || -f "${ASSETS_DIR}/${setup}" ]]; then
+  names+=("$setup")
+fi
+# 只上传安装包；.sig 内联进 update-feed 清单
 files=()
 for n in "${names[@]}"; do
   [[ -f "${ASSETS_DIR}/${n}" ]] || { echo "::error::缺少附件 ${ASSETS_DIR}/${n}"; exit 1; }
@@ -44,7 +49,7 @@ retry() {
   return 1
 }
 
-# 正文的「## 校验」段：全部附件（2 个安装包）的 SHA-256
+# 正文的「## 校验」段：全部附件的 SHA-256
 {
   printf '## 校验\n\n| 文件 | SHA-256 |\n| --- | --- |\n'
   for n in "${names[@]}"; do
@@ -61,8 +66,11 @@ if grep -Eq '\| `[0-9a-f]{0,63}` \|' "$work/checksums.md"; then echo "::error::�
 } > "$work/limits.md"
 {
   printf '## 安装包\n\n'
+  if [[ " ${names[*]} " == *" ${setup} "* ]]; then
+    printf -- '- `%s`：**通用安装程序（推荐）**，x64 与 ARM64 电脑都用它，自动安装对应架构的 MSI；双击 `.msi` 提示「无法识别此类型的文件」或打不开时用它。装好后与直接装 MSI 完全相同\n' "$setup"
+  fi
   printf -- '- `%s`、`%s`：MSI 安装包（简体中文，x64 / ARM64），按机器安装，之后的版本在退出 Primus 时静默更新\n' "${names[0]}" "${names[1]}"
-  printf -- '- 之前装过 NSIS 版（`-setup.exe`）的电脑：运行一次 MSI 即可，会自动卸载 NSIS 版并沿用原来的数据\n'
+  printf -- '- 之前装过 NSIS 版（`Primus_<版本>_x64-setup.exe`）的电脑：运行一次新版本的安装程序或 MSI 即可，会自动卸载 NSIS 版并沿用原来的数据\n'
   printf -- '- 应用内自动更新的签名直接写在更新清单里，不再单独提供 `.sig` 附件\n'
 } > "$work/packages.md"
 
@@ -142,7 +150,7 @@ else
     "${channel[@]}"
 fi
 
-# 核对发布结果：非草稿、prerelease 正确、只有 2 个安装包、正式版为 Latest
+# 核对发布结果：非草稿、prerelease 正确、附件与清单一致、正式版为 Latest
 gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets \
   --jq '"draft=\(.isDraft) prerelease=\(.isPrerelease)", (.assets[] | "\(.name)\t\(.size)")'
 state="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"

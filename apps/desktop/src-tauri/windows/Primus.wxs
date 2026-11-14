@@ -258,16 +258,18 @@
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
 
     <!-- 安装完成后立即启动：完成页勾选框只在全新安装 / 升级时显示（修复、卸载时 Installed 已设置，不显示）。
-         WixShellExec 在界面进程（安装者本人、非提权）中运行 Primus.exe；静默安装没有完成页，不会启动。 -->
+         WixShellExec 在界面进程（安装者本人、非提权）中运行 Primus.exe；静默安装没有完成页，不会启动。
+         经通用安装程序 PrimusSetup.exe 安装时（Bundle.wxs 传 PRIMUS_BUNDLE=1，ADR 0011）界面进程是 Burn 的提权进程，
+         在那里启动会让 Primus 以管理员身份运行，所以不显示勾选框、也不启动。 -->
     <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 乾元 Primus" Before="CostInitialize"
-                 Sequence="ui" Condition="NOT Installed" />
+                 Sequence="ui" Condition="NOT Installed AND NOT PRIMUS_BUNDLE" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
     <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
     <CustomAction Id="LaunchPrimus" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec"
                   Impersonate="yes" Return="ignore" />
     <UI>
       <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchPrimus"
-               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed AND NOT PRIMUS_BUNDLE" />
     </UI>
   </Package>
 </Wix>

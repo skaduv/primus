@@ -326,6 +326,15 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
+      # ADR 0011：通用安装程序 PrimusSetup.exe（Burn）。本作业只有 x64 MSI，exe 只含它（--allow-missing-arm64，不能发布），
+      # 用来验证 Bundle.wxs 能构建、exe 静默安装后“应用和功能”里只有 MSI 本身、没有 bundle 登记，再按产品代码卸载
+      - name: 构建通用安装程序（仅含 x64 MSI，验证用）
+        run: node scripts/build-setup-exe.mjs --x64 "${{ env.PRIMUS_MSI }}" --allow-missing-arm64 --out-dir out/setup
+      - name: 通用安装程序静默安装 / 卸载冒烟
+        shell: pwsh
+        timeout-minutes: 15
+        run: ./scripts/setup-exe-smoke.ps1 -Exe (Get-Item out/setup/PrimusSetup_*_zh-CN.exe).FullName
+
       # ADR 0007：同一批二进制换更高的版本号再出两个 MSI（同一把 updater 密钥签 .sig），以中完整性级别经命名管道请求
       # 更新服务：拒绝错签与降级、程序仍在运行时放弃、等程序退出后静默升级、未运行时直接升级，最后卸载清理
       - name: 构建升级测试 MSI
