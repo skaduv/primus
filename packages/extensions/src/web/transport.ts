@@ -35,6 +35,14 @@ export function bypassProxy(host: string, port: string, env: Env): boolean {
   return false;
 }
 
+/** 连不上代理本身（端口没有进程监听、主机不可达等）：代理软件已退出但系统代理设置还留着时出现，改为直连 */
+export class ProxyUnreachableError extends Error {
+  constructor(cause: unknown) {
+    super(`无法连接代理：${(cause as Error)?.message ?? String(cause)}`, { cause });
+    this.name = "ProxyUnreachableError";
+  }
+}
+
 /** 这个网址要用的代理（与 undici EnvHttpProxyAgent 一致：https 先认 HTTPS_PROXY，再退回 HTTP_PROXY）；不用代理时返回 undefined */
 export function proxyFor(url: URL, env: Env): URL | undefined {
   const raw =
@@ -179,7 +187,8 @@ function tunnel(
             finish(asError(e));
           }
         });
-        req.once("error", (e) => finish(e));
+        // CONNECT 请求本身出错（还没收到代理的应答）：连不上代理，交给调用方改为直连
+        req.once("error", (e) => finish(signal?.aborted ? e : new ProxyUnreachableError(e)));
         req.end();
       })
       .catch((e: unknown) => finish(asError(e)));
@@ -248,63 +257,70 @@ export function createDirectFetch(
       return Promise.reject(new TypeError("只支持字符串请求体"));
     const body = init.body ?? undefined;
     if (body !== undefined) headers["Content-Length"] = String(Buffer.byteLength(body));
-    return new Promise<Response>((resolve, reject) => {
-      if (signal?.aborted) {
-        reject(signal.reason);
-        return;
-      }
-      let proxy: URL | undefined;
-      try {
-        proxy = proxyFor(url, env);
-      } catch (e) {
-        reject(e);
-        return;
-      }
-      const options: https.RequestOptions = proxy
-        ? proxiedOptions(
-            url,
-            { method, headers, signal },
-            tunnel(url, proxy, blocked, signal, lookupImpl, tlsOptions),
-          )
-        : { ...tlsOptions, method, headers, signal, lookup };
-      const req = mod.request(url, options, (res) => {
-        const status = res.statusCode ?? 0;
-        const h = new Headers();
-        for (const [k, v] of Object.entries(res.headers)) {
-          if (v === undefined) continue;
-          if (Array.isArray(v)) for (const x of v) h.append(k, x);
-          else h.set(k, String(v));
-        }
-        // 204 / 205 / 304 与 HEAD 没有正文；给它们非空流会被 Response 构造器拒绝
-        const noBody = status === 204 || status === 205 || status === 304 || method === "HEAD";
-        let resBody: ReadableStream | null = null;
-        if (noBody) res.resume();
-        else {
-          const stream = decoded(res);
-          if (stream !== res) {
-            h.delete("content-encoding");
-            h.delete("content-length");
-          }
-          resBody = Readable.toWeb(stream) as ReadableStream;
-        }
-        try {
-          resolve(
-            new Response(resBody, { status, statusText: res.statusMessage ?? "", headers: h }),
-          );
-        } catch (e) {
-          res.destroy();
-          reject(e);
-        }
-      });
-      // HTTP 101 协议升级：Node 不会调用响应回调，也不会触发 error；不处理的话 Promise 永远等待
-      req.on("upgrade", (res, socket) => {
-        socket.destroy();
-        res.destroy();
-        reject(new WebError(`网页要求协议升级（HTTP ${res.statusCode ?? 101}），不支持读取`));
-      });
-      req.on("error", reject);
-      req.end(body);
+    let proxy: URL | undefined;
+    try {
+      proxy = proxyFor(url, env);
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    // 代理连不上时（代理软件已退出，系统代理设置或 Core 启动时拿到的代理变量还在）改为直连再试一次
+    return send(proxy).catch((e: unknown) => {
+      if (proxy && e instanceof ProxyUnreachableError && !signal?.aborted) return send(undefined);
+      throw e;
     });
+
+    function send(via: URL | undefined): Promise<Response> {
+      return new Promise<Response>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        const options: https.RequestOptions = via
+          ? proxiedOptions(
+              url,
+              { method, headers, signal },
+              tunnel(url, via, blocked, signal, lookupImpl, tlsOptions),
+            )
+          : { ...tlsOptions, method, headers, signal, lookup };
+        const req = mod.request(url, options, (res) => {
+          const status = res.statusCode ?? 0;
+          const h = new Headers();
+          for (const [k, v] of Object.entries(res.headers)) {
+            if (v === undefined) continue;
+            if (Array.isArray(v)) for (const x of v) h.append(k, x);
+            else h.set(k, String(v));
+          }
+          // 204 / 205 / 304 与 HEAD 没有正文；给它们非空流会被 Response 构造器拒绝
+          const noBody = status === 204 || status === 205 || status === 304 || method === "HEAD";
+          let resBody: ReadableStream | null = null;
+          if (noBody) res.resume();
+          else {
+            const stream = decoded(res);
+            if (stream !== res) {
+              h.delete("content-encoding");
+              h.delete("content-length");
+            }
+            resBody = Readable.toWeb(stream) as ReadableStream;
+          }
+          try {
+            resolve(
+              new Response(resBody, { status, statusText: res.statusMessage ?? "", headers: h }),
+            );
+          } catch (e) {
+            res.destroy();
+            reject(e);
+          }
+        });
+        // HTTP 101 协议升级：Node 不会调用响应回调，也不会触发 error；不处理的话 Promise 永远等待
+        req.on("upgrade", (res, socket) => {
+          socket.destroy();
+          res.destroy();
+          reject(new WebError(`网页要求协议升级（HTTP ${res.statusCode ?? 101}），不支持读取`));
+        });
+        req.on("error", reject);
+        req.end(body);
+      });
+    }
   }) as typeof fetch;
 }
 

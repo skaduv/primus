@@ -9,8 +9,12 @@
 //! - 只支持 HTTP(S) 代理；只配了 `socks=` 的系统代理视为没有代理。自动配置脚本（PAC）与“自动检测设置”不支持。
 //! - 回环地址（`localhost`、`127.0.0.1`、`::1`）总在 `NO_PROXY` 里。
 //! - 系统代理在 Core 运行中切换，对之后新拉起的 Core 生效。
+//! - 代理是本机地址（Clash 一类代理软件）但端口没有进程监听时视为没有代理：代理软件退出或崩溃后
+//!   系统代理设置常常还留着，照设会让 Core 的所有请求都连不上（Core 的 web 工具另有连不上代理时改直连的兜底）。
 
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::Command;
+use std::time::Duration;
 
 /// Windows“代理服务器”设置的原始值。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,7 +39,54 @@ const LOOPBACK: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
 
 /// 给 Core 启动命令设置代理环境变量：用户环境已有代理变量时不动，否则按当前系统代理设置。
 pub(crate) fn apply_core_proxy_env(cmd: &mut Command) {
-    apply_with(cmd, |k| std::env::var(k).ok(), read_system_proxy());
+    let system = read_system_proxy().filter(|s| loopback_proxy_alive(s, port_listening));
+    apply_with(cmd, |k| std::env::var(k).ok(), system);
+}
+
+/// 本机代理的端口是否有进程在监听（连本机端口，很快返回）。
+fn port_listening(addr: SocketAddr) -> bool {
+    TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+}
+
+/// 系统代理可用：没开、或代理不是本机地址时照常返回 true（远程代理不探测，避免拖慢启动）；
+/// 本机代理只要有一个地址能连上就算可用。
+fn loopback_proxy_alive(system: &SystemProxy, listening: impl Fn(SocketAddr) -> bool) -> bool {
+    let Some(env) = proxy_env(system) else {
+        return true;
+    };
+    let mut addrs = env
+        .http
+        .iter()
+        .chain(env.https.iter())
+        .filter_map(|u| loopback_addr(u));
+    match addrs.next() {
+        None => true,
+        Some(first) => std::iter::once(first).chain(addrs).any(listening),
+    }
+}
+
+/// 代理 URL 指向本机时返回要连的地址（`localhost`、`127.x`、`::1`）；其他主机返回 `None`。
+fn loopback_addr(url: &str) -> Option<SocketAddr> {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let host_port = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
+    let host_port = host_port.split('/').next().unwrap_or(host_port);
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() && !p.contains(']') => (h, p.parse::<u16>().ok()?),
+        _ => (
+            host_port,
+            if url.starts_with("https://") { 443 } else { 80 },
+        ),
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let ip = if host.eq_ignore_ascii_case("localhost") {
+        std::net::IpAddr::from([127, 0, 0, 1])
+    } else {
+        host.parse::<std::net::IpAddr>().ok()?
+    };
+    if !ip.is_loopback() {
+        return None;
+    }
+    (ip, port).to_socket_addrs().ok()?.next()
 }
 
 /// [`apply_core_proxy_env`] 的实现：继承的环境与系统代理可替换，便于测试。
@@ -293,6 +344,35 @@ mod tests {
         cmd.get_envs()
             .find(|(k, _)| *k == OsStr::new(key))
             .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn loopback_proxy_must_be_listening() {
+        let clash = sys("127.0.0.1:7890", "");
+        assert!(!loopback_proxy_alive(&clash, |_| false));
+        assert!(loopback_proxy_alive(&clash, |a| a.port() == 7890));
+        // 远程代理不探测
+        assert!(loopback_proxy_alive(&sys("proxy.corp:8080", ""), |_| false));
+        // 没开代理不受影响
+        let mut off = clash.clone();
+        off.enabled = false;
+        assert!(loopback_proxy_alive(&off, |_| false));
+        assert_eq!(
+            loopback_addr("http://localhost:7890"),
+            Some(SocketAddr::from(([127, 0, 0, 1], 7890)))
+        );
+        assert_eq!(
+            loopback_addr("http://u:p@[::1]:1080"),
+            Some("[::1]:1080".parse().unwrap())
+        );
+        assert_eq!(loopback_addr("http://10.0.0.1:8080"), None);
+        // 真实端口：监听中可用，关掉后不可用
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let live = sys(&format!("127.0.0.1:{port}"), "");
+        assert!(loopback_proxy_alive(&live, port_listening));
+        drop(l);
+        assert!(!loopback_proxy_alive(&live, port_listening));
     }
 
     #[test]

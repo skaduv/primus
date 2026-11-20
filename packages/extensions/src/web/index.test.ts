@@ -751,6 +751,42 @@ describe("审查补充", () => {
     }
   });
 
+  it("代理连不上（代理软件已退出）时改为直连；代理拒绝时照常报错", async () => {
+    const server = createServer((_req, res) => res.end("direct"));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    // 占一个端口再关掉，得到一个没有进程监听的代理地址
+    const dead = createNetServer();
+    await new Promise<void>((r) => dead.listen(0, "127.0.0.1", r));
+    const deadPort = (dead.address() as { port: number }).port;
+    await new Promise<void>((r) => dead.close(() => r()));
+    // 回答 407 的代理：代理还在，只是拒绝
+    const refusing = createServer();
+    refusing.on("connect", (_req, socket) => {
+      socket.end("HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
+    });
+    await new Promise<void>((r) => refusing.listen(0, "127.0.0.1", r));
+    const refusingPort = (refusing.address() as { port: number }).port;
+    try {
+      for (const f of [
+        createDirectFetch(() => false, { HTTP_PROXY: `http://127.0.0.1:${deadPort}` }),
+        searchFetch({ HTTP_PROXY: `http://127.0.0.1:${deadPort}` }),
+      ]) {
+        const res = await f(`http://127.0.0.1:${port}/`);
+        expect(res.status).toBe(200);
+        expect(await res.text()).toBe("direct");
+      }
+      await expect(
+        createDirectFetch(() => false, { HTTP_PROXY: `http://127.0.0.1:${refusingPort}` })(
+          `http://127.0.0.1:${port}/`,
+        ),
+      ).rejects.toThrow("407");
+    } finally {
+      server.close();
+      refusing.close();
+    }
+  });
+
   it("代理：按 HTTP(S)_PROXY / NO_PROXY 选择，只支持 http:// 代理", async () => {
     const env = { HTTP_PROXY: "http://p:8080", NO_PROXY: "localhost,.corp.example,10.0.0.1:443" };
     expect(proxyFor(new URL("https://a.com/"), env)?.host).toBe("p:8080");
