@@ -24,6 +24,8 @@ use serde_json::Value;
 pub(crate) const PAGE_SIZE: usize = 50;
 /// 搜索结果上限。
 pub(crate) const SEARCH_LIMIT: usize = 50;
+/// 已归档会话列表上限。
+pub(crate) const ARCHIVED_LIST_LIMIT: usize = 200;
 /// 索引结构版本；改表结构时加一，旧库整体重建（`archived` 表保留）。
 const SCHEMA_VERSION: i64 = 3;
 /// 列表标题（首条用户消息）最多保留的字符数。
@@ -389,6 +391,28 @@ impl SessionIndex {
         Ok(SessionPage { items, next_cursor })
     }
 
+    /// 按最后活动时间倒序列出已归档的会话。`workspace_key` 为 None 时列出全部工作区。
+    pub(crate) fn list_archived(
+        &self,
+        workspace_key: Option<&str>,
+    ) -> Result<Vec<SessionSummary>, IndexError> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {SUMMARY_COLUMNS} FROM sessions s
+             WHERE EXISTS (SELECT 1 FROM archived a WHERE a.path = s.path)
+               AND (?1 IS NULL OR s.workspace_key = ?1)
+             ORDER BY s.updated_at DESC, s.path DESC
+             LIMIT ?2"
+        ))?;
+        let rows = stmt
+            .query_map(
+                params![workspace_key, ARCHIVED_LIST_LIMIT as i64],
+                summary_from_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     /// 搜索会话（含已归档）：查询至少 3 个字符时匹配消息全文与标题，更短时只对会话名与首条消息做子串匹配。
     pub(crate) fn search(
         &self,
@@ -732,13 +756,13 @@ fn remove_db_files(db_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn is_session_file_name(path: &Path) -> bool {
+pub(crate) fn is_session_file_name(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "jsonl")
 }
 
 /// 会话目录下（递归，与 `fs_watch` 的递归监听范围一致）的 `.jsonl` 文件，不跟随符号链接。
 /// 会话目录本身不存在时为空；扫描期间被删掉的子目录跳过；其他读取错误中止扫描，调用方不据此删除索引条目。
-fn session_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
+pub(crate) fn session_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut dirs = vec![dir.to_path_buf()];
     while let Some(current) = dirs.pop() {
@@ -856,7 +880,7 @@ fn escape_like(s: &str) -> String {
 }
 
 /// 解析 Core 写入的 ISO 8601 UTC 时间（`Date.toISOString()`：`YYYY-MM-DDTHH:MM:SS[.fff]Z`），返回毫秒。
-fn parse_iso_millis(s: &str) -> Option<i64> {
+pub(crate) fn parse_iso_millis(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     if b.len() < 20
         || b[4] != b'-'

@@ -8,6 +8,7 @@ use tauri::ipc::Channel;
 use tauri::{Manager, State};
 
 use crate::account::{AuthError, AuthStatus};
+use crate::app_settings::AppSettings;
 use crate::core_config::{
     FetchInput, ModelConfigState, ModelsInfo, ProviderInput, ProviderView, ProvidersChanged,
 };
@@ -21,7 +22,55 @@ use crate::supervisor::Supervisor;
 use crate::updater::{
     InstallTrigger, LaunchOutcome, UpdateChannel, UpdateError, UpdateStatus, Updater,
 };
+use crate::usage_stats::UsageStats;
 use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
+
+/// `app_info` 的返回值（附录 B）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AppInfo {
+    app_version: String,
+    core_version: String,
+    data_dir: String,
+    platform: &'static str,
+}
+
+/// 应用版本、Core 版本、数据目录与平台信息（附录 B `app_info`）。
+#[tauri::command]
+pub(crate) fn app_info(paths: State<'_, DataPaths>, supervisor: State<'_, Supervisor>) -> AppInfo {
+    let core_version = supervisor
+        .core_package_version()
+        .unwrap_or_else(|| "unknown".into());
+    AppInfo {
+        app_version: env!("CARGO_PKG_VERSION").to_owned(),
+        core_version,
+        data_dir: paths.root().to_string_lossy().into_owned(),
+        platform: std::env::consts::OS,
+    }
+}
+
+/// 读取 App 设置（附录 B `settings_get`）。
+#[tauri::command]
+pub(crate) fn settings_get(
+    settings: State<'_, AppSettings>,
+) -> serde_json::Map<String, serde_json::Value> {
+    settings.get_all()
+}
+
+/// 增量写入 App 设置（附录 B `settings_set`）。
+#[tauri::command]
+pub(crate) fn settings_set(
+    settings: State<'_, AppSettings>,
+    patch: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    settings.patch(patch)
+}
+
+/// 汇总近 12 个月的本地会话模型调用与完成任务统计（附录 B `usage_stats`）。
+#[tauri::command(async)]
+pub(crate) fn usage_stats(paths: State<'_, DataPaths>) -> UsageStats {
+    crate::usage_stats::collect(&paths.sessions_dir())
+}
 
 /// 外部链接只允许 http/https，长度有限且不含空白与控制字符（防止被当成命令行参数或本地路径执行）。
 fn check_external_url(target: &str) -> Result<(), String> {
@@ -479,6 +528,18 @@ pub(crate) fn session_search(
             workspace_key(&paths, workspace.as_deref()).as_deref(),
             &query,
         )
+        .map_err(|e| e.to_string())
+}
+
+/// 列出已归档的会话（按最后活动时间倒序，最多 200 条）。
+#[tauri::command(async)]
+pub(crate) fn session_list_archived(
+    index: State<'_, Arc<SessionIndex>>,
+    paths: State<'_, DataPaths>,
+    workspace: Option<String>,
+) -> Result<Vec<SessionSummary>, String> {
+    index
+        .list_archived(workspace_key(&paths, workspace.as_deref()).as_deref())
         .map_err(|e| e.to_string())
 }
 

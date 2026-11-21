@@ -39,6 +39,7 @@ import {
   type SpeechEvent,
   UPDATE_BUSY,
   type UpdateStatus,
+  type UsageStats,
   type WorkspaceInfo,
 } from "../types";
 import { createMockCapabilities } from "./capabilities";
@@ -1166,6 +1167,12 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           all.length > MOCK_PAGE_SIZE && last ? `${last.updatedAt}:${last.path}` : undefined,
       };
     },
+    sessionListArchived: async (workspace) =>
+      structuredClone(
+        sortedIndex()
+          .filter((x) => x.archived && (workspace === null || x.workspace === workspace))
+          .slice(0, 200),
+      ),
     sessionSearch: async (workspace, query) => {
       const q = query.trim().toLowerCase();
       if (!q) return [];
@@ -1283,6 +1290,53 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     settingsGet: async () => ({ ...settings }),
     settingsSet: async (patch) => {
       settings = { ...settings, ...patch };
+    },
+    usageStats: async (): Promise<UsageStats> => {
+      const base = now();
+      const day = 24 * 60 * 60 * 1000;
+      const demoSession = sortedIndex()[0];
+      const sessionRef = demoSession
+        ? { path: demoSession.path, id: demoSession.id, workspace: demoSession.workspace }
+        : undefined;
+      const calls = [
+        {
+          id: "mock-call-1",
+          timestamp: base - 2 * 60 * 60 * 1000,
+          model: "Mock 大模型",
+          input: 6420,
+          output: 1280,
+          total: 7700,
+          cost: { amount: 0.024, currency: "USD", estimated: true },
+          status: "success" as const,
+          session: sessionRef,
+        },
+        {
+          id: "mock-call-2",
+          timestamp: base - day - 4 * 60 * 60 * 1000,
+          model: "Mock 快速模型",
+          input: 3150,
+          output: 840,
+          total: 3990,
+          cost: { amount: 0.008, currency: "USD", estimated: true },
+          status: "success" as const,
+          session: sessionRef,
+        },
+        {
+          id: "mock-call-3",
+          timestamp: base - 3 * day,
+          model: "Mock 大模型",
+          input: 12800,
+          output: 2450,
+          total: 15250,
+          cost: { amount: 0.048, currency: "USD", estimated: true },
+          status: "success" as const,
+          session: sessionRef,
+        },
+      ];
+      return {
+        calls,
+        completedAt: calls.map((c) => c.timestamp),
+      };
     },
 
     authStatus: async () => structuredClone(MOCK_AUTH),

@@ -62,6 +62,7 @@ export function createTauriPlatform(): Platform {
 
     sessionDefaultWorkspace: () => call("sessionDefaultWorkspace"),
     sessionList: (workspace, cursor) => call("sessionList", { workspace, cursor }),
+    sessionListArchived: (workspace) => call("sessionListArchived", { workspace }),
     sessionSearch: (workspace, query) => call("sessionSearch", { workspace, query }),
     sessionWatch: (onChange) => {
       const channel = new Channel<SessionIndexEvent>();
@@ -82,6 +83,7 @@ export function createTauriPlatform(): Platform {
 
     settingsGet: () => call("settingsGet"),
     settingsSet: (patch) => call("settingsSet", { patch }),
+    usageStats: () => call("usageStats"),
 
     authStatus: () => call("authStatus"),
     authLogin: () => call("authLogin"),
