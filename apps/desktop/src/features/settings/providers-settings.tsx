@@ -24,6 +24,15 @@ import { strings } from "@/lib/strings";
 import { publishModels, subscribeModels } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
 import { Badge, errorText } from "./account-models";
+import {
+  SettingsAlert,
+  SettingsSelect,
+  settingsButtonClass,
+  settingsDangerButtonClass,
+  settingsIconButtonClass,
+  settingsInputClass,
+  settingsPrimaryButtonClass,
+} from "./settings-section";
 
 // 设置·模型·模型渠道：列出渠道（协议、接口地址、密钥末 4 位、模型数、启用开关），可添加、编辑、删除。
 // 添加 / 编辑在对话框中进行：填协议、接口地址与密钥后“获取模型”（provider_fetch_models，不保存），
@@ -36,12 +45,9 @@ const protocols = strings.settings.models.protocols;
 const APIS: ProviderApi[] = ["openai-responses", "anthropic-messages"];
 const NAME_MAX = 64;
 
-const buttonClass =
-  "inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-sm ring-1 ring-border transition-colors enabled:hover:bg-hover disabled:opacity-50 motion-reduce:transition-none";
-const iconButtonClass =
-  "inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-fg disabled:opacity-50 motion-reduce:transition-none";
-const inputClass =
-  "w-full rounded-xl bg-black/[0.04] px-3 py-2 text-sm text-fg outline-none ring-1 ring-border transition-shadow placeholder:text-muted focus:ring-2 focus:ring-accent/50 aria-[invalid=true]:ring-danger/60 motion-reduce:transition-none dark:bg-white/[0.06]";
+const buttonClass = settingsButtonClass;
+const iconButtonClass = settingsIconButtonClass;
+const inputClass = settingsInputClass;
 
 const fill = (template: string, values: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (_, k: string) => String(values[k] ?? ""));
@@ -142,42 +148,45 @@ export function ProviderSettings() {
 
   // 读取失败（如 providers.json 损坏）时仍显示添加入口：薄壳保存时备份旧文件并重建配置
   const list = providers ?? (loadError ? [] : null);
-  if (!list) return <p className="text-sm text-muted">{t.loading}</p>;
+  if (!list)
+    return (
+      <div className="flex items-center gap-2 px-1 text-sm text-muted">
+        <Icon name="loader" size="sm" className="session-spinner shrink-0" />
+        <span>{t.loading}</span>
+      </div>
+    );
   const visible = list.filter((p) => !p.hidden);
 
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="px-1 text-xs font-medium text-muted">{t.title}</h3>
+      <h3 className="px-1 text-xs font-medium tracking-wide text-muted">{t.title}</h3>
       {loadError && (
-        <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
-          <p className="font-medium text-danger">{loadError}</p>
-          {/* 之前读到过列表时显示的是旧列表，只提示读取失败；从未读到时说明保存会重建配置 */}
-          {!providers && <p className="mt-1 text-muted">{t.loadFailedRecover}</p>}
-        </div>
+        <SettingsAlert title={loadError} message={!providers ? t.loadFailedRecover : undefined} />
       )}
-      {actionError && (
-        <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
-          <p className="font-medium text-danger">{actionError.title}</p>
-          <p className="mt-1 text-muted">{actionError.message}</p>
-        </div>
-      )}
-      <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
+      {actionError && <SettingsAlert title={actionError.title} message={actionError.message} />}
+      <div className="settings-card divide-y divide-black/[0.055] overflow-hidden rounded-2xl dark:divide-white/[0.06]">
         {visible.length === 0 && list.length === 0 && (
-          <p className="px-4 py-3 text-xs text-muted">{t.empty}</p>
+          <p className="px-4 py-4 text-xs text-muted">{t.empty}</p>
         )}
         {visible.length > 0 && (
-          <ul aria-label={t.title} className="divide-y divide-border">
+          <ul
+            aria-label={t.title}
+            className="divide-y divide-black/[0.055] dark:divide-white/[0.06]"
+          >
             {visible.map((p) => (
-              <li key={p.id} className="flex items-center gap-3 px-4 py-3">
+              <li
+                key={p.id}
+                className="flex items-center gap-3 px-4 py-3.5 transition-colors duration-150 hover:bg-black/[0.02] dark:hover:bg-white/[0.025]"
+              >
                 <div className="min-w-0 flex-1">
                   <p className="flex min-w-0 items-center gap-2 text-sm">
-                    <span className="truncate font-medium">{p.name}</span>
+                    <span className="truncate font-medium text-fg">{p.name}</span>
                     <Badge>{protocols[p.api] ?? p.api}</Badge>
                   </p>
                   <Tooltip content={p.baseUrl}>
-                    <p className="mt-0.5 truncate text-xs text-muted">{p.baseUrl}</p>
+                    <p className="mt-0.5 truncate font-mono text-xs text-muted">{p.baseUrl}</p>
                   </Tooltip>
-                  <p className="mt-0.5 text-xs text-muted">{providerMeta(p)}</p>
+                  <p className="mt-0.5 text-xs text-muted tabular-nums">{providerMeta(p)}</p>
                 </div>
                 <Switch
                   ariaLabel={fill(t.enable, { name: p.name })}
@@ -193,7 +202,7 @@ export function ProviderSettings() {
                     onClick={() => setEditing(p)}
                     className={iconButtonClass}
                   >
-                    <Icon name="pen" />
+                    <Icon name="pen" size="sm" />
                   </button>
                 </Tooltip>
                 <Tooltip content={t.delete}>
@@ -202,9 +211,9 @@ export function ProviderSettings() {
                     aria-label={fill(t.deleteLabel, { name: p.name })}
                     disabled={busy !== null}
                     onClick={() => setPendingDelete(p)}
-                    className={cn(iconButtonClass, "hover:text-danger")}
+                    className={cn(iconButtonClass, "enabled:hover:text-danger")}
                   >
-                    <Icon name="trash" />
+                    <Icon name="trash" size="sm" />
                   </button>
                 </Tooltip>
               </li>
@@ -246,15 +255,11 @@ export function ProviderSettings() {
           <GlassDialogDescription>{t.deleteDescription}</GlassDialogDescription>
           <div className="mt-5 flex justify-end gap-2 text-sm">
             <GlassDialogClose asChild>
-              <button type="button" className="rounded-full bg-hover px-4 py-1.5">
+              <button type="button" className={buttonClass}>
                 {t.cancel}
               </button>
             </GlassDialogClose>
-            <button
-              type="button"
-              onClick={confirmDelete}
-              className="rounded-full bg-hover px-4 py-1.5 font-medium text-danger ring-1 ring-danger/40"
-            >
+            <button type="button" onClick={confirmDelete} className={settingsDangerButtonClass}>
               {t.deleteConfirm}
             </button>
           </div>
@@ -511,21 +516,22 @@ function ProviderDialog({
               <label htmlFor={ids.api} className="mb-1 block text-xs text-muted">
                 {td.api}
               </label>
-              <select
+              <SettingsSelect
                 id={ids.api}
                 value={api}
+                wrapperClassName="w-full"
+                className="h-9 w-full font-normal"
                 onChange={(e) => {
                   invalidateFetch();
                   setApi(e.target.value as ProviderApi);
                 }}
-                className={inputClass}
               >
                 {APIS.map((a) => (
                   <option key={a} value={a}>
                     {protocols[a]}
                   </option>
                 ))}
-              </select>
+              </SettingsSelect>
             </div>
             <div>
               <label htmlFor={ids.baseUrl} className="mb-1 block text-xs text-muted">
@@ -639,18 +645,13 @@ function ProviderDialog({
             </div>
           )}
           <div className="flex justify-end gap-2 text-sm">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={saving}
-              className="rounded-full bg-hover px-4 py-1.5 disabled:opacity-50"
-            >
+            <button type="button" onClick={onClose} disabled={saving} className={buttonClass}>
               {td.cancel}
             </button>
             <button
               type="submit"
               disabled={saving || fetching}
-              className="rounded-full bg-fg px-4 py-1.5 font-medium text-surface disabled:opacity-40"
+              className={settingsPrimaryButtonClass}
             >
               {saving ? td.saving : td.save}
             </button>

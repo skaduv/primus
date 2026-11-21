@@ -853,6 +853,17 @@ impl Supervisor {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// 从 Core 目录下的 `package.json` 读取版本号（`app_info` 用）。
+    pub(crate) fn core_package_version(&self) -> Option<String> {
+        let pkg = self.layout.entry.parent()?.join("package.json");
+        let text = std::fs::read_to_string(pkg).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        value
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    }
+
     /// 设置进程上限（夹到 1–8）。
     pub(crate) fn set_max_processes(&self, max: usize) {
         let max = max.clamp(*MAX_PROCESSES_RANGE.start(), *MAX_PROCESSES_RANGE.end());

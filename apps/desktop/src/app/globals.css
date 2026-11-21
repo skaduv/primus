@@ -43,6 +43,11 @@
   --color-chart-4: #ff9f0a;
   --color-chart-5: #30d158;
   --color-chart-6: #32ade6;
+  --color-usage-0: #e8eef8;
+  --color-usage-1: #c8ddf8;
+  --color-usage-2: #8ebbf1;
+  --color-usage-3: #4389da;
+  --color-usage-4: #174f9f;
   /* 输入框附件图块、唇条与进度环轨道 */
   --color-tile: rgb(0 0 0 / 0.045);
   --color-tile-ring: rgb(0 0 0 / 0.06);
@@ -176,6 +181,8 @@
   --window-tint: rgb(222 222 232 / 0.42);
   /* 时间线所在的"纸面"：不透明。半透明底会让 Chromium 退回灰度抗锯齿，正文发虚发浅；不透明时用 ClearType */
   --paper: #ffffff;
+  /* 设置中心画布：极浅柔雾灰，衬托纯白瓷感卡片形成清晰雕塑层次 */
+  --settings-canvas: #f5f5f7;
   color-scheme: light;
 }
 
@@ -199,6 +206,11 @@
   --color-chart-4: #ff9f0a;
   --color-chart-5: #30d158;
   --color-chart-6: #64d2ff;
+  --color-usage-0: #23252a;
+  --color-usage-1: #1a3354;
+  --color-usage-2: #214e87;
+  --color-usage-3: #2f74cc;
+  --color-usage-4: #5ca4ff;
   --color-file-blue-grey-100: #cfd8dc;
   --color-file-light-blue-900: #1e88e5;
   --color-file-vue-navy: #8fa6bf;
@@ -211,6 +223,7 @@
   --wallpaper: #0b0b0e;
   --window-tint: rgb(8 8 10 / 0.45);
   --paper: #161618;
+  --settings-canvas: #131316;
   color-scheme: dark;
 }
 
@@ -2010,5 +2023,112 @@ html.window-effects.solid-window body {
   .agentp-shimmer {
     color: inherit;
     background-image: none;
+  }
+}
+
+/* ---------- 设置中心：温润画布 + 瓷白浮层卡片与高阶导航动效 ---------- */
+
+/* 瓷白设置卡片：浮在 --settings-canvas 柔雾画布上，浅色通透克制，深色带微弱上沿高光 */
+.settings-card {
+  background: #ffffff;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.055),
+    0 1px 2px rgb(0 0 0 / 0.03),
+    0 6px 20px -12px rgb(0 0 0 / 0.08);
+}
+
+.dark .settings-card {
+  background: #1c1c1f;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.055),
+    0 0 0 1px rgb(255 255 255 / 0.08),
+    0 8px 24px -14px rgb(0 0 0 / 0.55);
+}
+
+/* 左侧导航选中高亮胶囊：用 top / left 定位，避开 WebView2 在 backdrop-filter + mask 下的 transform 合成缓存错位 */
+.settings-nav-pill {
+  background: rgb(255 255 255 / 0.95);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 1),
+    0 0 0 0.5px rgb(0 0 0 / 0.06),
+    0 2px 6px -1px rgb(0 0 0 / 0.08);
+  transition:
+    top 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    left 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dark .settings-nav-pill {
+  background: rgb(255 255 255 / 0.12);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.12),
+    0 0 0 0.5px rgb(255 255 255 / 0.08),
+    0 2px 6px -1px rgb(0 0 0 / 0.35);
+}
+
+/* 右侧设置内容切换：克制顺滑的微位移淡入，无模糊抖动 */
+@keyframes settings-pane-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+
+.settings-pane-in {
+  animation: settings-pane-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 轻量设置浮层（如用量日期筛选）：干脆的缩放淡入 */
+@keyframes settings-popover-in {
+  from {
+    opacity: 0;
+    scale: 0.96;
+    translate: 0 -4px;
+  }
+}
+
+.settings-popover-in {
+  transform-origin: top left;
+  animation: settings-popover-in 170ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 吸顶页头：滚动超过阈值时浮现半透明柔雾画布底与极细底线 */
+.settings-sticky-header {
+  background: color-mix(in srgb, var(--settings-canvas) 86%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+/* 设置里的原生下拉框：浅深色选项菜单跟随主题，避免深色下弹出刺眼白框 */
+.settings-select option {
+  background-color: var(--color-surface);
+  color: var(--color-fg);
+}
+
+/* 关于页的品牌图标瓷白徽章托盘：洁净亮雅，无暗黑块 */
+.settings-brand-emblem {
+  background: linear-gradient(180deg, #ffffff 0%, #f7f7fa 100%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 1),
+    0 0 0 1px rgb(0 0 0 / 0.055),
+    0 10px 28px -10px rgb(0 0 0 / 0.14),
+    0 2px 6px -2px rgb(0 0 0 / 0.06);
+}
+
+.dark .settings-brand-emblem {
+  background: linear-gradient(180deg, #28282c 0%, #202024 100%);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.12),
+    0 0 0 1px rgb(255 255 255 / 0.09),
+    0 12px 30px -10px rgb(0 0 0 / 0.6);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-nav-pill {
+    transition: none;
+  }
+  .settings-pane-in,
+  .settings-popover-in {
+    animation: none;
   }
 }

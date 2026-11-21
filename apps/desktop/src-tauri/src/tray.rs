@@ -148,9 +148,22 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 }
 
 /// 主窗口收到关闭请求时调用：有会话正在运行（且不在退出过程中）时隐藏窗口留在托盘，返回 true（调用方阻止关闭）。
+/// 用户在设置中开启“关闭窗口时最小化到托盘”且托盘已就绪时，即使没有运行中会话也隐藏到托盘。
 /// 托盘没有创建成功时不隐藏（否则窗口再也打不开）：保留窗口，按托盘“退出”的流程询问是否退出，同样返回 true。
 pub(crate) fn keep_in_tray_on_close(window: &tauri::WebviewWindow) -> bool {
-    if QUITTING.load(Ordering::Acquire) || running_count(window.app_handle()) == 0 {
+    if QUITTING.load(Ordering::Acquire) {
+        return false;
+    }
+    let running = running_count(window.app_handle());
+    let always_tray = window
+        .app_handle()
+        .try_state::<crate::app_settings::AppSettings>()
+        .is_some_and(|s| s.minimize_to_tray());
+    if running == 0 {
+        if always_tray && TRAY_READY.load(Ordering::Acquire) {
+            let _ = window.hide();
+            return true;
+        }
         return false;
     }
     if TRAY_READY.load(Ordering::Acquire) {

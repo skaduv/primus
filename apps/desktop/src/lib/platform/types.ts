@@ -109,6 +109,32 @@ export interface SessionHandle {
   sessionId?: string | null;
 }
 
+/** 用量统计中的单条成本信息（`usage_stats`） */
+export interface UsageCost {
+  amount: number;
+  currency: string;
+  estimated: boolean;
+}
+
+/** 用量统计中的单次模型调用记录（`usage_stats`） */
+export interface UsageCall {
+  id: string;
+  timestamp: number;
+  model: string;
+  input: number | null;
+  output: number | null;
+  total: number | null;
+  cost: UsageCost | null;
+  status: "success" | "failed" | "cancelled";
+  session?: Pick<SessionSummary, "path" | "id" | "workspace">;
+}
+
+/** 近 12 个月本地会话的用量统计汇总（`usage_stats`） */
+export interface UsageStats {
+  calls: UsageCall[];
+  completedAt: number[];
+}
+
 export type BatchListener = (batch: CoreBatch) => void;
 
 /** 账号信息（第 9.7 节）；账号服务接入后提供 */
@@ -317,6 +343,8 @@ export interface Platform {
   /** 未选工作区时会话的默认工作目录（完整路径） */
   sessionDefaultWorkspace(): Promise<string>;
   sessionList(workspace: string | null, cursor?: string): Promise<Page<SessionSummary>>;
+  /** 列出已归档会话（最后活动时间倒序，最多 200 条）；`workspace` 为 null 时列出全部工作区 */
+  sessionListArchived(workspace: string | null): Promise<SessionSummary[]>;
   /** 搜索会话（含已归档，最多 50 条）；3 个字符以上匹配消息全文，更短只匹配会话名与首条消息 */
   sessionSearch(workspace: string | null, query: string): Promise<SessionSummary[]>;
   /** 订阅会话索引变化；再次调用替换旧的订阅 */
@@ -339,6 +367,8 @@ export interface Platform {
 
   settingsGet(): Promise<Record<string, unknown>>;
   settingsSet(patch: Record<string, unknown>): Promise<void>;
+  /** 汇总近 12 个月的本地会话模型调用与完成任务统计 */
+  usageStats(): Promise<UsageStats>;
 
   /** 账号状态；账号服务接入前恒为未登录 */
   authStatus(): Promise<AuthStatus>;
@@ -631,6 +661,7 @@ export const COMMANDS = {
   notificationWatch: "notification_watch",
   sessionDefaultWorkspace: "session_default_workspace",
   sessionList: "session_list",
+  sessionListArchived: "session_list_archived",
   sessionSearch: "session_search",
   sessionWatch: "session_watch",
   sessionOpen: "session_open",
@@ -641,6 +672,7 @@ export const COMMANDS = {
   coreRestart: "core_restart",
   settingsGet: "settings_get",
   settingsSet: "settings_set",
+  usageStats: "usage_stats",
   authStatus: "auth_status",
   authLogin: "auth_login",
   authLogout: "auth_logout",

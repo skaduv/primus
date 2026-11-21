@@ -60,8 +60,7 @@ export function SessionsSidebar({ width }: { width: number }) {
                 <GlassPopoverItem
                   icon={<Icon name="user" />}
                   label={t.menuAccount}
-                  sublabel={t.menuAccountHint}
-                  disabled
+                  onSelect={() => router.push("/settings/?group=account")}
                 />
                 <GlassPopoverItem
                   icon={<Icon name="chart" />}

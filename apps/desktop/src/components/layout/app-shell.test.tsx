@@ -153,15 +153,16 @@ describe("主界面外壳", () => {
     expect(useRouter().push).toHaveBeenCalledWith("/settings/");
   });
 
-  it("左栏菜单的“能力中心”打开设置的能力中心分组", async () => {
+  it.each([
+    [strings.layout.menuCapabilities, "capabilities"],
+    [strings.layout.menuAccount, "account"],
+  ])("%s 菜单项打开对应设置分组", async (name, group) => {
     render(<AppShell />);
     fireEvent.keyDown(screen.getByRole("button", { name: strings.layout.settings }), {
       key: "Enter",
     });
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: new RegExp(strings.layout.menuCapabilities) }),
-    );
-    expect(useRouter().push).toHaveBeenCalledWith("/settings/?group=capabilities");
+    fireEvent.click(await screen.findByRole("menuitem", { name }));
+    expect(useRouter().push).toHaveBeenCalledWith(`/settings/?group=${group}`);
   });
 
   it("空会话显示欢迎页（建议从建议池随机取 3 条），点建议填入输入框", () => {
