@@ -91,7 +91,7 @@ describe("对话（安装矩阵）", () => {
   it("在设置·模型渠道中添加 Faux 渠道并获取模型", async function () {
     // 多步界面操作（各步等待之和可能超过 mocha 默认的 60 秒）
     this.timeout(150_000);
-    // 侧栏设置菜单 → 设置 → 模型
+    // 侧栏设置菜单 → 设置 → Agent（模型渠道在 Agent 分组）
     const settingsButton = $(`button[aria-label="${strings.layout.settings}"]`);
     await settingsButton.waitForClickable({ timeout: 30_000 });
     await settingsButton.click();
@@ -101,7 +101,7 @@ describe("对话（安装矩阵）", () => {
     await menuItem.waitForClickable({ timeout: 10_000 });
     await menuItem.click();
     const groups = `//nav[@aria-label=${xq(strings.settings.title)}]`;
-    const modelsGroup = buttonByText(strings.settings.groups.models, groups);
+    const modelsGroup = buttonByText(strings.settings.groups.agent, groups);
     await modelsGroup.waitForClickable({ timeout: 30_000 });
     await modelsGroup.click();
     const addButton = buttonByText(tp.add);
